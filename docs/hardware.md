@@ -43,7 +43,7 @@ Protocolo, segundo o driver do OpenRGB:
 | `CC 28` | Aplica os efeitos às zonas selecionadas |
 | `CC 31`, `CC 32`, `CC 47`, `CC 48`, `CC 5E` | Liga/desliga recursos (ver o código para o significado de cada um) |
 
-Zonas da B550M AORUS ELITE (layout `it5702_24_device`, código de produto `0x0030005F`):
+Zonas da B550M AORUS ELITE (layout `it5702_24_device`, `layout_id` `0x0030005F`). O `layout_id` não identifica a placa sozinho, porque outras placas usam o mesmo valor (B550M DS3H R2, por exemplo). O OpenRGB escolhe a entrada da tabela pelo nome DMI da placa (`/sys/class/dmi/id/board_name` = `B550M AORUS ELITE`) e pelo `device_num` lido no `CC 60`:
 
 | Zona | Tipo |
 |---|---|
@@ -54,6 +54,35 @@ Zonas da B550M AORUS ELITE (layout `it5702_24_device`, código de produto `0x003
 | `LED_C2` | Cor única |
 
 O OpenRGB já detectou a placa por USB em 2026-10-17, então o comando de leitura `CC 60` já foi enviado a ela sem problemas.
+
+### Leitura real com `halo probe it5702` (2026-10-20)
+
+Comando enviado: só `CC 60` + 62 zeros (set feature report de 64 bytes), seguido de get feature report `0xCC`. Nenhuma fita ARGB nem fita de 12 V está ligada à placa, então não há luz para conferir. O Waterforce (USB próprio) e a RAM (SMBus) não passam por este controlador.
+
+```text
+00: cc 01 00 07 02 00 0a 00 00 00 00 00 49 54 35 37
+10: 30 32 2d 47 49 47 41 42 59 54 45 20 56 32 2e 30
+20: 2e 31 30 2e 30 00 00 00 00 01 02 00 02 00 01 00
+30: 02 00 01 00 00 01 02 00 00 01 02 57 00 00 00 00
+```
+
+| Campo (`IT8297Report`) | Valor | Observação |
+|---|---|---|
+| `product` | `0x01` | |
+| `device_num` | `0` | Bate com a entrada `B550M AORUS ELITE` do OpenRGB (`device_num` 0) |
+| `strip_detect` | `0x07` | Significado não documentado no OpenRGB |
+| `fw_ver` | `2.0.10.0` | |
+| `argb01/23/45_count` | `0x00` | Todas as fitas no limite de 32 LEDs (`LEDS_32`) |
+| `support_cmd_flag` | `0x00` | Bit `0x02` (LampArray) desligado: o OpenRGB não chamaria `EnableLampArray` |
+| `str_product` | `IT5702-GIGABYTE V2.0.10.0` | |
+| `cal_spare0` | `0x00020100` | |
+| `cal_strip0` | `0x00010002` | Bytes `02 00 01 00`, que é `GRB` na tabela `GigabyteCalibrationsLookup` |
+| `cal_strip1` | `0x00010002` | `GRB` |
+| `rgb_cali` | `0x00020100` | Bytes `00 01 02 00`, que é `BGR` |
+| `chip_id` | `0x57020100` | |
+| `cal_spare1` | `0x00000000` | |
+
+As cores das fitas de 12 V provavelmente usam a ordem `BGR` (`rgb_cali`) e as ARGB a ordem `GRB` (`cal_strip0/1`). A tabela do OpenRGB sugere isso, mas não foi confirmado na prática porque não há nada conectado.
 
 ## AORUS Waterforce X II (Castor3)
 

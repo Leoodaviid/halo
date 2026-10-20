@@ -6,7 +6,15 @@ Não é um clone da interface da Gigabyte nem uma camada sobre o OpenRGB. O halo
 
 ## Estado
 
-Fase de análise concluída em 2026-10-20. Ainda não há código. Veja:
+Fase de análise concluída em 2026-10-20. A Fase 1 começou: já existe uma ferramenta que lê a configuração da placa-mãe sem alterar nada.
+
+```sh
+cargo run -q -p halo-cli -- probe it5702 --raw
+```
+
+Precisa do Rust estável (rustup). Licença: GPL-2.0-or-later, porque a lógica de protocolo é portada do OpenRGB.
+
+Veja:
 
 - [docs/hardware.md](docs/hardware.md): inventário do hardware, protocolos e permissões.
 - [docs/architecture.md](docs/architecture.md): arquitetura proposta.

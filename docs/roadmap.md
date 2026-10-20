@@ -6,8 +6,8 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 
 ## Fase 1: placa-mãe (IT5702)
 
-1. Criar o workspace Rust (`cargo new`) e decidir a licença (GPL-2.0-or-later se portar código do OpenRGB).
-2. Ferramenta só de leitura: enviar `CC 60`, ler o feature report e mostrar produto, firmware, contagem de LEDs por fita e chip id.
+1. ~~Criar o workspace Rust e decidir a licença.~~ Feito em 2026-10-20: workspace `crates/halo-core` + `crates/halo-cli`, GPL-2.0-or-later.
+2. ~~Ferramenta só de leitura (`CC 60`).~~ Feito em 2026-10-20: `halo probe it5702 --raw`. Valores lidos em [hardware.md](hardware.md).
 3. Cor estática por zona (`D_LED1`, `D_LED2`, `LED_C1`, `LED_CPU`, `LED_C2`) e ligar/desligar.
 4. Efeitos nativos do controlador.
 
@@ -34,5 +34,7 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 Só se decidirmos liberar o SMBus com `acpi_enforce_resources=lax`. Kingston Fury DDR4, endereço `0x58`.
 
 ## Perguntas em aberto
+
+- A placa não tem nenhuma fita RGB conectada. Como validar visualmente os comandos de cor da Fase 1 (itens 3 e 4)?
 
 - Quais efeitos do RGB Fusion 2.0 são indispensáveis?

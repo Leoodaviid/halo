@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+//! Núcleo do halo: descoberta de dispositivos HID e protocolos dos controladores.
+
+pub mod hid;
+pub mod it5702;
