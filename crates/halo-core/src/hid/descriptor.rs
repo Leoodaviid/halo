@@ -29,6 +29,15 @@ pub fn parse_hid_id(uevent: &str) -> Option<HidId> {
     })
 }
 
+/// Extrai o `HID_NAME` de um `uevent`, se existir e não for vazio.
+pub fn parse_hid_name(uevent: &str) -> Option<String> {
+    let name = uevent
+        .lines()
+        .find_map(|line| line.strip_prefix("HID_NAME="))?
+        .trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
 /// Usage Page em vigor quando cada coleção de topo abre, na ordem do descritor.
 ///
 /// Não é um parser HID completo: só acompanha a Usage Page global e a
@@ -112,6 +121,14 @@ mod tests {
                 product: 0x5702
             })
         );
+    }
+
+    #[test]
+    fn hid_name() {
+        let uevent = "HID_ID=0003:00001044:00007A4D\nHID_NAME=ITE Tech. Castor3\n";
+        assert_eq!(parse_hid_name(uevent).as_deref(), Some("ITE Tech. Castor3"));
+        assert_eq!(parse_hid_name("HID_NAME=\n"), None);
+        assert_eq!(parse_hid_name("HID_ID=0003:00001044:00007A4D\n"), None);
     }
 
     #[test]

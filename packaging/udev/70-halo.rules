@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Regras udev do halo: liberam ao usuário da sessão local só os hidraw que o
+# halo usa. O prefixo 70 fica antes de 73-seat-late.rules, que aplica a tag
+# uaccess. Instalação em docs/permissions.md.
+
+# Placa-mãe Gigabyte, controlador RGB ITE IT5702
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="5702", TAG+="uaccess"
+
+# AORUS Waterforce, controlador Castor3
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1044", ATTRS{idProduct}=="7a4d", TAG+="uaccess"
