@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::descriptor::{parse_hid_id, top_level_usage_pages};
+use super::descriptor::{parse_hid_id, parse_hid_name, top_level_usage_pages};
 
 /// Diretório do sysfs com uma entrada por hidraw.
 pub const SYSFS_HIDRAW: &str = "/sys/class/hidraw";
@@ -28,6 +28,8 @@ pub struct HidDeviceInfo {
     pub devnode: PathBuf,
     pub vendor: u16,
     pub product: u16,
+    /// `HID_NAME` do `uevent`, por exemplo `ITE Tech. Castor3`.
+    pub hid_name: Option<String>,
     pub usage_pages: Vec<u16>,
 }
 
@@ -72,6 +74,7 @@ pub fn find_devices(sysfs_root: &Path, wanted: DeviceMatch) -> io::Result<Vec<Hi
             name,
             vendor: id.vendor,
             product: id.product,
+            hid_name: parse_hid_name(&uevent),
             usage_pages,
         });
     }

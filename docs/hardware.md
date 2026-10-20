@@ -90,7 +90,7 @@ As cores das fitas de 12 V provavelmente usam a ordem `BGR` (`rgb_cali`) e as AR
 |---|---|
 | USB | `1044:7a4d` (VID da Holtek, usado pela Gigabyte nos periféricos AORUS), "ITE Tech. Castor3", bcdDevice `0200` |
 | hidraw | `/dev/hidraw2` |
-| Permissão | `crw-------`, só root. Precisa de regra udev |
+| Permissão | `crw-------` sem regra. Com a `70-halo.rules`, `rw` para o usuário da sessão |
 | Modelo | Waterforce X II **240** (confirmado pelo usuário) |
 
 Descritor HID: página de uso `0x0000`, uso `0x0002`, report ID `0x99`, entrada de 255 bytes e saída de 6143 bytes.
@@ -135,7 +135,22 @@ Protocolo do kernel (output report `0x99` de 6144 bytes, input report filtrado p
 
 O driver não controla velocidade: o duty é só leitura. Não há protocolo documentado para mudar fan ou bomba.
 
-**Modelo em dúvida.** O usuário confirmou X II 240, e o descritor HID bate com o driver X II do OpenRGB. Mas o VID:PID é o que o kernel registra para a primeira geração. Antes de usar o protocolo do anel do OpenRGB, confirmar se o firmware responde ao `DE 00` como o X II (change `waterforce-read-probe`).
+**Modelo em dúvida.** O usuário confirmou X II 240, e o descritor HID bate com o driver X II do OpenRGB. Mas o VID:PID é o que o kernel registra para a primeira geração.
+
+### Probe de firmware com `halo probe waterforce` (2026-10-20)
+
+Comandos enviados: só `99 D6` (do kernel) e `99 DE 00` (do OpenRGB), cada um como output report de 6144 bytes completado com zeros. Nada mudou no anel, na tela, na fan nem na bomba.
+
+| Pedido | Resposta (primeiros bytes; o resto é zero) | Interpretação |
+|---|---|---|
+| `99 D6` | `99 d6 01 06` | Firmware 16 no formato do kernel (`1 * 10 + 6`), provavelmente 1.6 |
+| `99 DE 00` | `99 de 00` | Versão 0. No X II 360, o OpenRGB registra `de 02` |
+
+A resposta ao `DE` não prova que o aparelho entende esse comando: o firmware pode só repetir o byte do comando seguido de zeros. **A compatibilidade com o protocolo do anel do OpenRGB (`c9`/`cd`/`b0`–`b3`/`b6`) não está confirmada**, e esses comandos não devem ser enviados antes de uma análise do GIGABYTE Control Center com o REA. A versão 0 no `DE` e o PID da primeira geração fazem pensar mais no Waterforce X do kernel do que no X II 360 do OpenRGB.
+
+### RGB das fans
+
+As fans do Waterforce têm RGB, e hoje ficam num modo aleatório (ciclo). Nenhuma fita RGB está ligada à placa-mãe, então o RGB das fans é controlado pelo próprio Waterforce. O protocolo para isso não está documentado.
 
 ## Mouse Logitech G502 SE HERO
 
@@ -171,7 +186,7 @@ Não existe protocolo documentado para este modelo. O único caminho seguro é a
 
 Em `/etc/udev/rules.d/60-openrgb.rules` (instalado em 2026-10-17, junto com o OpenRGB) há `TAG+="uaccess"` para o IT5702 (`048d:5702`) e o mouse (`046d:c08b`). É por isso que eles abrem sem root. O mesmo arquivo dá `uaccess` a **todos** os `i2c-*`. Não há regra para o Castor3 (`1044:7a4d`) nem para o teclado.
 
-O halo vai ter uma regra própria só para o que usa (change `waterforce-read-probe`).
+O halo tem uma regra própria, [`packaging/udev/70-halo.rules`](../packaging/udev/70-halo.rules), só para o IT5702 e o Castor3. Ela foi instalada em 2026-10-20 e, desde então, o `/dev/hidraw` do Castor3 tem `rw` para o usuário. Ver [permissions.md](permissions.md).
 
 ## RAM Kingston Fury DDR4 (adiada)
 

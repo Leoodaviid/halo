@@ -18,11 +18,13 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 3. Extensão GNOME Shell com o ícone na barra e o painel.
 4. Serviço `systemd --user` para reaplicar o perfil no login.
 
-## Fase 3: Waterforce X II
+## Fase 3: Waterforce
 
-1. Regra udev para liberar `1044:7a4d` ao usuário.
-2. Anel RGB com o protocolo do driver Castor3, primeiro só leitura (firmware).
-3. Tela LCD: analisar o GIGABYTE Control Center com o REA para descobrir como as imagens são enviadas.
+1. ~~Regra udev para liberar `1044:7a4d` ao usuário.~~ Feito em 2026-10-20: `packaging/udev/70-halo.rules`.
+2. ~~Telemetria e leitura de firmware.~~ Feito em 2026-10-20: `halo telemetry waterforce` e `halo probe waterforce`. O firmware não confirmou a compatibilidade com o protocolo de anel do OpenRGB (ver [hardware.md](hardware.md)).
+3. Analisar o GIGABYTE Control Center com o REA: protocolo de cor do anel e das fans, controle de velocidade da fan e da bomba, e envio de imagens para a tela LCD.
+4. Cor e efeitos do anel e das fans, com o protocolo confirmado no passo 3.
+5. Controle de velocidade e tela LCD, se o passo 3 mostrar como.
 
 ## Fase 4: periféricos
 
@@ -36,5 +38,6 @@ Só se decidirmos liberar o SMBus com `acpi_enforce_resources=lax`. Kingston Fur
 ## Perguntas em aberto
 
 - A placa não tem nenhuma fita RGB conectada. Como validar visualmente os comandos de cor da Fase 1 (itens 3 e 4)?
+- O Waterforce é um X II 240 ou um Waterforce X 240 da primeira geração? O PID e a resposta ao `DE` apontam para a primeira.
 
 - Quais efeitos do RGB Fusion 2.0 são indispensáveis?

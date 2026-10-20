@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-//! Feature reports por `/dev/hidrawN`, com os ioctls `HIDIOCSFEATURE` e
-//! `HIDIOCGFEATURE` de `linux/hidraw.h`.
+//! Acesso a `/dev/hidrawN`: feature reports com os ioctls `HIDIOCSFEATURE` e
+//! `HIDIOCGFEATURE` de `linux/hidraw.h`, output reports com `write(2)` e
+//! input reports com `read(2)`.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Falha ao abrir um hidraw.
 #[derive(Debug)]
@@ -87,6 +89,41 @@ impl Hidraw {
         self.ioctl(hidiocgfeature(buf.len()), buf)
     }
 
+    /// Envia um output report. `data[0]` é o report ID.
+    /// Um `write` que não aceita o pacote inteiro vira erro.
+    pub fn write_output_report(&self, data: &[u8]) -> io::Result<()> {
+        let n = (&self.file).write(data)?;
+        if n != data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!("output report curto: {n} de {} bytes", data.len()),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Espera até `timeout` por um input report e o lê em `buf`.
+    /// Devolve `None` se o prazo vencer sem dados.
+    pub fn read_input_report(
+        &self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> io::Result<Option<usize>> {
+        let mut pfd = libc::pollfd {
+            fd: self.file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+        // SAFETY: `pfd` é um único pollfd válido durante a chamada.
+        let res = unsafe { libc::poll(&mut pfd, 1, ms) };
+        match res {
+            r if r < 0 => Err(io::Error::last_os_error()),
+            0 => Ok(None),
+            _ => (&self.file).read(buf).map(Some),
+        }
+    }
+
     fn ioctl(&self, request: u64, buf: &mut [u8]) -> io::Result<usize> {
         // SAFETY: `buf` é válido para `buf.len()` bytes, que é o tamanho
         // codificado no número do ioctl.
@@ -102,6 +139,52 @@ impl Hidraw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::FromRawFd;
+
+    /// Pipe com a ponta de leitura num `Hidraw`, para testar input reports.
+    fn pipe() -> (Hidraw, File) {
+        let mut fds = [0; 2];
+        // SAFETY: `fds` tem espaço para os dois descritores.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: os descritores acabaram de ser criados e têm dono único.
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        (Hidraw { file: read }, write)
+    }
+
+    #[test]
+    fn input_report_com_prazo_vencido() {
+        let (dev, _write) = pipe();
+        let mut buf = [0u8; 8];
+        let res = dev
+            .read_input_report(&mut buf, Duration::from_millis(20))
+            .unwrap();
+        assert_eq!(res, None);
+    }
+
+    #[test]
+    fn input_report_disponivel() {
+        let (dev, mut write) = pipe();
+        write.write_all(&[0x99, 0xD6, 0x02, 0x05]).unwrap();
+        let mut buf = [0u8; 8];
+        let n = dev
+            .read_input_report(&mut buf, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(n, Some(4));
+        assert_eq!(&buf[..4], &[0x99, 0xD6, 0x02, 0x05]);
+    }
+
+    #[test]
+    fn output_report_inteiro() {
+        let mut fds = [0; 2];
+        // SAFETY: como em `pipe()`, mas com o `Hidraw` na ponta de escrita.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (mut read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        let dev = Hidraw { file: write };
+        dev.write_output_report(&[0x99, 0xD6, 0x00]).unwrap();
+        let mut buf = [0u8; 3];
+        read.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [0x99, 0xD6, 0x00]);
+    }
 
     #[test]
     fn numeros_dos_ioctls() {

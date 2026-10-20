@@ -6,11 +6,15 @@ Não é um clone da interface da Gigabyte nem uma camada sobre o OpenRGB. O halo
 
 ## Estado
 
-Fase de análise concluída em 2026-10-20. A Fase 1 começou: já existe uma ferramenta que lê a configuração da placa-mãe sem alterar nada.
+Fase de análise concluída em 2026-10-20. Já existem ferramentas que só leem, sem alterar nada:
 
 ```sh
-cargo run -q -p halo-cli -- probe it5702 --raw
+cargo run -q -p halo-cli -- probe it5702 --raw          # placa-mãe
+cargo run -q -p halo-cli -- telemetry waterforce         # fan, bomba e líquido
+cargo run -q -p halo-cli -- probe waterforce --raw      # firmware do Waterforce
 ```
+
+O probe do Waterforce precisa da regra udev do halo (ver [docs/permissions.md](docs/permissions.md)).
 
 Precisa do Rust estável (rustup). Licença: GPL-2.0-or-later, porque a lógica de protocolo é portada do OpenRGB.
 
@@ -25,7 +29,8 @@ Veja:
 | Dispositivo | Controlador | Situação |
 |---|---|---|
 | Placa-mãe Gigabyte B550M AORUS ELITE | ITE IT5702 (`048d:5702`), USB HID | Protocolo conhecido, acesso liberado |
-| AORUS Waterforce X II 240, anel RGB | Castor3 (`1044:7a4d`), USB HID | Protocolo conhecido, precisa de regra udev |
+| AORUS Waterforce X II 240, telemetria | Driver `gigabyte_waterforce` do kernel (hwmon) | Funciona, só leitura |
+| AORUS Waterforce X II 240, anel e fans RGB | Castor3 (`1044:7a4d`), USB HID | Protocolo do OpenRGB não confirmado neste firmware, investigar com REA |
 | AORUS Waterforce X II 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo desconhecido, investigar com REA |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |
