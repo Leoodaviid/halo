@@ -1,0 +1,17 @@
+[package]
+name = "halo-cli"
+description = "Linha de comando do halo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "halo"
+path = "src/main.rs"
+
+[dependencies]
+halo-core = { path = "../halo-core" }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

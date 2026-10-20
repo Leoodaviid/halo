@@ -1,32 +1,19 @@
 schema: spec-driven
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+context: |
+  Escrever todos os artefatos em português do Brasil.
+  Só enviar ao hardware comandos documentados em docs/hardware.md, no código do OpenRGB
+  (/mnt/workspace/tools/repos/openrgb, commit 72262b8) ou em análise feita com o REA.
+  Nada de testar bytes desconhecidos no hardware.
+  Todo dispositivo novo começa com uma ferramenta que só lê.
+  Encontrar dispositivos por VID:PID e usage page, nunca por /dev/hidrawN fixo.
+  O OpenRGB é só referência de protocolo, não dependência. Código portado dele exige GPL-2.0-or-later.
+  Teclado Redragon (258a:013b), RAM/SMBus e parâmetros de boot ficam fora do escopo sem pedido explícito.
+  Não usar comandos dos drivers Sino Wealth do OpenRGB no teclado Redragon.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+rules:
+  design:
+    - Citar a fonte de cada byte de protocolo usado (arquivo e função do OpenRGB, ou análise do REA)
+  tasks:
+    - Incluir uma task para atualizar docs/hardware.md quando a change descobrir algo novo sobre o hardware
+    - Tasks que enviam comandos ao hardware devem dizer qual comando e de onde ele vem
