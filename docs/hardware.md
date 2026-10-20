@@ -18,7 +18,7 @@ Levantamento feito em 2026-10-20, só com leitura do sistema (sysfs, `lsusb`, `l
 |---|---|
 | USB | `048d:5702`, "ITE Tech. Inc. ITE Device", bcdDevice `0001` |
 | hidraw | `/dev/hidraw5` (o número pode mudar entre boots; identificar pelo VID:PID) |
-| Permissão | `crw-rw----+`, ACL dá `rw` ao usuário `bumblebee`. Não precisa de root |
+| Permissão | `crw-rw----+`, ACL dá `rw` ao usuário `bumblebee`. Não precisa de root, mas só por causa do `60-openrgb.rules` (ver "Regras udev") |
 
 Descritor HID (bruto):
 
@@ -112,6 +112,31 @@ b6                                                aplica
 
 A tela LCD não está implementada no OpenRGB. A saída de 6 KB sugere que as imagens vão por esse canal. Investigar o GIGABYTE Control Center com o REA.
 
+### Driver do kernel e telemetria
+
+O Linux tem o driver `gigabyte_waterforce` (`drivers/hwmon/gigabyte_waterforce.c`, GPL-2.0+), registrado para `1044:7a4d` como *"Gigabyte AORUS WATERFORCE X240, X280 and X360"*, ou seja, a primeira geração, e não a X II. Ele está carregado e ligado ao nosso aparelho. Abre o HID com `HID_CONNECT_HIDRAW`, então o hidraw continua disponível.
+
+Ele expõe um hwmon `waterforce` (hoje `hwmon6`, só leitura para todos). Valores lidos em 2026-10-20:
+
+| Arquivo | Valor | Significado |
+|---|---|---|
+| `fan1_input` | 2204 | Fan, RPM |
+| `fan2_input` | 3030 | Bomba, RPM |
+| `pwm1` | 224 | Duty da fan (0–255) |
+| `pwm2` | 255 | Duty da bomba |
+| `temp1_input` | 29000 | Líquido, m°C |
+
+Protocolo do kernel (output report `0x99` de 6144 bytes, input report filtrado por `data[0] == 0x99` e `data[1] == comando`):
+
+| Pedido | Resposta |
+|---|---|
+| `99 DA` | Status: `data[2..4]` fan RPM (LE), `data[5..7]` bomba RPM (LE), `data[8]` duty fan, `data[9]` duty bomba, `data[0x0D]` temperatura °C |
+| `99 D6` | Firmware: `data[2] * 10 + data[3]` |
+
+O driver não controla velocidade: o duty é só leitura. Não há protocolo documentado para mudar fan ou bomba.
+
+**Modelo em dúvida.** O usuário confirmou X II 240, e o descritor HID bate com o driver X II do OpenRGB. Mas o VID:PID é o que o kernel registra para a primeira geração. Antes de usar o protocolo do anel do OpenRGB, confirmar se o firmware responde ao `DE 00` como o X II (change `waterforce-read-probe`).
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.
@@ -141,6 +166,12 @@ Isso indica que o teclado aceita configuração por software, provavelmente efei
 **Alto risco.** O OpenRGB desativou os drivers de teclado Sino Wealth com este aviso em `SinowealthControllerDetect.cpp`: *"Sinowealth keyboards are disabled due to VID/PID pairs being reused from Redragon keyboards, which ended up in bricking the latter"*. Ou seja, comandos de outros teclados Sino Wealth já inutilizaram teclados Redragon. Os drivers que existem usam um report `0x06` de 1032 bytes, que este teclado nem tem como feature report.
 
 Não existe protocolo documentado para este modelo. O único caminho seguro é analisar o software oficial da Redragon com o REA e só enviar o que for confirmado lá. Prioridade baixa.
+
+## Regras udev
+
+Em `/etc/udev/rules.d/60-openrgb.rules` (instalado em 2026-10-17, junto com o OpenRGB) há `TAG+="uaccess"` para o IT5702 (`048d:5702`) e o mouse (`046d:c08b`). É por isso que eles abrem sem root. O mesmo arquivo dá `uaccess` a **todos** os `i2c-*`. Não há regra para o Castor3 (`1044:7a4d`) nem para o teclado.
+
+O halo vai ter uma regra própria só para o que usa (change `waterforce-read-probe`).
 
 ## RAM Kingston Fury DDR4 (adiada)
 
