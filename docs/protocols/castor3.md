@@ -40,7 +40,7 @@ Os caminhos e os hashes completos estão em `/mnt/workspace/tools/samples/gigaby
 | Firmware | `99 D6` | `r[2].r[3]` (maior.menor) | `CoolerDataApi.GetXiiFwVersion` (AorusLcdService, usado no X II) e o kernel | confirmado no X II e no kernel; no GCC o 7A4D lê o firmware por `GvLedGetDeviceFWVersion`, que é nativo |
 | RPM | `99 DA` | fan = `r[2] \| r[3]<<8 \| r[4]<<16`; bomba = `r[5] \| r[6]<<8 \| r[7]<<16` | `DeviceApi.GetRPMSpeed` | confirmado, e confere com o kernel |
 | Modo de velocidade | `99 DD` | `r[2]` modo da fan, `r[3]` modo da bomba (ver [enum](#speedmode)); o valor 3 é lido como 0 | `DeviceApi.GetMode` | confirmado |
-| Curva | `99 D9 <tipo>` | 4 pontos: temperatura `r[4+3i]`, RPM `r[5+3i]<<8 \| r[6+3i]` (big-endian) | `DeviceApi.GetSpeedCurve` (privado) | confirmado |
+| Curva | `99 D9 <tipo>` | 4 pontos: temperatura `r[4+3i]`, RPM `r[5+3i]<<8 \| r[6+3i]` (big-endian); é o slot Customized guardado, e não a curva ativa | `DeviceApi.GetSpeedCurve` (privado) | confirmado; slot Customized confirmado no aparelho |
 | Quantidade de fans RGB | `99 C7` | `r[2]` | `DeviceApi.GetFanQty` | confirmado |
 | Progresso de gravação | `99 C2` | `r[2]` em % | `LcdApi.GetFlashPercent`; só com firmware ≥ 2.0 (abaixo disso o GCC assume 100 %) | confirmado |
 
@@ -53,9 +53,9 @@ Os caminhos e os hashes completos estão em `/mnt/workspace/tools/samples/gigaby
 
 | Comando | Bytes | Fonte | Confiança |
 |---|---|---|---|
-| Definir modo | `99 E5 <tipo> <modo> 00` | `DeviceApi.SetSpeedMode` | confirmado |
+| Definir modo | `99 E5 <tipo> <modo> 00` | `DeviceApi.SetSpeedMode` | confirmado no aparelho: vale sem o `B6`, mas só até desligar |
 | Definir curva | `99 E6 00 <tipo>` e 4 pontos `<temp °C> <rpm_hi> <rpm_lo>` a partir do byte 4; pacote de 84 bytes | `DeviceApi.SetSpeedCurve` | confirmado |
-| Salvar | `99 B6` | `DeviceApi.Save` e `LcdApi.Save` | confirmado |
+| Salvar | `99 B6` | `DeviceApi.Save` e `LcdApi.Save` | confirmado no aparelho: persiste o modo depois de desligar com corte de energia |
 
 `<tipo>` vem do `SpeedType`: `1` fan e `2` bomba.
 
@@ -78,6 +78,10 @@ As curvas pré-definidas que o GCC mostra quando o modo não é Customized são 
 | 5 Performance | 2000 / 2000 / 2200 / 2500 | — |
 | 6 Quiet | 900 / 900 / 1400 / 1600 | — |
 | 7 ZeroRPM | 0 ×4 | — |
+
+Para o X 280 e o X 360, o GCC usa o `FanApi.dcX280_360` na fan, com a mesma tabela da bomba. Ele só muda o Performance, que é 1800 / 1800 / 1800 / 2500. Os outros modos são iguais aos do 240. O GCC escolhe a tabela do 240 quando o nome do modelo contém "240". O `FanApi.dc240_280_360`, com Quiet em 950, é de outro produto e não é usado para o `0x7A4D`.
+
+O `D9` lê o **slot Customized** guardado no aparelho, e não a curva ativa. Isso bate com o `DeviceApi.GetSpeedCurve`, que só chama o `D9` quando o modo é Customized. Foi **confirmado no aparelho** (change `waterforce-speed-mode`): o `D9` não mudou depois de nenhum preset, e o RPM seguiu o preset. As tabelas acima são só da interface: o firmware usa as dele, e o Default chegou a duty 255. O RPM medido em cada preset está em `docs/hardware.md`.
 
 A temperatura de referência da curva é provavelmente a do líquido, que é o sensor do aparelho (`DA`). Isso é **inferido**: o código não diz.
 
@@ -232,7 +236,7 @@ Isso confirma o layout do GCC: o byte 3 do `C9` (`04`) mudou o ritmo, e o byte 2
 ### Não analisado
 
 - `dllexp_GvSetRealTimeColor`, usado pela sincronização com outros dispositivos do GCC, despacha por um método virtual da classe do dispositivo. Não é necessário para cor fixa e efeitos.
-- Se o `B6` grava na flash a cada chamada. O GCC manda `B6` em toda aplicação de LED, de velocidade e de LCD. Por prudência, o halo não deve enviá-lo em laço.
+- Se o `B6` grava na flash a cada chamada. O GCC manda `B6` em toda aplicação de LED, de velocidade e de LCD. Na velocidade, ele é o que faz o modo sobreviver ao desligamento (confirmado no aparelho), mas o desgaste por chamada não é conhecido. Por prudência, o halo não deve enviá-lo em laço.
 
 ## Reprodução da análise nativa
 

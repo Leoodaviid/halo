@@ -3,11 +3,13 @@
 //! AORUS Waterforce com controlador Castor3 (`1044:7a4d`).
 //!
 //! A telemetria vem do hwmon do driver `gigabyte_waterforce` do Linux, sem
-//! nenhum comando do halo. O probe usa o hidraw só com pedidos de leitura, e o
-//! `led` escreve só os comandos de LED da `GcLedLib.dll` do GCC.
+//! nenhum comando do halo. O probe usa o hidraw só com pedidos de leitura, o
+//! `led` escreve só os comandos de LED da `GcLedLib.dll` do GCC, e o `speed`
+//! escreve só os presets de velocidade do `ucCooler.dll`.
 
 pub mod led;
 pub mod probe;
+pub mod speed;
 pub mod telemetry;
 
 use std::path::Path;
