@@ -84,14 +84,14 @@ Comando enviado: só `CC 60` + 62 zeros (set feature report de 64 bytes), seguid
 
 As cores das fitas de 12 V provavelmente usam a ordem `BGR` (`rgb_cali`) e as ARGB a ordem `GRB` (`cal_strip0/1`). A tabela do OpenRGB sugere isso, mas não foi confirmado na prática porque não há nada conectado.
 
-## AORUS Waterforce X II (Castor3)
+## AORUS Waterforce X 240 (Castor3)
 
 | Item | Valor |
 |---|---|
 | USB | `1044:7a4d` (VID da Holtek, usado pela Gigabyte nos periféricos AORUS), "ITE Tech. Castor3", bcdDevice `0200` |
 | hidraw | `/dev/hidraw2` |
 | Permissão | `crw-------` sem regra. Com a `70-halo.rules`, `rw` para o usuário da sessão |
-| Modelo | Waterforce X II **240** (confirmado pelo usuário) |
+| Modelo | Waterforce X **240**, primeira geração (tabela de dispositivos do GCC; o usuário tinha informado X II 240) |
 
 Descritor HID: página de uso `0x0000`, uso `0x0002`, report ID `0x99`, entrada de 255 bytes e saída de 6143 bytes.
 
@@ -110,7 +110,7 @@ b6                                                aplica
 - Estilos: `01` estático, `02` pulso, `03` ciclo, `04` flash, `05` flash duplo, `06` gradiente, `07` transição, `08` onda, `0A` arco-íris, `0B` três cores, `0C` giro, `0D` alternância.
 - Velocidade de 1 a 5 (no fio vai `velocidade * 20`), brilho de 1 a 10.
 
-A tela LCD não está implementada no OpenRGB. A saída de 6 KB sugere que as imagens vão por esse canal. Investigar o GIGABYTE Control Center com o REA.
+A tela LCD não está implementada no OpenRGB. O GCC envia arquivos para a flash do aparelho em pedaços de 6141 bytes (ver [protocols/castor3.md](protocols/castor3.md)).
 
 ### Driver do kernel e telemetria
 
@@ -133,9 +133,9 @@ Protocolo do kernel (output report `0x99` de 6144 bytes, input report filtrado p
 | `99 DA` | Status: `data[2..4]` fan RPM (LE), `data[5..7]` bomba RPM (LE), `data[8]` duty fan, `data[9]` duty bomba, `data[0x0D]` temperatura °C |
 | `99 D6` | Firmware: `data[2] * 10 + data[3]` |
 
-O driver não controla velocidade: o duty é só leitura. Não há protocolo documentado para mudar fan ou bomba.
+O driver não controla velocidade: o duty é só leitura. O protocolo de velocidade está no GCC (`99 E5`, `99 E6`, `99 B6`; ver abaixo).
 
-**Modelo em dúvida.** O usuário confirmou X II 240, e o descritor HID bate com o driver X II do OpenRGB. Mas o VID:PID é o que o kernel registra para a primeira geração.
+**Modelo confirmado: Waterforce X (primeira geração).** A tabela de dispositivos do próprio GIGABYTE Control Center 26.09.10.01 (`Device.ini` e o INI do módulo `GBT_Cooler_26.08.24.01`) registra `[1044_7A4D] ModelName=GP-AORUS WATERFORCE X`. O X II é só `[0414_7A5E] ModelName=GP-AORUS WATERFORCE X II`, sem variante 240 com outro PID. O GCC ainda suporta o `1044:7A4D`: o `ucCooler.dll` carrega `VID_1044&PID_7A4D`. Análise completa na change `waterforce-protocol-analysis`.
 
 ### Probe de firmware com `halo probe waterforce` (2026-10-20)
 
@@ -144,13 +144,24 @@ Comandos enviados: só `99 D6` (do kernel) e `99 DE 00` (do OpenRGB), cada um co
 | Pedido | Resposta (primeiros bytes; o resto é zero) | Interpretação |
 |---|---|---|
 | `99 D6` | `99 d6 01 06` | Firmware 16 no formato do kernel (`1 * 10 + 6`), provavelmente 1.6 |
-| `99 DE 00` | `99 de 00` | Versão 0. No X II 360, o OpenRGB registra `de 02` |
+| `99 DE 00` | `99 de 00` | Modelo 0 = **X 240**, segundo o GCC (`DeviceApi.GetDeviceModelName`). O OpenRGB lê o byte como versão |
 
-A resposta ao `DE` não prova que o aparelho entende esse comando: o firmware pode só repetir o byte do comando seguido de zeros. **A compatibilidade com o protocolo do anel do OpenRGB (`c9`/`cd`/`b0`–`b3`/`b6`) não está confirmada**, e esses comandos não devem ser enviados antes de uma análise do GIGABYTE Control Center com o REA. A versão 0 no `DE` e o PID da primeira geração fazem pensar mais no Waterforce X do kernel do que no X II 360 do OpenRGB.
+O `D6` dá firmware **1.6**, e o `DE` identifica o modelo como X 240. Os comandos de anel do OpenRGB (`c9`/`cd`/`b0`–`b3`/`b6`) são os mesmos que a `GcLedLib.dll` do GCC envia para o 7A4D, mas o OpenRGB troca os bytes 2 e 3 do `c9`: no GCC, o byte 2 é o brilho e o byte 3 é a velocidade. Vale o layout do GCC (ver [protocols/castor3.md](protocols/castor3.md#anel-e-rgb-das-fans)).
+
+### Protocolo segundo o GIGABYTE Control Center (2026-10-20)
+
+Análise estática do `ucCooler.dll` e do `AorusLcdService.exe` (GCC 26.09.10.01, decompilados com o ilspycmd e triados com o REA). Detalhes, fontes e grau de confiança em [protocols/castor3.md](protocols/castor3.md). Nenhum desses comandos foi enviado ao aparelho.
+
+| Função | Comandos | Situação |
+|---|---|---|
+| Identificação e status | `DE` modelo, `D6` firmware, `DA` RPM, `DD` modo, `D9` curva, `C7` nº de fans RGB, `C2` progresso de gravação | confirmados no código; `DE` e `D6` também no aparelho |
+| Velocidade | `E5 <tipo> <modo>`, `E6` curva de 4 pontos, `B6` salvar | confirmados no código |
+| LCD 320×320 | `E7`/`E8` modo, `E2`/`DF` itens, `E4`/`EA` cores, `FB`/`FC` carrossel, `F1`/`F2` envio de arquivo (JPEG, PNG ou MP4 H.264), `FA` espaço livre, `F0`/`F3`–`F6`/`FD` lista de mídia, `FE` apagar, `E0`/`E1` dados de CPU | confirmados no código; formato do arquivo inferido |
+| Anel e RGB das fans | `C9 <efeito> <brilho×10> <velocidade×2> 02 01`, `CD R G B`, `B0`–`B3` paleta, `B6` aplicar; `C8 <n>` nº de fans | confirmados na `GcLedLib.dll` (Ghidra); anel e fans no mesmo canal (inferido) |
 
 ### RGB das fans
 
-As fans do Waterforce têm RGB, e hoje ficam num modo aleatório (ciclo). Nenhuma fita RGB está ligada à placa-mãe, então o RGB das fans é controlado pelo próprio Waterforce. O protocolo para isso não está documentado.
+As fans do Waterforce têm RGB, e hoje ficam num modo aleatório (ciclo). Nenhuma fita RGB está ligada à placa-mãe, então o RGB das fans é controlado pelo próprio Waterforce. No GCC, as fans e o anel recebem a mesma configuração (uma região só, `nArea = 1`). A única coisa separada é a quantidade de fans RGB (`99 C8 <n>`, de 1 a 8), que aparece só no 7A4D.
 
 ## Mouse Logitech G502 SE HERO
 
