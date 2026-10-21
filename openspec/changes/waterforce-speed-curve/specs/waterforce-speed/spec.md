@@ -70,8 +70,15 @@ O RPM de cada ponto da curva da bomba SHALL ficar entre 2600 e 2800. O mínimo �
 - **WHEN** um ponto da bomba tem 3150 RPM
 - **THEN** o sistema recusa a curva e sugere o modo pronto Turbo para rotação máxima
 
+### Requirement: Curva sem salvar
+O subcomando de curva SHALL oferecer uma opção experimental que envia os dois `E5` e o `E6` sem o `B6` e avisa que o efeito e a persistência dessa forma não estão confirmados. O snapshot é gravado do mesmo jeito, e a validação da curva é a mesma.
+
+#### Scenario: Curva da fan sem B6
+- **WHEN** o `DD` responde `99 DD 05 04` e o usuário grava na fan a curva 0 °C 1000, 30 °C 1000, 50 °C 1500, 80 °C 2500 RPM com a opção sem salvar
+- **THEN** depois do `DE 00` e do snapshot, o sistema envia `99 E5 01 01 00`, `99 E5 02 04 00` e `99 E6 00 01 00 03 E8 1E 03 E8 32 05 DC 50 09 C4`, e nenhum `B6`
+
 ### Requirement: Simulação da curva
-O subcomando de curva SHALL oferecer uma simulação que valida a curva e mostra em hexadecimal o `E5` do lado da curva, o `E6` e o `B6`, sem abrir nem procurar o hidraw e sem gravar snapshot. Como o modo do outro lado só é conhecido lendo o `DD`, a simulação indica que o `E5` daquele lado repetirá o modo lido na gravação.
+O subcomando de curva SHALL oferecer uma simulação que valida a curva e mostra em hexadecimal o `E5` do lado da curva, o `E6` e, sem a opção sem salvar, o `B6`, sem abrir nem procurar o hidraw e sem gravar snapshot. Como o modo do outro lado só é conhecido lendo o `DD`, a simulação indica que o `E5` daquele lado repetirá o modo lido na gravação.
 
 #### Scenario: Simulação
 - **WHEN** o usuário simula a curva da fan 0:1000, 30:1000, 50:1500, 80:2500
