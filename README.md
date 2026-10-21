@@ -56,6 +56,27 @@ halo led waterforce static --color ff6600 --dry-run           # só mostra os pa
 
 O protocolo não tem leitura do estado do LED, então o modo de fábrica não pode ser restaurado com exatidão. `cycle` e `rainbow` são os mais próximos. Códigos de saída: 2 para argumento inválido, 3 para aparelho não encontrado, 4 para falta de permissão (instale a regra udev) e 5 para falha de comunicação ou modelo desconhecido.
 
+### Velocidade do Waterforce
+
+`halo speed waterforce` lê e escolhe o modo da fan e da bomba, só com os presets do firmware e os comandos do GIGABYTE Control Center (`E5` e `B6`, ver [docs/protocols/castor3.md](docs/protocols/castor3.md)):
+
+```sh
+halo speed waterforce status                                  # só leitura: DE 00, DD, D9 01, D9 02
+halo speed waterforce set --fan quiet                         # a bomba mantém o modo atual
+halo speed waterforce set --fan performance --pump turbo
+halo speed waterforce set --fan quiet --pump turbo --dry-run  # só mostra os pacotes
+halo speed waterforce restore                                 # volta ao estado de antes da última escrita
+halo speed waterforce restore --original                      # volta ao estado de antes da primeira escrita
+```
+
+- Fan: `default`, `quiet`, `balanced`, `performance` e `turbo`. Bomba: `balanced` e `turbo`. ZeroRPM, FixedRPM, Customized e Quiet na bomba são recusados.
+- O `set` sempre envia os dois `E5`, fan e bomba, como o GCC. O lado não informado repete o modo lido no aparelho.
+- O `status` mostra a curva do `D9` como o slot Customized guardado no aparelho. Ela só é a curva ativa quando o modo é Customized. Para os presets, ele mostra a tabela que a interface do GCC exibe, que não é lida do aparelho.
+- `--no-save` (experimental) envia os `E5` sem o `B6`. Ainda não se sabe se o modo vale assim.
+- `--dry-run` exige `--fan` e `--pump` e não procura o aparelho nem grava snapshot.
+
+Antes de cada `set` ou `restore`, o halo grava o estado atual em `$XDG_STATE_HOME/halo/` (sem a variável, `~/.local/state/halo/`): `waterforce-speed.previous` é substituído a cada escrita, e `waterforce-speed.original` é gravado só na primeira e nunca mais alterado. Para começar um original novo, apague esse arquivo. Se a gravação falhar, nada é enviado. Dois `restore` seguidos alternam entre os dois últimos estados. Os códigos de saída são os mesmos do LED. O 2 vale também quando o modo atual do lado não informado é um que o halo não repete.
+
 Precisa do Rust estável (rustup). Licença: GPL-2.0-or-later, porque a lógica de protocolo é portada do OpenRGB.
 
 Veja:
@@ -71,6 +92,7 @@ Veja:
 | Placa-mãe Gigabyte B550M AORUS ELITE | ITE IT5702 (`048d:5702`), USB HID | Protocolo conhecido, acesso liberado |
 | AORUS Waterforce X 240, telemetria | Driver `gigabyte_waterforce` do kernel (hwmon) | Funciona, só leitura |
 | AORUS Waterforce X 240, anel e fans RGB | Castor3 (`1044:7a4d`), USB HID | Funciona: `halo led waterforce`, protocolo do GCC confirmado no aparelho |
+| AORUS Waterforce X 240, velocidade da fan e da bomba | Castor3 (`1044:7a4d`), USB HID | Funciona: `halo speed waterforce`, presets do firmware confirmados no aparelho; curva Customized pendente |
 | AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo analisado no GCC, implementação pendente |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |

@@ -171,12 +171,12 @@ O firmware 1.6 entende os pedidos de leitura do GCC. Com isso, a change segue pa
 
 ### Protocolo segundo o GIGABYTE Control Center (2026-10-20)
 
-Análise estática do `ucCooler.dll` e do `AorusLcdService.exe` (GCC 26.09.10.01, decompilados com o ilspycmd e triados com o REA). Detalhes, fontes e grau de confiança em [protocols/castor3.md](protocols/castor3.md). Desses, só os pedidos de leitura da seção anterior foram enviados ao aparelho.
+Análise estática do `ucCooler.dll` e do `AorusLcdService.exe` (GCC 26.09.10.01, decompilados com o ilspycmd e triados com o REA). Detalhes, fontes e grau de confiança em [protocols/castor3.md](protocols/castor3.md). Desses, os pedidos de leitura da seção anterior, os comandos de LED e o `E5`/`B6` de velocidade (seções abaixo) foram enviados ao aparelho.
 
 | Função | Comandos | Situação |
 |---|---|---|
 | Identificação e status | `DE` modelo, `D6` firmware, `DA` RPM, `DD` modo, `D9` curva, `C7` nº de fans RGB, `C2` progresso de gravação | confirmados no código; `DE`, `D6`, `DD`, `D9`, `C7` e `E8` também no aparelho |
-| Velocidade | `E5 <tipo> <modo>`, `E6` curva de 4 pontos, `B6` salvar | confirmados no código |
+| Velocidade | `E5 <tipo> <modo>`, `E6` curva de 4 pontos, `B6` salvar | confirmados no código; `E5` e `B6` também no aparelho (ver abaixo); `E6` nunca enviado |
 | LCD 320×320 | `E7`/`E8` modo, `E2`/`DF` itens, `E4`/`EA` cores, `FB`/`FC` carrossel, `F1`/`F2` envio de arquivo (JPEG, PNG ou MP4 H.264), `FA` espaço livre, `F0`/`F3`–`F6`/`FD` lista de mídia, `FE` apagar, `E0`/`E1` dados de CPU | confirmados no código; formato do arquivo inferido |
 | Anel e RGB das fans | `C9 <efeito> <brilho×10> <velocidade×2> 02 01`, `CD R G B`, `B0`–`B3` paleta, `B6` aplicar; `C8 <n>` nº de fans | confirmados na `GcLedLib.dll` (Ghidra); `C9`, `CD`, `B0`–`B3` e `B6` também no aparelho, com anel e fans no mesmo canal (ver abaixo); `C8` nunca enviado |
 
@@ -202,6 +202,35 @@ Conclusões:
 - O modo de fábrica é o `cycle` (efeito 03, brilho 10, velocidade 5). Para voltar a ele: `halo led waterforce cycle`.
 - O layout do GCC vale neste firmware: o byte 3 do `C9` é a velocidade (o `04` deixou o pulso lento), e não o brilho, como no OpenRGB.
 - Nenhum erro de escrita. Foram 6 `B6` no total nesta sessão.
+
+### Velocidade com `halo speed waterforce` (2026-10-20)
+
+Change `waterforce-speed-mode`, com o aval do usuário a cada escrita. Todos os `set` e `restore` mandaram antes `99 DE 00`, `99 DD`, `99 D9 01` e `99 D9 02` e gravaram o snapshot em `~/.local/state/halo/`. Comandos de escrita enviados: só `99 E5 01 <modo> 00`, `99 E5 02 <modo> 00` e `99 B6` (`DeviceApi.SetSpeedMode` e `Save`). Nenhum `E6`. O RPM e o duty vêm do hwmon (`halo telemetry waterforce --watch 3`), observados por ~30 s depois de cada envio. O líquido ficou em 25 °C o tempo todo.
+
+| Modo | `DD` | Duty | RPM observado | Tabela do GCC (30 °C) |
+|---|---|---|---|---|
+| Fan Quiet (6) | `06 ..` | 143 (56%) | 1221–1617 | 900 |
+| Fan Balanced (0) | `00 ..` | 184 (72%) | 1849–2046 | 1500 |
+| Fan Performance (5) | `05 ..` | 224 (88%) | 2013–2541, em geral ~2250 | 2000 |
+| Fan Turbo (4) | `04 ..` | 255 (100%) | 2508–2640 | 2500 |
+| Fan Default (2) | `02 ..` | 255 (100%) | ~2574 | 1200 |
+| Bomba Turbo (4) | `.. 04` | 255 (100%) | 3030–3299 | 3150 |
+| Bomba Balanced (0) | `.. 00` | 207 (81%) | 2620–2700 | 2600 |
+
+Resultados, todos **confirmados no aparelho**:
+- O `E5` vale **sem o `B6`**. Com `set --fan quiet --no-save` (só os dois `E5`), o duty da fan caiu de 224 para 143 já na primeira leitura, e o `DD` passou a `06 04`.
+- O `B6` **persiste o modo**. Com Performance/Turbo gravado por `E5` + `B6`, foi enviado Quiet só com `E5`. Depois de desligar o PC com corte de energia, o `DD` voltou a `05 04`, e a fan voltou a duty 224. O modo enviado sem `B6` vale até desligar e não fica na memória do aparelho.
+- O `D9` é o **slot Customized** guardado, e não a curva ativa. O `D9 01` (0/30/50/80 °C: 1000/1000/1500/2500) e o `D9 02` (2800 ×4) não mudaram depois de nenhum preset, e nenhum RPM medido ficou perto de 1000.
+- Cada preset tem o próprio duty, e a bomba aceita Balanced e Turbo.
+- O `restore` alternou entre os dois últimos estados (Turbo/Balanced ↔ Turbo/Turbo), e o `restore --original` voltou a Performance/Turbo sem mudar o arquivo `.original` (sha256 igual antes e depois).
+- Foram 9 `B6` de velocidade nesta sessão, sem erro de escrita.
+
+Observações ainda **não explicadas**:
+- O **Default** foi para duty 255, igual ao Turbo, e não para os ~1200 RPM da tabela do GCC. Não se sabe se o firmware trata o Default como "sem controle" ou se usa outra referência.
+- As tabelas da interface do GCC não são as do firmware. Quiet e Balanced ficaram uns 400 a 500 RPM acima delas a 25 °C.
+- Se o `B6` grava na flash a cada chamada. Ele persiste o modo, mas o desgaste por chamada não é conhecido. O halo continua sem enviá-lo em laço.
+
+Estado deixado no aparelho: fan Performance, bomba Turbo (`05 04`), o mesmo de antes da change.
 
 ## Mouse Logitech G502 SE HERO
 

@@ -535,20 +535,20 @@ pub fn apply(sys_root: &Path, setting: &LedSetting) -> Result<Applied, ApplyErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::waterforce::probe::OUT_SIZE;
     use crate::waterforce::probe::tests::Fake;
     use std::cell::RefCell;
 
     /// Input reports de um [`Fake`] e registro dos output reports.
-    struct FakeDevice {
+    pub(crate) struct FakeDevice {
         input: Fake,
-        written: RefCell<Vec<Vec<u8>>>,
+        pub(crate) written: RefCell<Vec<Vec<u8>>>,
     }
 
     impl FakeDevice {
-        fn new(reports: &[&[u8]]) -> Self {
+        pub(crate) fn new(reports: &[&[u8]]) -> Self {
             Self {
                 input: Fake::new(reports),
                 written: RefCell::new(Vec::new()),
@@ -557,7 +557,7 @@ mod tests {
 
         /// Confere que os pacotes escritos são `expected` (com o report ID,
         /// sem o preenchimento), cada um completado até 6144 bytes.
-        fn assert_written(&self, expected: &[&[u8]]) {
+        pub(crate) fn assert_written(&self, expected: &[&[u8]]) {
             let written = self.written.borrow();
             assert!(written.iter().all(|p| p.len() == OUT_SIZE));
             let expected: Vec<Vec<u8>> = expected.iter().map(|p| packet(&p[1..])).collect();

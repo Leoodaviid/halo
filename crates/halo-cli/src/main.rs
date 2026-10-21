@@ -6,12 +6,15 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser as _};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
 use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
 use halo_core::waterforce::probe::{
-    self as wf_probe, ProbeReport, ReadQuery, Reading, SpeedMode, model_name,
+    self as wf_probe, CurvePoint, ProbeReport, ReadQuery, Reading, SpeedMode, model_name,
+};
+use halo_core::waterforce::speed::{
+    self, FanPreset, PumpPreset, SetRequest, Side, SnapshotStore, SpeedError, SpeedStatus, Which,
 };
 use halo_core::waterforce::telemetry::{self, MIN_INTERVAL_SECS, Telemetry, TelemetryError};
 
@@ -42,6 +45,53 @@ enum Command {
     Led {
         #[command(subcommand)]
         device: LedDevice,
+    },
+    /// Lê e escolhe o modo de velocidade da fan e da bomba.
+    Speed {
+        #[command(subcommand)]
+        device: SpeedDevice,
+    },
+}
+
+#[derive(Subcommand)]
+enum SpeedDevice {
+    /// AORUS Waterforce (1044:7a4d), só com os presets do firmware.
+    Waterforce {
+        #[command(subcommand)]
+        action: WaterforceSpeed,
+    },
+}
+
+#[derive(Subcommand)]
+enum WaterforceSpeed {
+    /// Mostra os modos e o slot Customized. Envia só DE 00, DD, D9 01 e D9 02.
+    Status,
+    /// Aplica presets com E5 e um B6 no fim. Antes, grava o estado atual como
+    /// snapshot em $XDG_STATE_HOME/halo/. O lado não informado mantém o modo atual.
+    #[command(group(ArgGroup::new("side").required(true).multiple(true).args(["fan", "pump"])))]
+    Set {
+        /// Preset da fan.
+        #[arg(long, value_parser = PossibleValuesParser::new(FanPreset::NAMES)
+            .map(|s: String| FanPreset::from_name(&s).unwrap()))]
+        fan: Option<FanPreset>,
+        /// Preset da bomba.
+        #[arg(long, value_parser = PossibleValuesParser::new(PumpPreset::NAMES)
+            .map(|s: String| PumpPreset::from_name(&s).unwrap()))]
+        pump: Option<PumpPreset>,
+        /// Experimental: envia os E5 sem o B6. O efeito e a persistência dessa
+        /// forma não estão confirmados.
+        #[arg(long)]
+        no_save: bool,
+        /// Mostra os pacotes sem abrir o aparelho nem gravar snapshot. Exige
+        /// --fan e --pump.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Volta ao estado de antes da última escrita do halo.
+    Restore {
+        /// Volta ao estado de antes da primeira escrita do halo.
+        #[arg(long)]
+        original: bool,
     },
 }
 
@@ -171,7 +221,173 @@ fn main() -> ExitCode {
                 Err(e) => fail(&e, led_exit_code(&e)),
             }
         }
+        Command::Speed {
+            device: SpeedDevice::Waterforce { action },
+        } => speed_waterforce(sys, action),
     }
+}
+
+fn speed_waterforce(sys: &Path, action: WaterforceSpeed) -> ExitCode {
+    let store = || {
+        speed::state_dir()
+            .map(SnapshotStore::new)
+            .ok_or(SpeedError::NoStateDir)
+    };
+    let result = match action {
+        WaterforceSpeed::Status => match speed::status(sys) {
+            Ok(s) => {
+                print!("{}", format_speed_status(&s));
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => Err(e),
+        },
+        WaterforceSpeed::Set {
+            fan,
+            pump,
+            no_save,
+            dry_run,
+        } => {
+            let save = !no_save;
+            if dry_run {
+                let (Some(fan), Some(pump)) = (fan, pump) else {
+                    return fail(&"a simulação precisa de --fan e --pump", EXIT_USAGE);
+                };
+                let target = speed::Target {
+                    fan: fan.wire(),
+                    pump: pump.wire(),
+                    fan_curve: None,
+                    pump_curve: None,
+                };
+                print!("{}", format_packets(&target.packets(save)));
+                return ExitCode::SUCCESS;
+            }
+            if no_save {
+                eprintln!(
+                    "halo: aviso: --no-save é experimental; não se sabe se o modo vale sem o B6 nem se continua depois de desligar"
+                );
+            }
+            let request = SetRequest { fan, pump, save };
+            store().and_then(|store| speed::set(sys, &store, &request).map(|a| (store, a)))
+        }
+        WaterforceSpeed::Restore { original } => {
+            let which = if original {
+                Which::Original
+            } else {
+                Which::Previous
+            };
+            store().and_then(|store| speed::restore(sys, &store, which).map(|a| (store, a)))
+        }
+    };
+    match result {
+        Ok((store, applied)) => {
+            print!("{}", format_speed_applied(&store, &applied));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e, speed_exit_code(&e)),
+    }
+}
+
+fn speed_exit_code(err: &SpeedError) -> u8 {
+    match err {
+        SpeedError::NotFound | SpeedError::Open(OpenError::NotFound(_)) => EXIT_NOT_FOUND,
+        SpeedError::Open(OpenError::PermissionDenied(_)) => EXIT_PERMISSION,
+        SpeedError::NoSide | SpeedError::CurrentModeUnknown { .. } => EXIT_USAGE,
+        _ => EXIT_FAILURE,
+    }
+}
+
+fn format_curve(points: &[CurvePoint]) -> String {
+    let points: Vec<String> = points
+        .iter()
+        .map(|p| format!("{} °C {} RPM", p.celsius, p.rpm))
+        .collect();
+    points.join(", ")
+}
+
+fn format_speed_status(s: &SpeedStatus) -> String {
+    let st = &s.state;
+    let mut out = String::new();
+    let model = match model_name(st.model) {
+        Some(name) => format!("{name} [{}]", st.model),
+        None => format!("desconhecido [{}]", st.model),
+    };
+    let _ = writeln!(out, "Dispositivo:  {}", s.devnode.display());
+    let _ = writeln!(out, "Modelo:       {model}");
+    let _ = writeln!(
+        out,
+        "Fan:          {}",
+        format_speed_mode(SpeedMode(st.fan_mode))
+    );
+    let _ = writeln!(
+        out,
+        "Bomba:        {}",
+        format_speed_mode(SpeedMode(st.pump_mode))
+    );
+    for (side, mode, curve, query) in [
+        (Side::Fan, st.fan_mode, &st.fan_curve, "D9 01"),
+        (Side::Pump, st.pump_mode, &st.pump_curve, "D9 02"),
+    ] {
+        let mode = SpeedMode(mode);
+        let active = if mode.0 == speed::mode::CUSTOMIZED {
+            "ativo".to_owned()
+        } else {
+            format!(
+                "não ativo: a {} está em {}",
+                side.name(),
+                mode.name().unwrap_or("modo desconhecido")
+            )
+        };
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Slot Customized da {} ({query}), {active}:",
+            side.name()
+        );
+        let _ = writeln!(out, "  {}", format_curve(curve));
+        if let Some(reference) = speed::reference_curve(st.model, side, mode) {
+            let _ = writeln!(
+                out,
+                "Curva do preset {}, referência da interface do GCC (não lida do aparelho):",
+                mode.name().unwrap_or("?")
+            );
+            let _ = writeln!(out, "  {}", format_curve(&reference));
+        }
+    }
+    out
+}
+
+fn format_speed_applied(store: &SnapshotStore, a: &speed::Applied) -> String {
+    let w = &a.written;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Antes:  fan {}, bomba {}",
+        format_speed_mode(SpeedMode(w.before.fan_mode)),
+        format_speed_mode(SpeedMode(w.before.pump_mode))
+    );
+    let _ = writeln!(
+        out,
+        "Snapshot anterior: {}",
+        store.path(Which::Previous).display()
+    );
+    let created = if w.original_created {
+        " (criado agora)"
+    } else {
+        ""
+    };
+    let _ = writeln!(
+        out,
+        "Snapshot original: {}{created}",
+        store.path(Which::Original).display()
+    );
+    let _ = writeln!(
+        out,
+        "Enviado a {} ({}):",
+        a.devnode.display(),
+        model_name(w.before.model).unwrap_or("modelo desconhecido")
+    );
+    out.push_str(&format_packets(&w.packets));
+    out
 }
 
 fn parse_color(s: &str) -> Result<Rgb, String> {
@@ -321,13 +537,7 @@ fn format_reading(reading: Reading) -> String {
             format_speed_mode(fan),
             format_speed_mode(pump)
         ),
-        Reading::Curve(points) => {
-            let points: Vec<String> = points
-                .iter()
-                .map(|p| format!("{} °C {} RPM", p.celsius, p.rpm))
-                .collect();
-            points.join(", ")
-        }
+        Reading::Curve(points) => format_curve(&points),
         Reading::FanQty(n) => n.to_string(),
         Reading::LcdMode(mode) => format!("modo {mode}"),
     }
@@ -499,6 +709,74 @@ mod tests {
         assert_eq!(led_exit_code(&denied), EXIT_PERMISSION);
         assert_eq!(led_exit_code(&ApplyError::UnknownModel(5)), EXIT_FAILURE);
         assert_eq!(led_exit_code(&ApplyError::NoModelResponse), EXIT_FAILURE);
+    }
+
+    fn speed_status(fan: u8, pump: u8) -> SpeedStatus {
+        let points = |p: [(u8, u16); 4]| p.map(|(celsius, rpm)| CurvePoint { celsius, rpm });
+        SpeedStatus {
+            devnode: PathBuf::from("/dev/hidraw2"),
+            state: speed::Snapshot {
+                taken_unix: 0,
+                model: 0,
+                fan_mode: fan,
+                pump_mode: pump,
+                fan_curve: points([(0, 1000), (30, 1000), (50, 1500), (80, 2500)]),
+                pump_curve: points([(0, 2800), (30, 2800), (50, 2800), (80, 2800)]),
+            },
+        }
+    }
+
+    #[test]
+    fn status_com_presets() {
+        let out = format_speed_status(&speed_status(5, 4));
+        assert!(
+            out.contains("Modelo:       Waterforce X 240 [0]\n"),
+            "{out}"
+        );
+        assert!(out.contains("Fan:          Performance [5]\n"), "{out}");
+        assert!(out.contains("Bomba:        Turbo [4]\n"), "{out}");
+        assert!(out.contains(
+            "Slot Customized da fan (D9 01), não ativo: a fan está em Performance:\n  0 °C 1000 RPM, 30 °C 1000 RPM, 50 °C 1500 RPM, 80 °C 2500 RPM\n"
+        ), "{out}");
+        assert!(out.contains(
+            "Curva do preset Performance, referência da interface do GCC (não lida do aparelho):\n  0 °C 2000 RPM, 30 °C 2000 RPM, 50 °C 2200 RPM, 65 °C 2500 RPM\n"
+        ), "{out}");
+        assert!(
+            out.contains("Slot Customized da bomba (D9 02), não ativo: a bomba está em Turbo:")
+        );
+        assert!(out.contains("  0 °C 3150 RPM, 30 °C 3150 RPM, 50 °C 3150 RPM, 65 °C 3150 RPM\n"));
+        assert!(!out.contains(", ativo"));
+    }
+
+    #[test]
+    fn status_com_a_fan_em_customized() {
+        let out = format_speed_status(&speed_status(1, 4));
+        assert!(out.contains("Fan:          Customized [1]\n"), "{out}");
+        assert!(out.contains(
+            "Slot Customized da fan (D9 01), ativo:\n  0 °C 1000 RPM, 30 °C 1000 RPM, 50 °C 1500 RPM, 80 °C 2500 RPM\n"
+        ), "{out}");
+        // Sem tabela do GCC para a fan; só a da bomba.
+        assert_eq!(
+            out.matches("referência da interface do GCC").count(),
+            1,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn codigos_de_saida_da_velocidade() {
+        assert_eq!(speed_exit_code(&SpeedError::NotFound), EXIT_NOT_FOUND);
+        let denied = SpeedError::Open(OpenError::PermissionDenied(PathBuf::from("/dev/hidraw2")));
+        assert_eq!(speed_exit_code(&denied), EXIT_PERMISSION);
+        assert_eq!(speed_exit_code(&SpeedError::NoSide), EXIT_USAGE);
+        let unknown = SpeedError::CurrentModeUnknown {
+            side: Side::Pump,
+            raw: 3,
+        };
+        assert_eq!(speed_exit_code(&unknown), EXIT_USAGE);
+        assert_eq!(speed_exit_code(&SpeedError::UnknownModel(5)), EXIT_FAILURE);
+        let none = SpeedError::NoSnapshot(PathBuf::from("/x"));
+        assert_eq!(speed_exit_code(&none), EXIT_FAILURE);
     }
 
     #[test]
