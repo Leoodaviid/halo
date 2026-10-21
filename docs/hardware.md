@@ -318,6 +318,12 @@ hora     temp1   Tctl | b2..13 do DA
 - **Hipótese, não confirmada:** como byte com sinal, `e0` = −32 e `f0` = −16. Um termistor desconectado ou um ADC fora da faixa costuma dar uma leitura muito fria, o que encaixaria num valor-sentinela. O nibble baixo sempre em `0` aponta na mesma direção.
 - **Efeito no controle:** nenhum. A curva não usa o líquido como referência (ver "Curva Customized com `halo speed waterforce curve`"), a fan ficou no duty do preset, e a bomba seguiu o RPM pedido o tempo todo. Só a leitura ficou errada.
 
+**Como o halo trata o valor (change `waterforce-telemetry-sanity`, 2026-10-21).**
+- **Critério:** temperatura do líquido acima de **100 °C** (`temp1_input` > `100000`) é inválida. O limite é a constante `COOLANT_MAX_PLAUSIBLE_MILLICELSIUS` em `crates/halo-core/src/waterforce/telemetry.rs`. O valor bruto continua disponível.
+- **Por que 100 °C, e não o padrão `e0`/`f0`:** o padrão vem de uma hipótese (valor-sentinela) tirada de uma ocorrência só, e outro byte de erro (`c3`, por exemplo) passaria como 195 °C. O limite também não é 60 °C, a temperatura máxima de operação do líquido que a Asetek indica para AIOs (a Gigabyte não publica esse número para o Waterforce X). Um líquido entre 60 e 100 °C está fora da especificação, mas é possível, por exemplo com a bomba parada, e precisa aparecer como número. Acima de 100 °C, a água ferve, e o valor só pode ser erro do sensor.
+- **O que o `halo telemetry waterforce` mostra:** `Líquido:  inválido (o aparelho informou 224 °C)` no stdout, no lugar da temperatura, como o `FAULT` do `sensors` (lm-sensors). Uma nota sobre o corte de energia vai para o stderr, uma vez por execução, mesmo com `--watch`. Fan e bomba continuam sendo mostradas, e o código de saída continua 0.
+- **Limite:** um sensor travado num valor plausível (como `1f`) não é detectado.
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.

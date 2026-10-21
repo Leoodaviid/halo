@@ -18,7 +18,9 @@ use halo_core::waterforce::speed::{
     self, CurveRequest, FanPreset, PumpPreset, SetRequest, Side, SnapshotStore, SpeedError,
     SpeedStatus, Which,
 };
-use halo_core::waterforce::telemetry::{self, MIN_INTERVAL_SECS, Telemetry, TelemetryError};
+use halo_core::waterforce::telemetry::{
+    self, Coolant, MIN_INTERVAL_SECS, Telemetry, TelemetryError,
+};
 
 /// Controle de RGB do halo.
 #[derive(Parser)]
@@ -203,17 +205,25 @@ fn main() -> ExitCode {
         },
         Command::Telemetry {
             device: TelemetryDevice::Waterforce { watch },
-        } => loop {
-            match telemetry::read(sys) {
-                Ok(t) => print!("{}", format_telemetry(&t)),
-                Err(e) => return fail(&e, telemetry_exit_code(&e)),
+        } => {
+            let mut note_shown = false;
+            loop {
+                match telemetry::read(sys) {
+                    Ok(t) => {
+                        print!("{}", format_telemetry(&t));
+                        if let Some(note) = coolant_note(&t, &mut note_shown) {
+                            eprintln!("{note}");
+                        }
+                    }
+                    Err(e) => return fail(&e, telemetry_exit_code(&e)),
+                }
+                let Some(secs) = watch else {
+                    return ExitCode::SUCCESS;
+                };
+                std::thread::sleep(Duration::from_secs(secs));
+                println!();
             }
-            let Some(secs) = watch else {
-                return ExitCode::SUCCESS;
-            };
-            std::thread::sleep(Duration::from_secs(secs));
-            println!();
-        },
+        }
         Command::Led {
             device:
                 LedDevice::Waterforce {
@@ -536,10 +546,34 @@ fn telemetry_exit_code(err: &TelemetryError) -> u8 {
     }
 }
 
+const COOLANT_NOTE: &str = "Nota: a temperatura do líquido informada pelo aparelho é impossível \
+(acima de 100 °C). O Castor3 já informou valores assim, que só voltaram ao normal depois de \
+desligar o PC com corte de energia. Veja \"Bomba plana e temperatura errada no DA\" em docs/hardware.md.";
+
+/// Nota para o stderr na primeira leitura inválida da execução.
+fn coolant_note(t: &Telemetry, shown: &mut bool) -> Option<&'static str> {
+    if *shown || !matches!(t.coolant(), Coolant::Implausible(_)) {
+        return None;
+    }
+    *shown = true;
+    Some(COOLANT_NOTE)
+}
+
 fn format_telemetry(t: &Telemetry) -> String {
     let mut out = String::new();
-    let temp = format!("{:.1}", t.coolant_celsius()).replace('.', ",");
-    let _ = writeln!(out, "Líquido:  {temp} °C");
+    match t.coolant() {
+        Coolant::Valid(_) => {
+            let temp = format!("{:.1}", t.coolant_celsius()).replace('.', ",");
+            let _ = writeln!(out, "Líquido:  {temp} °C");
+        }
+        Coolant::Implausible(m) => {
+            let _ = writeln!(
+                out,
+                "Líquido:  inválido (o aparelho informou {} °C)",
+                m / 1000
+            );
+        }
+    }
     let _ = writeln!(
         out,
         "Fan:      {} RPM, duty {} ({}%)",
@@ -707,6 +741,38 @@ mod tests {
         assert!(out.contains("Líquido:  29,0 °C"));
         assert!(out.contains("Fan:      2204 RPM, duty 224 (88%)"));
         assert!(out.contains("Bomba:    3030 RPM, duty 255 (100%)"));
+    }
+
+    fn telemetry_with_coolant(millicelsius: i32) -> Telemetry {
+        Telemetry {
+            fan_rpm: 2204,
+            pump_rpm: 3030,
+            fan_duty: 224,
+            pump_duty: 255,
+            coolant_millicelsius: millicelsius,
+        }
+    }
+
+    #[test]
+    fn telemetria_com_liquido_invalido() {
+        let out = format_telemetry(&telemetry_with_coolant(240_000));
+        assert!(out.contains("Líquido:  inválido (o aparelho informou 240 °C)"));
+        assert!(out.contains("Fan:      2204 RPM, duty 224 (88%)"));
+        assert!(out.contains("Bomba:    3030 RPM, duty 255 (100%)"));
+        assert!(!out.contains("corte de energia"));
+    }
+
+    #[test]
+    fn nota_do_liquido_sai_uma_vez() {
+        let bad = telemetry_with_coolant(224_000);
+        let mut shown = false;
+        assert!(coolant_note(&telemetry_with_coolant(29_000), &mut shown).is_none());
+        assert!(
+            coolant_note(&bad, &mut shown)
+                .unwrap()
+                .contains("corte de energia")
+        );
+        assert!(coolant_note(&bad, &mut shown).is_none());
     }
 
     #[test]

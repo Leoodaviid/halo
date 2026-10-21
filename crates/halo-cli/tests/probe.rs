@@ -70,8 +70,8 @@ fn waterforce_probe_nao_encontrado() {
     assert!(err.contains("Waterforce não encontrado"), "{err}");
 }
 
-#[test]
-fn waterforce_telemetria_de_sysfs_falso() {
+/// hwmon `waterforce` falso com o `temp1_input` informado.
+fn sys_with_waterforce_hwmon(temp1_input: &str) -> tempfile::TempDir {
     let sys = tempfile::tempdir().unwrap();
     let dir = sys.path().join("class/hwmon/hwmon6");
     fs::create_dir_all(dir.join("device")).unwrap();
@@ -82,15 +82,41 @@ fn waterforce_telemetria_de_sysfs_falso() {
         ("fan2_input", "3030"),
         ("pwm1", "224"),
         ("pwm2", "255"),
-        ("temp1_input", "29000"),
+        ("temp1_input", temp1_input),
     ] {
         fs::write(dir.join(attr), value).unwrap();
     }
+    sys
+}
 
+#[test]
+fn waterforce_telemetria_de_sysfs_falso() {
+    let sys = sys_with_waterforce_hwmon("29000");
     let out = run(&["telemetry", "waterforce"], sys.path());
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Líquido:  29,0 °C"), "{text}");
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn waterforce_telemetria_com_liquido_invalido() {
+    let sys = sys_with_waterforce_hwmon("224000");
+    let out = run(&["telemetry", "waterforce"], sys.path());
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Líquido:  inválido (o aparelho informou 224 °C)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Fan:      2204 RPM, duty 224 (88%)"),
+        "{text}"
+    );
+    assert!(!text.contains("corte de energia"), "{text}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("corte de energia"), "{err}");
+    assert!(err.contains("docs/hardware.md"), "{err}");
 }
 
 #[test]

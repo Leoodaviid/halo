@@ -14,6 +14,8 @@ cargo run -q -p halo-cli -- telemetry waterforce         # fan, bomba e líquido
 cargo run -q -p halo-cli -- probe waterforce --raw      # leituras do Waterforce
 ```
 
+A telemetria lê o hwmon do driver `gigabyte_waterforce`, sem abrir o aparelho. Uma temperatura do líquido acima de 100 °C aparece como `Líquido:  inválido (o aparelho informou 224 °C)`, e uma nota no stderr explica o caso. O Castor3 já informou valores assim, e eles só voltaram ao normal depois de desligar o PC com corte de energia (ver "Bomba plana e temperatura errada no `DA`" em [docs/hardware.md](docs/hardware.md)). Fan e bomba continuam sendo mostradas, e o código de saída continua 0.
+
 O probe do Waterforce precisa da regra udev do halo (ver [docs/permissions.md](docs/permissions.md)). Ele envia só os pedidos de leitura `D6`, `DE 00`, `DD`, `D9 01`, `D9 02`, `C7` e `E8` (ver [docs/protocols/castor3.md](docs/protocols/castor3.md)). Exemplo de saída, com valores ilustrativos:
 
 ```text
