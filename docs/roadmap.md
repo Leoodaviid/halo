@@ -23,9 +23,9 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 1. ~~Regra udev para liberar `1044:7a4d` ao usuário.~~ Feito em 2026-10-20: `packaging/udev/70-halo.rules`.
 2. ~~Telemetria e leitura de firmware.~~ Feito em 2026-10-20: `halo telemetry waterforce` e `halo probe waterforce`. O firmware não confirmou a compatibilidade com o protocolo de anel do OpenRGB (ver [hardware.md](hardware.md)).
 3. ~~Analisar o GIGABYTE Control Center com o REA.~~ Feito em 2026-10-20: velocidade, status e LCD no C#, e anel e fans na `GcLedLib.dll` com o Ghidra. Ver [protocols/castor3.md](protocols/castor3.md).
-4. `waterforce-speed-status`: ler modo e curva (`DD`, `D9`) e quantidade de fans (`C7`) primeiro, só leitura; depois definir modo e curva (`E5`, `E6`, `B6`).
-5. `waterforce-lcd`: ler modo, itens e espaço livre (`E8`, `DF`, `FA`) primeiro; depois modo e cores (`E7`, `E4`, `B6`) e, por último, envio de imagem (`F1`/`F2`), que grava na flash.
-6. `waterforce-led`: cor estática (`C9 01 <b> <s> 02 01`, `CD`, `B6`) primeiro, conferindo que o anel e as fans acendem juntos; depois os outros efeitos e a paleta (`B0`–`B3`). Não há leitura de LED no protocolo, então a primeira change já escreve.
+4. `waterforce-speed-status`: definir modo e curva (`E5`, `E6`, `B6`). A leitura de modo, curva e quantidade de fans (`DD`, `D9`, `C7`) já está no `halo probe waterforce` desde a change `waterforce-led`.
+5. `waterforce-lcd`: ler itens e espaço livre (`DF`, `FA`) primeiro (o modo, `E8`, já está no probe); depois modo e cores (`E7`, `E4`, `B6`) e, por último, envio de imagem (`F1`/`F2`), que grava na flash.
+6. ~~`waterforce-led`~~: feito em 2026-10-20. `halo led waterforce <efeito>` com os 14 efeitos do GCC e o desligado, paleta (`B0`–`B3`), brilho e velocidade. Confirmado no aparelho: o anel e as fans acendem juntos, e o `cycle` reproduz o modo de fábrica. O probe ganhou as leituras `DD`, `D9`, `C7` e `E8`.
 
 ## Fase 4: periféricos
 

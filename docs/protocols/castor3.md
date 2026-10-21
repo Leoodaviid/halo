@@ -47,6 +47,7 @@ Os caminhos e os hashes completos estão em `/mnt/workspace/tools/samples/gigaby
 **Conferência com o aparelho** (respostas do `halo probe waterforce`, ver `docs/hardware.md`):
 - `99 de 00` → `r[2] = 0`, que é **GP-AORUS WATERFORCE X 240**. O OpenRGB lê esse byte como versão. O GCC mostra que ele é o índice do modelo.
 - `99 d6 01 06` → firmware **1.6**, igual ao "16" do kernel (`1 * 10 + 6`). Com firmware abaixo de 2.0, o GCC não consulta o `C2`.
+- `99 DD`, `99 D9 01`, `99 D9 02`, `99 C7` e `99 E8` responderam com o próprio comando (change `waterforce-led`): fan em Performance, bomba em Turbo, curvas de 4 pontos até 80 °C, 2 fans RGB e LCD no modo 3. O `D9` repete o tipo em `r[2]` e `r[3]`. Os valores estão em `docs/hardware.md`.
 
 ## Velocidade da fan e da bomba
 
@@ -168,10 +169,10 @@ No GCC, o LED do 7A4D passa pela DLL nativa `GcLedLib.dll`: `LedApi.LedSet` e `L
 
 | Pacote | Bytes | Função na DLL | Confiança |
 |---|---|---|---|
-| Efeito | `99 C9 <nType> <nBright> <nSpeed> <nClrIndex> <nArea>` | `FUN_180040fc0` | confirmado (assembly: `EDX`, `R8`, `R9`, `[RSP+0x20]`, `[RSP+0x28]` → bytes 2 a 6) |
-| Cor única | `99 CD R G B` (de `lGlobalClr`) | `FUN_180041470` | confirmado |
-| Paleta | `99 B0 <nType> R0 G0 B0 R1 G1 B1`, `99 B1 <nType> c2 c3`, `99 B2 <nType> c4 c5`, `99 B3 <nType> c6 c7` (de `lFan1Clr`), com 1 ms entre eles | `FUN_1800410d0` | confirmado |
-| Aplicar | `99 B6` | `FUN_180040780` | confirmado |
+| Efeito | `99 C9 <nType> <nBright> <nSpeed> <nClrIndex> <nArea>` | `FUN_180040fc0` | confirmado (assembly: `EDX`, `R8`, `R9`, `[RSP+0x20]`, `[RSP+0x28]` → bytes 2 a 6) e no aparelho |
+| Cor única | `99 CD R G B` (de `lGlobalClr`) | `FUN_180041470` | confirmado e no aparelho |
+| Paleta | `99 B0 <nType> R0 G0 B0 R1 G1 B1`, `99 B1 <nType> c2 c3`, `99 B2 <nType> c4 c5`, `99 B3 <nType> c6 c7` (de `lFan1Clr`), com 1 ms entre eles | `FUN_1800410d0` | confirmado e no aparelho |
+| Aplicar | `99 B6` | `FUN_180040780` | confirmado e no aparelho |
 
 O write (`FUN_18003a500`) copia os 256 bytes para um buffer do tamanho do output report, completado com zeros. É o mesmo transporte do C#.
 
@@ -212,7 +213,21 @@ O anel e as fans usam **o mesmo canal**. Para o `0x4016`, o GCC tem uma única r
 |---|---|---|---|
 | Quantidade de fans RGB | `99 C8 <n>` (de 1 a 8; padrão da interface 3), leitura com `99 C7` | `DeviceApi.SetFanQty` e `GetFanQty`; o controle só aparece no 7A4D | confirmado |
 
-Que o anel e as fans acendam juntos com o mesmo `C9` é **inferido** do fato de o GCC não ter outro comando. Isso precisa ser conferido olhando o aparelho na primeira change de LED.
+Que o anel e as fans acendam juntos com o mesmo `C9` era **inferido** do fato de o GCC não ter outro comando. Isso foi **confirmado no aparelho** na change `waterforce-led`: com `C9 01 64 0A 02 01`, `CD FF 66 00` e `B6`, o anel e as duas fans ficaram laranja juntos.
+
+### Conferência no aparelho (2026-10-20)
+
+Firmware 1.6, Waterforce X 240, com o `halo led waterforce` (`DE 00` antes de cada sequência):
+
+| Efeito | Pacotes (sem o `DE 00`) | Resultado |
+|---|---|---|
+| `static ff6600` | `C9 01 64 0A 02 01`, `CD FF 66 00`, `B6` | anel e fans laranja, juntos |
+| `cycle` | `C9 03 64 0A 02 01`, `B6` | igual ao modo de fábrica |
+| `rainbow` | `C9 0A 64 0A 02 01`, `B6` | diferente do `cycle` |
+| `tri-color ff0000 00ff00 0000ff` | `C9 0B 64 0A 02 01`, `B0 0B FF0000 00FF00`, `B1`–`B3 0B 0000FF 0000FF`, `B6` | vermelho, verde e azul |
+| `pulse --speed 2` | `C9 02 64 04 02 01`, `CD FF 66 00`, `B6` | laranja pulsando devagar |
+
+Isso confirma o layout do GCC: o byte 3 do `C9` (`04`) mudou o ritmo, e o byte 2 (`64`) ficou como brilho. Os efeitos 04 a 08 e 0C a 0F e o desligado ainda não foram vistos no aparelho.
 
 ### Não analisado
 

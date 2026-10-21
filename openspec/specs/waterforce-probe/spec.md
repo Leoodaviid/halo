@@ -2,23 +2,23 @@
 
 ## Purpose
 
-Identificar o controlador Castor3 do AORUS Waterforce e ler o firmware dele pelo hidraw, sem alterar o estado do aparelho, para decidir se o protocolo de anel do OpenRGB se aplica a este modelo.
+Identificar o controlador Castor3 do AORUS Waterforce e ler pelo hidraw o firmware, o modelo, os modos e as curvas de velocidade, a quantidade de fans RGB e o modo do LCD, só com os pedidos de leitura do kernel e do GIGABYTE Control Center, sem alterar o estado do aparelho.
 
 ## Requirements
 
 ### Requirement: Pedidos permitidos
-O probe SHALL enviar ao Castor3 apenas os pedidos de leitura `D6` (fonte: driver `gigabyte_waterforce` do Linux) e `DE 00` (fonte: `GigabyteCastor3Controller` do OpenRGB), cada um como output report `0x99` completado com zeros até 6144 bytes. O probe MUST NOT enviar comandos de LED, LCD, fan ou bomba.
+O probe SHALL enviar ao Castor3 apenas pedidos de leitura, nesta ordem: `D6` (driver `gigabyte_waterforce` do Linux), `DE 00`, `DD`, `D9 01`, `D9 02`, `C7` e `E8` (`DeviceApi` e `LcdApi` do `ucCooler.dll` do GCC 26.09.10.01). Cada um vai como output report `0x99` completado com zeros até 6144 bytes. O probe MUST NOT enviar comandos de LED, LCD, fan ou bomba.
 
 #### Scenario: Probe com sucesso
 - **WHEN** o usuário executa o probe do Waterforce e o hidraw está acessível
-- **THEN** o sistema envia exatamente dois output reports, `99 D6` e `99 DE 00`, cada um com 6144 bytes, e nada mais
+- **THEN** o sistema envia exatamente sete output reports, `99 D6`, `99 DE 00`, `99 DD`, `99 D9 01`, `99 D9 02`, `99 C7` e `99 E8`, cada um com 6144 bytes, e nada mais
 
 #### Scenario: Estado preservado
 - **WHEN** o probe termina
-- **THEN** a cor do anel, a tela e as rotações continuam como antes
+- **THEN** a cor do anel, a tela, os modos e as rotações continuam como antes
 
 ### Requirement: Resposta filtrada pelo comando
-O sistema SHALL aceitar como resposta de cada pedido só o input report cujo primeiro byte de dados é igual ao comando enviado (`D6` ou `DE`), e descartar os outros, como as respostas de status `DA` pedidas pelo kernel, até o tempo limite de 2 segundos por pedido.
+O sistema SHALL aceitar como resposta de cada pedido só o input report cujo primeiro byte de dados é igual ao comando enviado, e descartar os outros, como as respostas de status `DA` pedidas pelo kernel, até o tempo limite de 2 segundos por pedido.
 
 #### Scenario: Status do kernel no meio da leitura
 - **WHEN** chega um input report `99 DA ...` antes da resposta `99 D6 ...`
@@ -26,21 +26,14 @@ O sistema SHALL aceitar como resposta de cada pedido só o input report cujo pri
 
 #### Scenario: Sem resposta
 - **WHEN** nenhuma resposta com o comando esperado chega em 2 segundos
-- **THEN** o sistema informa que aquele pedido não teve resposta, mostra o resultado do outro pedido e termina com código diferente de zero
-
-### Requirement: Campos apresentados
-O sistema SHALL mostrar o caminho do hidraw, o nome HID, a versão de firmware segundo o kernel (`data[2] * 10 + data[3]` do input report `99 D6`, contando o report ID como `data[0]`) e a versão segundo o OpenRGB (o byte seguinte ao `DE`).
-
-#### Scenario: Duas versões de firmware
-- **WHEN** os input reports são `99 D6 02 05 ...` e `99 DE 02 ...`
-- **THEN** a saída mostra firmware 25 (kernel) e 2 (OpenRGB)
+- **THEN** o sistema informa que aquele pedido não teve resposta, mostra o resultado dos outros pedidos e termina com código diferente de zero
 
 ### Requirement: Saída bruta
 O sistema SHALL oferecer uma opção para mostrar os primeiros 64 bytes de cada resposta em hexadecimal.
 
 #### Scenario: Pedido de saída bruta
 - **WHEN** o usuário executa o probe com a opção de saída bruta
-- **THEN** a saída inclui o hexdump das respostas `D6` e `DE`
+- **THEN** a saída inclui o hexdump de cada uma das sete respostas que chegaram
 
 ### Requirement: Permissão
 O sistema SHALL indicar, quando o hidraw do Waterforce não abrir por falta de permissão, que a regra udev do halo precisa ser instalada.
@@ -48,3 +41,26 @@ O sistema SHALL indicar, quando o hidraw do Waterforce não abrir por falta de p
 #### Scenario: Regra não instalada
 - **WHEN** o hidraw do `1044:7a4d` existe mas o usuário não pode abri-lo
 - **THEN** o sistema informa a falta de permissão, o caminho e onde está a regra udev do halo
+
+### Requirement: Campos do probe
+O sistema SHALL mostrar o caminho do hidraw, o nome HID, o firmware (`r[2].r[3]` do `D6`, contando o report ID como `r[0]`), o modelo pelo `r[2]` do `DE`, os modos da fan e da bomba (`r[2]`, `r[3]` do `DD`), as curvas de 4 pontos do `D9`, a quantidade de fans RGB (`r[2]` do `C7`) e o modo do LCD (`r[2] - 1` do `E8`).
+
+#### Scenario: Firmware e modelo
+- **WHEN** os input reports são `99 D6 01 06 ...` e `99 DE 00 ...`
+- **THEN** a saída mostra firmware 1.6 e modelo Waterforce X 240
+
+#### Scenario: Modelo desconhecido
+- **WHEN** o `r[2]` do `DE` não é 0, 1 nem 2
+- **THEN** a saída mostra o valor bruto e indica modelo desconhecido
+
+#### Scenario: Modos e curva
+- **WHEN** a resposta do `DD` é `99 DD 02 00 ...` e a do `D9 01` traz em `r[4..15]` os pontos `00 04 B0`, `1E 04 B0`, `32 05 78`, `41 07 08`
+- **THEN** a saída mostra a fan no modo Default, a bomba em Balanced e a curva da fan 0 °C 1200 RPM, 30 °C 1200 RPM, 50 °C 1400 RPM, 65 °C 1800 RPM
+
+#### Scenario: Modo FixedRPM lido como Balanced
+- **WHEN** o `r[2]` ou o `r[3]` do `DD` é 3
+- **THEN** a saída mostra o modo como Balanced, como o GCC faz, e mostra o valor bruto 3
+
+#### Scenario: Quantidade de fans e LCD
+- **WHEN** as respostas são `99 C7 02 ...` e `99 E8 08 ...`
+- **THEN** a saída mostra 2 fans RGB e o LCD no modo 7
