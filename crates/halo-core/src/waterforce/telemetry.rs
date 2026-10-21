@@ -20,6 +20,22 @@ pub const HWMON_NAME: &str = "waterforce";
 /// isso só devolve o mesmo valor.
 pub const MIN_INTERVAL_SECS: u64 = 2;
 
+/// Acima disso (100 °C, ebulição da água), a temperatura do líquido é
+/// impossível e vem de um erro do aparelho. Em 2026-10-20 o Castor3 travou
+/// informando `e0`/`f0` (224/240 °C) no byte `0x0D` do `99 DA` até um corte de
+/// energia (`docs/hardware.md`). O limite não segue esse padrão de bits de
+/// propósito: um líquido entre 60 e 100 °C está fora da especificação, mas é
+/// possível e precisa aparecer como número.
+pub const COOLANT_MAX_PLAUSIBLE_MILLICELSIUS: i32 = 100_000;
+
+/// Temperatura do líquido classificada. Os dois casos guardam o valor do
+/// hwmon em m°C.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coolant {
+    Valid(i32),
+    Implausible(i32),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Telemetry {
     pub fan_rpm: u32,
@@ -37,6 +53,14 @@ impl Telemetry {
 
     pub fn coolant_celsius(&self) -> f64 {
         f64::from(self.coolant_millicelsius) / 1000.0
+    }
+
+    pub fn coolant(&self) -> Coolant {
+        if self.coolant_millicelsius > COOLANT_MAX_PLAUSIBLE_MILLICELSIUS {
+            Coolant::Implausible(self.coolant_millicelsius)
+        } else {
+            Coolant::Valid(self.coolant_millicelsius)
+        }
     }
 }
 
@@ -224,6 +248,54 @@ mod tests {
         fill(&dir);
         fs::write(dir.join("pwm1"), "abc\n").unwrap();
         assert!(matches!(read(sys.path()), Err(TelemetryError::Parse(p)) if p.ends_with("pwm1")));
+    }
+
+    fn with_coolant(millicelsius: i32) -> Telemetry {
+        Telemetry {
+            fan_rpm: 2204,
+            pump_rpm: 3030,
+            fan_duty: 224,
+            pump_duty: 255,
+            coolant_millicelsius: millicelsius,
+        }
+    }
+
+    #[test]
+    fn valores_do_aparelho_travado_sao_invalidos() {
+        for m in [224_000, 240_000] {
+            assert_eq!(with_coolant(m).coolant(), Coolant::Implausible(m));
+        }
+    }
+
+    #[test]
+    fn limite_da_faixa() {
+        assert_eq!(with_coolant(100_000).coolant(), Coolant::Valid(100_000));
+        assert_eq!(
+            with_coolant(101_000).coolant(),
+            Coolant::Implausible(101_000)
+        );
+    }
+
+    #[test]
+    fn leituras_normais_sao_validas() {
+        for m in [29_000, 31_000] {
+            assert_eq!(with_coolant(m).coolant(), Coolant::Valid(m));
+        }
+    }
+
+    #[test]
+    fn le_temperatura_invalida_sem_falhar() {
+        let sys = tempfile::tempdir().unwrap();
+        let dir = add_hwmon(sys.path(), "hwmon6", HWMON_NAME, CASTOR3_UEVENT);
+        fill(&dir);
+        fs::write(dir.join("temp1_input"), "224000\n").unwrap();
+
+        let t = read(sys.path()).unwrap();
+        assert_eq!(t.fan_rpm, 2204);
+        assert_eq!(t.pump_rpm, 3030);
+        assert_eq!(t.fan_duty, 224);
+        assert_eq!(t.pump_duty, 255);
+        assert_eq!(t.coolant(), Coolant::Implausible(224_000));
     }
 
     #[test]
