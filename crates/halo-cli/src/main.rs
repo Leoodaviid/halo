@@ -9,12 +9,14 @@ use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 use clap::{ArgGroup, Parser, Subcommand};
 use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
+use halo_core::waterforce::curve::Curve;
 use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
 use halo_core::waterforce::probe::{
     self as wf_probe, CurvePoint, ProbeReport, ReadQuery, Reading, SpeedMode, model_name,
 };
 use halo_core::waterforce::speed::{
-    self, FanPreset, PumpPreset, SetRequest, Side, SnapshotStore, SpeedError, SpeedStatus, Which,
+    self, CurveRequest, FanPreset, PumpPreset, SetRequest, Side, SnapshotStore, SpeedError,
+    SpeedStatus, Which,
 };
 use halo_core::waterforce::telemetry::{self, MIN_INTERVAL_SECS, Telemetry, TelemetryError};
 
@@ -55,7 +57,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SpeedDevice {
-    /// AORUS Waterforce (1044:7a4d), só com os presets do firmware.
+    /// AORUS Waterforce (1044:7a4d): presets do firmware e curva Customized.
     Waterforce {
         #[command(subcommand)]
         action: WaterforceSpeed,
@@ -84,6 +86,27 @@ enum WaterforceSpeed {
         no_save: bool,
         /// Mostra os pacotes sem abrir o aparelho nem gravar snapshot. Exige
         /// --fan e --pump.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Grava a curva Customized plana (o mesmo RPM em 0, 30, 50 e 80 °C) da fan
+    /// ou da bomba com E5, E6 e um B6 no fim. A curva é plana porque o firmware
+    /// segue a temperatura da CPU, que no Linux ninguém envia. Antes, grava o
+    /// estado atual como snapshot em $XDG_STATE_HOME/halo/. O outro lado mantém
+    /// o modo atual.
+    Curve {
+        /// Lado da curva.
+        #[arg(value_parser = PossibleValuesParser::new(["fan", "pump"])
+            .map(|s: String| if s == "fan" { Side::Fan } else { Side::Pump }))]
+        side: Side,
+        /// RPM dos 4 pontos. Fan de 900 a 2500, bomba de 2600 a 2800.
+        rpm: u16,
+        /// Experimental: envia os E5 e o E6 sem o B6. A curva vale na hora, mas
+        /// não se sabe se continua depois de desligar.
+        #[arg(long)]
+        no_save: bool,
+        /// Valida a curva e mostra os pacotes sem abrir o aparelho nem gravar
+        /// snapshot.
         #[arg(long)]
         dry_run: bool,
     },
@@ -269,6 +292,29 @@ fn speed_waterforce(sys: &Path, action: WaterforceSpeed) -> ExitCode {
             let request = SetRequest { fan, pump, save };
             store().and_then(|store| speed::set(sys, &store, &request).map(|a| (store, a)))
         }
+        WaterforceSpeed::Curve {
+            side,
+            rpm,
+            no_save,
+            dry_run,
+        } => {
+            let curve = match Curve::flat(side, rpm) {
+                Ok(c) => c,
+                Err(e) => return fail(&e, EXIT_USAGE),
+            };
+            let save = !no_save;
+            if dry_run {
+                print!("{}", format_curve_simulation(&curve, save));
+                return ExitCode::SUCCESS;
+            }
+            if no_save {
+                eprintln!(
+                    "halo: aviso: --no-save é experimental; a curva vale na hora, mas não se sabe se continua depois de desligar"
+                );
+            }
+            let request = CurveRequest { curve, save };
+            store().and_then(|store| speed::curve(sys, &store, &request).map(|a| (store, a)))
+        }
         WaterforceSpeed::Restore { original } => {
             let which = if original {
                 Which::Original
@@ -291,9 +337,38 @@ fn speed_exit_code(err: &SpeedError) -> u8 {
     match err {
         SpeedError::NotFound | SpeedError::Open(OpenError::NotFound(_)) => EXIT_NOT_FOUND,
         SpeedError::Open(OpenError::PermissionDenied(_)) => EXIT_PERMISSION,
-        SpeedError::NoSide | SpeedError::CurrentModeUnknown { .. } => EXIT_USAGE,
+        SpeedError::NoSide
+        | SpeedError::CurrentModeUnknown { .. }
+        | SpeedError::OtherSideUnknown { .. } => EXIT_USAGE,
         _ => EXIT_FAILURE,
     }
+}
+
+/// Pacotes da curva, com o `E5` do outro lado marcado: o modo dele só é
+/// conhecido lendo o `DD` na gravação.
+fn format_curve_simulation(curve: &Curve, save: bool) -> String {
+    let any = SpeedMode(speed::mode::BALANCED);
+    let target = curve
+        .target(any, any)
+        .expect("Balanced é um modo que o halo repete");
+    let other = match curve.side() {
+        Side::Fan => Side::Pump,
+        Side::Pump => Side::Fan,
+    };
+    let mut out = String::new();
+    for p in target.packets(save) {
+        if p[1] == 0xE5 && p[2] == other.wire() {
+            let _ = writeln!(
+                out,
+                "99 E5 {:02X} ?? 00   (?? = modo atual da {}, lido no DD na gravação)",
+                other.wire(),
+                other.name()
+            );
+        } else {
+            out.push_str(&format_packets(&[p]));
+        }
+    }
+    out
 }
 
 fn format_curve(points: &[CurvePoint]) -> String {
@@ -774,9 +849,35 @@ mod tests {
             raw: 3,
         };
         assert_eq!(speed_exit_code(&unknown), EXIT_USAGE);
+        let other = SpeedError::OtherSideUnknown {
+            side: Side::Pump,
+            raw: 3,
+        };
+        assert_eq!(speed_exit_code(&other), EXIT_USAGE);
         assert_eq!(speed_exit_code(&SpeedError::UnknownModel(5)), EXIT_FAILURE);
         let none = SpeedError::NoSnapshot(PathBuf::from("/x"));
         assert_eq!(speed_exit_code(&none), EXIT_FAILURE);
+    }
+
+    #[test]
+    fn simulacao_da_curva() {
+        let fan = Curve::flat(Side::Fan, 1500).unwrap();
+        assert_eq!(
+            format_curve_simulation(&fan, true),
+            "99 E5 01 01 00\n\
+             99 E5 02 ?? 00   (?? = modo atual da bomba, lido no DD na gravação)\n\
+             99 E6 00 01 00 05 DC 1E 05 DC 32 05 DC 50 05 DC\n\
+             99 B6\n"
+        );
+        let pump = Curve::flat(Side::Pump, 2600).unwrap();
+        let out = format_curve_simulation(&pump, false);
+        assert!(
+            out.starts_with(
+                "99 E5 01 ?? 00   (?? = modo atual da fan, lido no DD na gravação)\n99 E5 02 01 00\n99 E6 00 02 "
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("B6"), "{out}");
     }
 
     #[test]

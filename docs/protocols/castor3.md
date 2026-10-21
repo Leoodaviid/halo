@@ -54,7 +54,7 @@ Os caminhos e os hashes completos estão em `/mnt/workspace/tools/samples/gigaby
 | Comando | Bytes | Fonte | Confiança |
 |---|---|---|---|
 | Definir modo | `99 E5 <tipo> <modo> 00` | `DeviceApi.SetSpeedMode` | confirmado no aparelho: vale sem o `B6`, mas só até desligar |
-| Definir curva | `99 E6 00 <tipo>` e 4 pontos `<temp °C> <rpm_hi> <rpm_lo>` a partir do byte 4; pacote de 84 bytes | `DeviceApi.SetSpeedCurve` | confirmado |
+| Definir curva | `99 E6 00 <tipo>` e 4 pontos `<temp °C> <rpm_hi> <rpm_lo>` a partir do byte 4; pacote de 84 bytes | `DeviceApi.SetSpeedCurve` | confirmado no aparelho: o firmware segue a curva, que vale na hora sem o `B6` e aparece no `D9` |
 | Salvar | `99 B6` | `DeviceApi.Save` e `LcdApi.Save` | confirmado no aparelho: persiste o modo depois de desligar com corte de energia |
 
 `<tipo>` vem do `SpeedType`: `1` fan e `2` bomba.
@@ -83,7 +83,24 @@ Para o X 280 e o X 360, o GCC usa o `FanApi.dcX280_360` na fan, com a mesma tabe
 
 O `D9` lê o **slot Customized** guardado no aparelho, e não a curva ativa. Isso bate com o `DeviceApi.GetSpeedCurve`, que só chama o `D9` quando o modo é Customized. Foi **confirmado no aparelho** (change `waterforce-speed-mode`): o `D9` não mudou depois de nenhum preset, e o RPM seguiu o preset. As tabelas acima são só da interface: o firmware usa as dele, e o Default chegou a duty 255. O RPM medido em cada preset está em `docs/hardware.md`.
 
-A temperatura de referência da curva é provavelmente a do líquido, que é o sensor do aparelho (`DA`). Isso é **inferido**: o código não diz.
+A tela da fan do GCC (`FanControl`) mostra a **temperatura da CPU** (`tb_CPUTemp`) ao lado da curva, em todos os modelos menos o 7A51. O valor vem do `DeviceApi.GetCPUTemperature`, que lê o `CpuInfo.ini` do `AorusLcdService` (ou `30`, se não houver). A tela não mostra a temperatura do líquido.
+
+A temperatura de referência da curva **não é a do líquido**, o que foi **confirmado no aparelho** (change `waterforce-speed-curve`, `docs/hardware.md`). Com o líquido em 25–26 °C, a fan foi ao ponto de uma curva que só subia acima de 29 °C. A hipótese é a temperatura da CPU (`E0`/`E1`, enviados só pelo `AorusLcdService`), com um valor perto de 50 °C quando ninguém envia. Essa parte não está confirmada.
+
+### Limites da curva Customized
+
+A interface do GCC (`GFanCurve.Point_PointerMoved`) limita cada ponto arrastado:
+- temperatura de 0 a 100 °C, estritamente crescente de um ponto para o seguinte;
+- RPM sem queda de um ponto para o seguinte;
+- RPM dentro da faixa do `DeviceApi.GetFanSpeedLimit` (900 a 2500 para o `0x7A4D`), aplicada à fan **e também à bomba**. O GCC não tem limite próprio para a bomba. O valor inicial da Customized da bomba (2800 ×4) só é gravado se o usuário não mexer no ponto.
+
+O halo (`halo speed waterforce curve`) grava só curvas **planas**: o mesmo RPM em 0, 30, 50 e 80 °C, porque a referência da curva é a temperatura da CPU (ver acima). Esses pontos cumprem as regras de temperatura e de RPM sem queda. O halo usa a faixa do GCC só na fan. Na bomba, usa **de 2600 a 2800 RPM**, uma regra do halo, e não do GCC:
+- 2600 é o menor RPM de qualquer modo pronto da bomba (Balanced, `PumpApi.dcX240_280_360`). Assim, a curva nunca deixa a bomba mais lenta do que os presets da Gigabyte.
+- 2800 é o maior valor que se sabe que o GCC grava com o `E6` (o valor inicial da Customized, igual ao `D9 02` de fábrica). O Turbo (3150) é uma curva interna do firmware e nunca foi visto num `E6`.
+
+A restauração de um snapshot não usa essas regras (nem exige curva plana): só a checagem de sanidade (4 pontos, temperatura crescente até 100 °C, RPM até o `MaxSpeed` de 3200), porque devolve um estado que já estava no aparelho.
+
+Exemplo, a curva plana da fan de 1500 RPM com o `DD` em `05 04`: `99 E5 01 01 00`, `99 E5 02 04 00`, `99 E6 00 01 00 05 DC 1E 05 DC 32 05 DC 50 05 DC` e `99 B6`.
 
 ## LCD (320×320)
 
@@ -108,7 +125,7 @@ Números dos modos (índice de `GDisplayMode` na interface): de 0 a 2, informaç
 
 ### Dados de sistema (`AorusLcdService`)
 
-Para o 7A4D, o serviço manda o nome da CPU uma vez e depois os dados a cada segundo (`CoolerDataApi`):
+Para o 7A4D, o serviço (`CoolerDataApi.GetCoolerData`) espera 20 s, manda o nome da CPU (`E1`) uma vez e depois manda o `E0` em laço, **sem `Sleep`**: o ritmo é o das leituras do `MakeCpuData` (WMI e `GbtCpuDll`). O intervalo de 1 s (`Sleep(1000)`) vale só para o 7A51, o X II Elite e os modelos com LCD de `IsLcdCmdCpuInfoPid`. Nesse ramo do 7A4D, o campo `LiqiudTemperature` nunca é preenchido, e o byte da temperatura do líquido vai como 0.
 
 | Comando | Bytes | Confiança |
 |---|---|---|

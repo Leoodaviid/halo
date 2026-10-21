@@ -25,7 +25,8 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 3. ~~Analisar o GIGABYTE Control Center com o REA.~~ Feito em 2026-10-20: velocidade, status e LCD no C#, e anel e fans na `GcLedLib.dll` com o Ghidra. Ver [protocols/castor3.md](protocols/castor3.md).
 4. Velocidade, dividida em duas changes:
    - ~~`waterforce-speed-mode`~~: feito em 2026-10-20. `halo speed waterforce status|set|restore`, só com os presets do firmware (`E5` + `B6`) e com snapshots anterior e original. Confirmado no aparelho: o `E5` vale sem o `B6`, mas só até desligar, o `B6` persiste o modo, e o `D9` é o slot Customized.
-   - `waterforce-speed-curve`: curva Customized (`E6`), que estende a capability `waterforce-speed`. Começa por um experimento que confirma a temperatura de referência da curva. O `E5` sem `B6` permite testar curvas sem gravar na flash a cada tentativa.
+   - ~~`waterforce-speed-curve`~~: feito em 2026-10-21. `halo speed waterforce curve <fan|pump> <rpm>`, uma curva Customized plana (`E6`). Confirmado no aparelho: o `E6` vale sem o `B6`, e a referência da curva não é o líquido; tudo indica a CPU, que só o Windows envia. Por isso a curva é plana.
+   - Curva que segue a temperatura: enviar a temperatura da CPU com `E0`/`E1`, como o `AorusLcdService`. Depende do daemon da Fase 2, porque o envio precisa ser contínuo.
 5. `waterforce-lcd`: ler itens e espaço livre (`DF`, `FA`) primeiro (o modo, `E8`, já está no probe); depois modo e cores (`E7`, `E4`, `B6`) e, por último, envio de imagem (`F1`/`F2`), que grava na flash.
 6. ~~`waterforce-led`~~: feito em 2026-10-20. `halo led waterforce <efeito>` com os 14 efeitos do GCC e o desligado, paleta (`B0`–`B3`), brilho e velocidade. Confirmado no aparelho: o anel e as fans acendem juntos, e o `cycle` reproduz o modo de fábrica. O probe ganhou as leituras `DD`, `D9`, `C7` e `E8`.
 

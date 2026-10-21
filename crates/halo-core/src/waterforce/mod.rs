@@ -5,8 +5,10 @@
 //! A telemetria vem do hwmon do driver `gigabyte_waterforce` do Linux, sem
 //! nenhum comando do halo. O probe usa o hidraw só com pedidos de leitura, o
 //! `led` escreve só os comandos de LED da `GcLedLib.dll` do GCC, e o `speed`
-//! escreve só os presets de velocidade do `ucCooler.dll`.
+//! escreve só os presets e a curva Customized do `ucCooler.dll` (a curva é
+//! montada e validada no `curve`).
 
+pub mod curve;
 pub mod led;
 pub mod probe;
 pub mod speed;
