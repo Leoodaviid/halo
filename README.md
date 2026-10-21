@@ -58,7 +58,7 @@ O protocolo não tem leitura do estado do LED, então o modo de fábrica não po
 
 ### Velocidade do Waterforce
 
-`halo speed waterforce` lê e escolhe o modo da fan e da bomba, só com os presets do firmware e os comandos do GIGABYTE Control Center (`E5` e `B6`, ver [docs/protocols/castor3.md](docs/protocols/castor3.md)):
+`halo speed waterforce` lê e escolhe o modo da fan e da bomba, com os presets do firmware ou uma curva Customized, só com os comandos do GIGABYTE Control Center (`E5`, `E6` e `B6`, ver [docs/protocols/castor3.md](docs/protocols/castor3.md)):
 
 ```sh
 halo speed waterforce status                                  # só leitura: DE 00, DD, D9 01, D9 02
@@ -69,13 +69,31 @@ halo speed waterforce restore                                 # volta ao estado 
 halo speed waterforce restore --original                      # volta ao estado de antes da primeira escrita
 ```
 
+A curva Customized é **plana**: o mesmo RPM em 0, 30, 50 e 80 °C. Ela vale para um lado por vez, e o outro lado mantém o modo atual:
+
+```sh
+halo speed waterforce curve fan 1500
+halo speed waterforce curve pump 2600
+halo speed waterforce curve fan 1500 --dry-run       # só mostra os pacotes
+halo speed waterforce curve fan 1500 --no-save       # experimental, sem B6
+halo speed waterforce restore                        # volta ao estado de antes da curva
+```
+
+- A curva é plana porque o firmware não segue a temperatura do líquido. Ele segue a temperatura da CPU, que no Windows o `AorusLcdService` envia ao aparelho e no Linux ninguém envia. Sem ela, uma curva com degraus ficaria presa num ponto que você não escolheu (no aparelho, a referência se comportou como se estivesse perto de 50 °C com o líquido a 26 °C; veja `docs/hardware.md`). Um RPM fixo não depende da referência.
+- Fan de 900 a 2500 RPM, a faixa do GCC. Uma curva plana não sobe com a carga: um RPM baixo pode deixar a CPU mais quente em jogos ou compilações. Para uso geral, um preset (`set --fan balanced`) é mais seguro.
+- Bomba de 2600 a 2800 RPM. Essa faixa é do halo: o GCC aplica à bomba a faixa da fan, o que a deixaria mais lenta do que qualquer preset. 2600 é o Balanced da bomba, e 2800 é o maior valor que o GCC grava na curva. Para a rotação máxima, use `set --pump turbo`.
+- O RPM é validado antes de procurar o aparelho, também com `--dry-run`. Na simulação, o `E5` do outro lado aparece com `??`, porque o modo dele só é lido na gravação.
+- Se o outro lado estiver num modo que o halo não repete (FixedRPM, por exemplo), nada é escrito: escolha antes um preset para ele com o `set`.
+- `--no-save` (experimental) envia os `E5` e o `E6` sem o `B6`. A curva vale na hora, mas não se sabe se continua depois de desligar.
+- O `restore` volta os modos e reenvia a curva só do lado que estava em Customized no snapshot. Se o lado estava num preset, o slot Customized dele fica com a curva gravada por último, sem estar ativo. Uma curva com degraus guardada num snapshot, como a de fábrica, também é restaurada.
+
 - Fan: `default`, `quiet`, `balanced`, `performance` e `turbo`. Bomba: `balanced` e `turbo`. ZeroRPM, FixedRPM, Customized e Quiet na bomba são recusados.
 - O `set` sempre envia os dois `E5`, fan e bomba, como o GCC. O lado não informado repete o modo lido no aparelho.
 - O `status` mostra a curva do `D9` como o slot Customized guardado no aparelho. Ela só é a curva ativa quando o modo é Customized. Para os presets, ele mostra a tabela que a interface do GCC exibe, que não é lida do aparelho.
 - `--no-save` (experimental) envia os `E5` sem o `B6`. Ainda não se sabe se o modo vale assim.
 - `--dry-run` exige `--fan` e `--pump` e não procura o aparelho nem grava snapshot.
 
-Antes de cada `set` ou `restore`, o halo grava o estado atual em `$XDG_STATE_HOME/halo/` (sem a variável, `~/.local/state/halo/`): `waterforce-speed.previous` é substituído a cada escrita, e `waterforce-speed.original` é gravado só na primeira e nunca mais alterado. Para começar um original novo, apague esse arquivo. Se a gravação falhar, nada é enviado. Dois `restore` seguidos alternam entre os dois últimos estados. Os códigos de saída são os mesmos do LED. O 2 vale também quando o modo atual do lado não informado é um que o halo não repete.
+Antes de cada `set`, `curve` ou `restore`, o halo grava o estado atual em `$XDG_STATE_HOME/halo/` (sem a variável, `~/.local/state/halo/`): `waterforce-speed.previous` é substituído a cada escrita, e `waterforce-speed.original` é gravado só na primeira e nunca mais alterado. Para começar um original novo, apague esse arquivo. Se a gravação falhar, nada é enviado. Dois `restore` seguidos alternam entre os dois últimos estados. Os códigos de saída são os mesmos do LED. O 2 vale também para uma curva inválida e quando o modo atual do lado não informado é um que o halo não repete.
 
 Precisa do Rust estável (rustup). Licença: GPL-2.0-or-later, porque a lógica de protocolo é portada do OpenRGB.
 

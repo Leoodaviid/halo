@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-//! Modo de velocidade da fan e da bomba do Castor3, com os presets do firmware.
+//! Modo de velocidade da fan e da bomba do Castor3: os presets do firmware e a
+//! curva Customized (validada no [`super::curve`]).
 //!
 //! Só estes pacotes existem aqui, todos do `ucCooler.dll` do GCC 26.09.10.01
 //! (`docs/protocols/castor3.md`, "Velocidade"):
@@ -8,7 +9,8 @@
 //!   `GetDeviceModelName`, `GetMode` e `GetSpeedCurve`);
 //! - `99 E5 <tipo> <modo> 00`: `DeviceApi.SetSpeedMode`;
 //! - `99 E6 00 <tipo>` e 4 pontos `<°C> <rpm_hi> <rpm_lo>`:
-//!   `DeviceApi.SetSpeedCurve`, só para restaurar um lado salvo em Customized;
+//!   `DeviceApi.SetSpeedCurve`, só na gravação de uma curva e para restaurar
+//!   um lado salvo em Customized;
 //! - `99 B6`: `DeviceApi.Save`.
 //!
 //! A ordem `E5` fan, `E5` bomba, `E6` fan, `E6` bomba e `B6` é a do
@@ -23,6 +25,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::curve::Curve;
 use super::led::{OutputReports, PACKET_INTERVAL};
 use super::probe::{
     CurvePoint, InputReports, RESPONSE_TIMEOUT, ReadQuery, Reading, SpeedMode, model_name, packet,
@@ -636,6 +639,11 @@ pub enum SpeedError {
         side: Side,
         raw: u8,
     },
+    /// Na gravação de uma curva, o outro lado tem um valor que o halo não repete.
+    OtherSideUnknown {
+        side: Side,
+        raw: u8,
+    },
     /// Sem `$XDG_STATE_HOME` nem `$HOME`.
     NoStateDir,
     /// Erro ao ler ou gravar o arquivo ou diretório de estado.
@@ -675,6 +683,18 @@ impl fmt::Display for SpeedError {
                 side.name(),
                 side.name()
             ),
+            Self::OtherSideUnknown { side, raw } => {
+                let flag = match side {
+                    Side::Fan => "--fan",
+                    Side::Pump => "--pump",
+                };
+                write!(
+                    f,
+                    "o modo atual da {} é {raw}, que o halo não repete; escolha antes um preset para a {} (halo speed waterforce set {flag} …) ({NOTHING_SENT})",
+                    side.name(),
+                    side.name()
+                )
+            }
             Self::NoStateDir => write!(
                 f,
                 "sem XDG_STATE_HOME nem HOME para gravar o snapshot; {NOTHING_SENT}"
@@ -817,6 +837,32 @@ pub fn set_to(
     )
 }
 
+/// Pedido de gravação da curva Customized de um lado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurveRequest {
+    pub curve: Curve,
+    /// `false` com o `--no-save`: os `E5` e o `E6` vão sem o `B6`.
+    pub save: bool,
+}
+
+/// Grava a curva com a leitura, o snapshot e as recusas do [`set_to`].
+pub fn curve_to(
+    device: &(impl InputReports + OutputReports),
+    store: &SnapshotStore,
+    request: &CurveRequest,
+) -> Result<Written, SpeedError> {
+    write_to(
+        device,
+        store,
+        |s| {
+            request
+                .curve
+                .target(SpeedMode(s.fan_mode), SpeedMode(s.pump_mode))
+        },
+        request.save,
+    )
+}
+
 /// Aplica `target`, um snapshot já validado, sempre com `B6`.
 pub fn restore_to(
     device: &(impl InputReports + OutputReports),
@@ -848,7 +894,7 @@ pub fn status(sys_root: &Path) -> Result<SpeedStatus, SpeedError> {
     Ok(SpeedStatus { devnode, state })
 }
 
-/// Resultado de [`set`] e [`restore`].
+/// Resultado de [`set`], [`curve`] e [`restore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
     pub devnode: PathBuf,
@@ -866,6 +912,17 @@ pub fn set(
     }
     let (devnode, device) = open(sys_root)?;
     let written = set_to(&device, store, request)?;
+    Ok(Applied { devnode, written })
+}
+
+/// Abre o hidraw e chama [`curve_to`]. A curva já chega validada.
+pub fn curve(
+    sys_root: &Path,
+    store: &SnapshotStore,
+    request: &CurveRequest,
+) -> Result<Applied, SpeedError> {
+    let (devnode, device) = open(sys_root)?;
+    let written = curve_to(&device, store, request)?;
     Ok(Applied { devnode, written })
 }
 
@@ -1450,6 +1507,155 @@ mod tests {
         let w = restore_to(&device(5, 4), &store, &target).unwrap();
         assert_eq!(w.packets[0], [0x99, 0xE5, 0x01, 0x06, 0x00]);
         assert_eq!(store.load(Which::Original).unwrap().fan_mode, 5);
+    }
+
+    // Curva (waterforce-speed-curve, 2.1)
+
+    fn curve_request(side: Side, rpm: u16, save: bool) -> CurveRequest {
+        CurveRequest {
+            curve: Curve::flat(side, rpm).unwrap(),
+            save,
+        }
+    }
+
+    fn fan_curve_request(save: bool) -> CurveRequest {
+        curve_request(Side::Fan, 1500, save)
+    }
+
+    const FAN_E6: [u8; 16] = [
+        0x99, 0xE6, 0x00, 0x01, 0x00, 0x05, 0xDC, 0x1E, 0x05, 0xDC, 0x32, 0x05, 0xDC, 0x50, 0x05,
+        0xDC,
+    ];
+
+    #[test]
+    fn curva_na_fan() {
+        let (_tmp, store) = store();
+        let dev = device(5, 4);
+        let w = curve_to(&dev, &store, &fan_curve_request(true)).unwrap();
+        dev.assert_written(&[
+            READS[0],
+            READS[1],
+            READS[2],
+            READS[3],
+            &[0x99, 0xE5, 0x01, 0x01, 0x00],
+            &[0x99, 0xE5, 0x02, 0x04, 0x00],
+            &FAN_E6,
+            &[0x99, 0xB6],
+        ]);
+        let b6 = dev.written.borrow().iter().filter(|p| p[1] == 0xB6).count();
+        assert_eq!(b6, 1);
+        assert!(w.original_created);
+        assert_eq!(store.load(Which::Previous).unwrap(), w.before);
+    }
+
+    #[test]
+    fn curva_na_bomba_sem_e6_da_fan() {
+        let (_tmp, store) = store();
+        let dev = device(5, 4);
+        let request = curve_request(Side::Pump, 2600, true);
+        curve_to(&dev, &store, &request).unwrap();
+        dev.assert_written(&[
+            READS[0],
+            READS[1],
+            READS[2],
+            READS[3],
+            &[0x99, 0xE5, 0x01, 0x05, 0x00],
+            &[0x99, 0xE5, 0x02, 0x01, 0x00],
+            &[
+                0x99, 0xE6, 0x00, 0x02, 0x00, 0x0A, 0x28, 0x1E, 0x0A, 0x28, 0x32, 0x0A, 0x28, 0x50,
+                0x0A, 0x28,
+            ],
+            &[0x99, 0xB6],
+        ]);
+        assert!(
+            !dev.written
+                .borrow()
+                .iter()
+                .any(|p| p.starts_with(&[0x99, 0xE6, 0x00, 0x01]))
+        );
+    }
+
+    #[test]
+    fn curva_sem_salvar() {
+        let (_tmp, store) = store();
+        let dev = device(5, 4);
+        curve_to(&dev, &store, &fan_curve_request(false)).unwrap();
+        dev.assert_written(&[
+            READS[0],
+            READS[1],
+            READS[2],
+            READS[3],
+            &[0x99, 0xE5, 0x01, 0x01, 0x00],
+            &[0x99, 0xE5, 0x02, 0x04, 0x00],
+            &FAN_E6,
+        ]);
+        assert_eq!(store.load(Which::Previous).unwrap().fan_mode, 5);
+        assert!(store.path(Which::Original).exists());
+    }
+
+    #[test]
+    fn curva_com_modelo_desconhecido_nao_escreve() {
+        let (_tmp, store) = store();
+        let dev = FakeDevice::new(&[&[0x99, 0xDE, 0x05]]);
+        let err = curve_to(&dev, &store, &fan_curve_request(true)).unwrap_err();
+        assert!(matches!(err, SpeedError::UnknownModel(5)));
+        dev.assert_written(&[READS[0]]);
+        assert!(!store.dir().exists());
+    }
+
+    #[test]
+    fn curva_com_falha_no_snapshot_nao_escreve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("arquivo");
+        fs::write(&file, "").unwrap();
+        let store = SnapshotStore::new(file.join("halo"));
+        let dev = device(5, 4);
+        let err = curve_to(&dev, &store, &fan_curve_request(true)).unwrap_err();
+        assert!(matches!(err, SpeedError::State(..)));
+        dev.assert_written(&READS);
+    }
+
+    #[test]
+    fn curva_com_o_outro_lado_em_fixed_rpm_nao_escreve() {
+        let (_tmp, store) = store();
+        let dev = device(5, mode::FIXED_RPM);
+        let err = curve_to(&dev, &store, &fan_curve_request(true)).unwrap_err();
+        assert!(matches!(
+            err,
+            SpeedError::OtherSideUnknown {
+                side: Side::Pump,
+                raw: 3
+            }
+        ));
+        assert!(err.to_string().contains("é 3"), "{err}");
+        dev.assert_written(&READS);
+        assert!(!store.dir().exists());
+    }
+
+    #[test]
+    fn restauracao_fora_das_faixas_da_curva() {
+        let (_tmp, store) = store();
+        let mut s = snapshot(mode::CUSTOMIZED, 4);
+        s.fan_curve = curve([(0, 800), (30, 800), (50, 1500), (80, 2500)]);
+        // Com degraus e abaixo do mínimo: a gravação não monta essa curva, mas
+        // a restauração a aceita.
+        assert!(Curve::flat(Side::Fan, 800).is_err());
+        let s = Snapshot::parse(&s.serialize()).unwrap();
+        let dev = device(6, 4);
+        restore_to(&dev, &store, &s).unwrap();
+        dev.assert_written(&[
+            READS[0],
+            READS[1],
+            READS[2],
+            READS[3],
+            &[0x99, 0xE5, 0x01, 0x01, 0x00],
+            &[0x99, 0xE5, 0x02, 0x04, 0x00],
+            &[
+                0x99, 0xE6, 0x00, 0x01, 0x00, 0x03, 0x20, 0x1E, 0x03, 0x20, 0x32, 0x05, 0xDC, 0x50,
+                0x09, 0xC4,
+            ],
+            &[0x99, 0xB6],
+        ]);
     }
 
     // 3.2

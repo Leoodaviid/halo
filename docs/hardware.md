@@ -232,6 +232,92 @@ Observações ainda **não explicadas**:
 
 Estado deixado no aparelho: fan Performance, bomba Turbo (`05 04`), o mesmo de antes da change.
 
+### Curva Customized com `halo speed waterforce curve` (2026-10-20)
+
+Change `waterforce-speed-curve`, com o aval do usuário a cada escrita. Cada `curve` mandou antes `99 DE 00`, `99 DD`, `99 D9 01` e `99 D9 02` e gravou o snapshot. Comandos de escrita enviados: `99 E5 01 01 00`, `99 E5 02 04 00` e `99 E6 00 01 …` (`DeviceApi.SetSpeedMode` e `SetSpeedCurve`), todos com `--no-save` (sem `B6`), e no fim `restore --original` (`99 E5 01 05 00`, `99 E5 02 04 00`, `99 B6`). O RPM e o duty vêm do hwmon, lidos a cada 3 s.
+
+| Passo | Curva da fan (°C:RPM) | `DD` | `D9 01` depois | Líquido | Duty da fan | RPM |
+|---|---|---|---|---|---|---|
+| Antes | (Performance) | `05 04` | 0:1000, 30:1000, 50:1500, 80:2500 | 26 °C | 224 (88%) | ~2232 |
+| Experimento (T = 26) | 0:1500, 27:1500, 29:2500, 100:2500 | `01 04` | igual à enviada | 25–26 °C | 255 (100%), por 54 s | 2475–2838 |
+| Curva plana | 0:1500, 30:1500, 50:1500, 80:1500 | `01 04` | igual à enviada | 25–26 °C | 153 (60%), em ~3 s | 1530–1716 |
+| `restore --original` | (Performance) | `05 04` | 1500 ×4 (não restaurado) | 26 °C | 224 (88%) | 2209–2508 |
+
+Resultados **confirmados no aparelho**:
+- O firmware aceita o `E6` e segue a curva: a curva plana de 1500 RPM levou a fan a duty 153, que é 1500/2500 × 255.
+- O `E6` vale **sem o `B6`**, na hora. O `D9` mostra a curva enviada sem `B6`. Ainda não se sabe se ela continua depois de desligar, como acontece com o `E5`.
+- A temperatura de referência da curva **não é a do líquido**. Com o líquido em 25–26 °C, abaixo do ponto de 27 °C, a curva em degraus foi para o ponto de 2500 RPM e ficou lá. A referência estava, então, acima de 29 °C. O hwmon lê o líquido do próprio `DA` do aparelho, então não é diferença de sensor.
+- O `restore` não volta o slot de um lado que estava num preset. Depois do `restore --original` com `B6`, o `D9 01` ficou com `1500 ×4`, e não com o slot de fábrica. O slot está inativo enquanto a fan estiver em Performance. O slot de fábrica tem degraus, então o `curve`, que só grava curvas planas, não o recria. Os caminhos são o `restore` de um snapshot com a fan em Customized e essa curva, ou o GCC no Windows. Com a fan num preset, o slot não tem efeito.
+
+**Hipótese, não confirmada:** a referência é a temperatura da CPU, que só o `AorusLcdService` do Windows envia (`E0`/`E1`). No Linux, sem ninguém enviar, o firmware usaria um valor fixo perto de 50 °C. Ela bate com os presets: com duty = RPM/2500 × 255, os duties da tabela da speed-mode caem no ponto de 50 °C das tabelas do GCC (Quiet 143 → 1402, tabela 1400; Balanced 184 → 1804, tabela 1800; Performance 224 → 2196, tabela 2200; Turbo 255 → 2500). A bomba Balanced bate com 2600 na escala de 3150 (207 → 2557). O Default (255) é a exceção. Não se sabe se o valor é guardado do último envio do Windows ou se é um padrão do firmware.
+
+Ainda não observado: o comportamento acima do último ponto e o efeito de uma carga na CPU, porque a fan já estava no máximo.
+
+#### Bomba plana e temperatura errada no `DA` (2026-10-20, ~23:38–23:52)
+
+Task 5.1, com o aval do usuário: `halo speed waterforce curve pump 2600 --no-save` (`99 E5 01 05 00`, `99 E5 02 01 00`, `99 E6 00 02 00 0A 28 1E 0A 28 32 0A 28 50 0A 28`, sem `B6`).
+
+- A bomba seguiu a curva: `DD` = `05 01`, `D9 02` = `2600 ×4`, duty 207 (81%), o mesmo do Balanced, e 2593–2700 RPM, estável desde a primeira leitura. A fan não mudou (Performance, duty 224).
+- **Anomalia, ainda não explicada:** cerca de 33 s depois do envio, o `temp1_input` foi de 25 °C para **224 °C** e às vezes **240 °C**. O `restore` (`99 E5 01 05 00`, `99 E5 02 04 00`, `99 B6`) voltou a bomba ao Turbo, mas a leitura continuou errada. Nenhum outro processo tinha o hidraw aberto, e o kernel não registrou nada. O firmware não reagiu ao valor: a fan continuou em duty 224.
+- **Efeito colateral:** o `B6` do `restore` gravou o slot que estava no aparelho, e o `D9 02` ficou `2600 ×4`. O slot de fábrica (`2800 ×4`) foi sobrescrito. Ele é uma curva plana válida e pode ser recriado com `curve pump 2800` seguido de um `restore`, ou de um preset com `set`. O `D9 01` também está com `1500 ×4`, desde o experimento da fan.
+
+Captura passiva do `99 DA` com `scripts/diag/waterforce_da_sniff.py`. O script abre o hidraw só para leitura, e quem pede o `DA` é o driver do kernel. Nenhum byte foi enviado ao aparelho. Estado no momento: fan Performance e bomba Turbo, depois do `restore`.
+
+```
+hora     temp1   Tctl | b2..13 do DA
+23:45:35  224000   ?  | d0 08 00 b5 0c 00 58 64 61 2f 01 e0
+23:45:40  240000   ?  | dc 08 00 d6 0b 00 58 64 68 2f 01 f0
+23:45:47  240000   ?  | d8 08 00 30 0c 00 58 64 7b 38 01 f0
+23:46:46  240000  32.4 | .. .. .. .. .. .. 58 64 65 2f 01 f0
+23:46:49  240000  32.4 | .. .. .. .. .. .. 58 64 65 38 01 f0
+23:46:51  224000  32.4 | .. .. .. .. .. .. 58 64 51 38 01 e0
+23:47:06  240000  32.9 | .. .. .. .. .. .. 58 64 e8 38 01 f0
+23:47:11  240000  32.8 | .. .. .. .. .. .. 58 64 a6 26 01 f0
+23:51:36  224000  33.4 | d7 08 00 de 0c 00 58 64 75 2f 01 e0
+23:51:44  224000  33.2 | e6 08 00 d6 0b 00 58 64 e8 2f 01 e0
+```
+
+| Byte | Valor | Leitura |
+|---|---|---|
+| 2–4 | ~2250 LE | RPM da fan, correto |
+| 5–7 | ~3030–3290 LE | RPM da bomba, correto |
+| 8 | `58` (88) | duty da fan em % (o `pwm1` 224 é 88% de 255) |
+| 9 | `64` (100) | duty da bomba em % |
+| 10 | 79 a 232, sem padrão | desconhecido |
+| 11 | `26`, `2f`, `38` (38, 47, 56) | desconhecido |
+| 12 | `01` | desconhecido |
+| 13 | `e0` / `f0` | o que o driver lê como temperatura (`data[0x0D]`) |
+
+Observações: nenhum dos bytes 10 a 13 acompanha o Tctl da CPU (k10temp, 32–34 °C). O byte 13 sempre termina em `0` em hexa, o que parece um código de erro ou um sensor saturado, e não uma temperatura. É hipótese. O GCC lê do `DA` só o RPM (`DeviceApi.GetRPMSpeed`), e o `AorusLcdService` não usa a temperatura do líquido (`CoolerData.LiqiudTemperature => 0`). Quem chama o byte 13 de temperatura é só o driver do kernel. O firmware do Castor3 não vem no pacote do GCC.
+
+**Captura de referência, depois do corte de energia (2026-10-21, 19:07–19:08).** O PC foi desligado com corte de energia e ligado às 18:29. Mesmo script, só leitura, nenhum byte enviado. Estado: fan Performance e bomba Turbo (o que o `restore` deixou), CPU em repouso.
+
+```
+hora     temp1   Tctl | b2..13 do DA
+19:07:41   31000  44.0 | bd 08 00 ae 0c 00 58 64 8e 38 01 1f
+19:07:46   31000  42.9 | f9 08 00 30 0c 00 58 64 6f 38 01 1f
+19:07:51   31000  43.4 | ee 08 00 ab 0c 00 58 64 95 38 01 1f
+19:07:56   31000  43.0 | d1 08 00 d6 0b 00 58 64 4d 2f 01 1f
+19:08:01   31000  44.2 | e5 08 00 a3 0c 00 58 64 b2 38 01 1f
+19:08:04   31000  45.9 | e5 08 00 c0 0c 00 58 64 b2 00 00 1f
+19:08:06   31000  45.4 | cc 09 00 30 0c 00 58 64 4c 38 01 1f
+19:08:11   31000  44.2 | ce 08 00 89 0c 00 58 64 d0 38 01 1f
+```
+
+- O byte 13 voltou a uma temperatura plausível: `1f` = 31 °C, estável por 14 leituras, enquanto o Tctl variava de 42,8 a 45,9 °C. Ou seja, ele não segue a CPU, e o corte de energia desfez o erro: o firmware (ou o sensor) estava travado, e não foi o valor gravado que mudou.
+- Os bytes 8 a 12 se comportam como durante o erro: duty `58`/`64`, byte 10 sem padrão, byte 11 entre `2f` e `38`, byte 12 em `01`. Uma leitura teve `00 00` nos bytes 11 e 12. Nada disso muda com o erro, então o erro ficou só no byte 13.
+- Ainda não se sabe o que travou o sensor. O travamento veio ~33 s depois da curva plana da bomba, mas uma única ocorrência não prova a causa. Se acontecer de novo, anotar o comando anterior e repetir o corte de energia.
+- Os slots Customized continuam como ficaram (`D9 01` = `1500 ×4`, `D9 02` = `2600 ×4`). Não foram lidos de novo, porque o `D9` exige enviar um pedido ao aparelho.
+
+**Investigação (2026-10-21), sem enviar nada ao aparelho.**
+- **Driver do kernel**, decompilado com o REA (Ghidra 12.1.4) a partir do `gigabyte_waterforce.ko` do kernel 7.0.0-38, sha256 `76761217…dadf38` descomprimido. O `waterforce_raw_event` aceita qualquer input report `99 DA`, inclusive a resposta a um pedido de outro programa, e grava `temp = data[0x0D] × 1000` sem sinal e sem validação. Ele também lê o RPM como 16 bits (`data[2..3]`, `data[5..6]`) e o duty como `data[8]`/`data[9]` em %, convertido com `(d × 255 + 50) / 100`. O `waterforce_read` reaproveita o último status por 2000 jiffies. O `224000` vem direto do byte enviado pelo aparelho, e não de um erro do driver.
+- **GCC**: nenhum programa da Gigabyte lê o byte 13. O `ucCooler` só lê o RPM do `DA` (`DeviceApi.GetRPMSpeed`, a cada 2 s pela `FanControl`). O `AorusLcdService` manda o byte do líquido no `E0` sempre como 0. A opção "temperatura do líquido" do LCD (`Display` bit `0x40`) faz o próprio firmware desenhar o valor. Ou seja, no Windows, um byte 13 errado não aparece em lugar nenhum, a não ser no LCD.
+- **Envio do halo comparado ao do GCC (`FanControl.OnClickApply`, `CoolerApi.Send`)**: mesma ordem (`E5` da fan, `E5` da bomba, `E6`, `B6`), mesmo preenchimento até 6144 bytes, e as respostas às escritas também não são lidas. O GCC não espera entre os pacotes, e o halo espera 1 ms. No Windows, o `AorusLcdService` manda `E0` em laço sem pausa ao mesmo tempo que a tela pede o `DA` a cada 2 s. Então o firmware já recebe comandos de dois processos intercalados, e a concorrência entre o halo e o driver do kernel não é um caso novo.
+- **Kernel**: o journal da sessão (boot `-1`, 2026-10-20 22:55–23:53) não tem nenhum erro de USB, de HID nem reset do Castor3.
+- **Firmware**: nenhum bloco do instalador do GCC é firmware do Castor3. Os `block-064`/`065` (~49 MB) são o ffmpeg do LCD. Não há como ver no REA como o firmware calcula o byte 13.
+- **Hipótese, não confirmada:** como byte com sinal, `e0` = −32 e `f0` = −16. Um termistor desconectado ou um ADC fora da faixa costuma dar uma leitura muito fria, o que encaixaria num valor-sentinela. O nibble baixo sempre em `0` aponta na mesma direção.
+- **Efeito no controle:** nenhum. A curva não usa o líquido como referência (ver "Curva Customized com `halo speed waterforce curve`"), a fan ficou no duty do preset, e a bomba seguiu o RPM pedido o tempo todo. Só a leitura ficou errada.
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.
