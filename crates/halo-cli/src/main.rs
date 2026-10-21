@@ -5,10 +5,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 use clap::{Parser, Subcommand};
 use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
-use halo_core::waterforce::probe::{self as wf_probe, FirmwareQuery, ProbeReport};
+use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
+use halo_core::waterforce::probe::{
+    self as wf_probe, ProbeReport, ReadQuery, Reading, SpeedMode, model_name,
+};
 use halo_core::waterforce::telemetry::{self, MIN_INTERVAL_SECS, Telemetry, TelemetryError};
 
 /// Controle de RGB do halo.
@@ -34,6 +38,35 @@ enum Command {
         #[command(subcommand)]
         device: TelemetryDevice,
     },
+    /// Aplica cor e efeito ao RGB de um dispositivo.
+    Led {
+        #[command(subcommand)]
+        device: LedDevice,
+    },
+}
+
+#[derive(Subcommand)]
+enum LedDevice {
+    /// Anel e fans do AORUS Waterforce (1044:7a4d). Confere o modelo com DE 00 e
+    /// envia só C9, CD, B0-B3 e um B6 no fim.
+    Waterforce {
+        /// Efeito.
+        #[arg(value_parser = PossibleValuesParser::new(Effect::NAMES)
+            .map(|s: String| Effect::from_name(&s).unwrap()))]
+        effect: Effect,
+        /// Cor RRGGBB. Repita para montar a paleta (até 8 cores).
+        #[arg(long = "color", value_name = "RRGGBB", value_parser = parse_color)]
+        colors: Vec<Rgb>,
+        /// Brilho de 1 a 10 (padrão 10).
+        #[arg(long)]
+        brightness: Option<u8>,
+        /// Velocidade de 1 a 5 (padrão 5).
+        #[arg(long)]
+        speed: Option<u8>,
+        /// Mostra os pacotes sem abrir o aparelho.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -44,7 +77,8 @@ enum ProbeDevice {
         #[arg(long)]
         raw: bool,
     },
-    /// AORUS Waterforce (1044:7a4d). Envia só os pedidos de firmware D6 e DE 00.
+    /// AORUS Waterforce (1044:7a4d). Envia só os pedidos de leitura D6, DE 00, DD,
+    /// D9 01, D9 02, C7 e E8.
     Waterforce {
         /// Mostra também os primeiros 64 bytes de cada resposta.
         #[arg(long)]
@@ -62,6 +96,8 @@ enum TelemetryDevice {
     },
 }
 
+/// Argumento inválido, o mesmo código do clap.
+const EXIT_USAGE: u8 = 2;
 const EXIT_NOT_FOUND: u8 = 3;
 const EXIT_PERMISSION: u8 = 4;
 const EXIT_FAILURE: u8 = 5;
@@ -105,6 +141,58 @@ fn main() -> ExitCode {
             std::thread::sleep(Duration::from_secs(secs));
             println!();
         },
+        Command::Led {
+            device:
+                LedDevice::Waterforce {
+                    effect,
+                    colors,
+                    brightness,
+                    speed,
+                    dry_run,
+                },
+        } => {
+            let setting = match LedSetting::new(effect, &colors, brightness, speed) {
+                Ok(s) => s,
+                Err(e) => return fail(&e, EXIT_USAGE),
+            };
+            if dry_run {
+                print!("{}", format_packets(&setting.packets()));
+                return ExitCode::SUCCESS;
+            }
+            match led::apply(sys, &setting) {
+                Ok(applied) => {
+                    println!(
+                        "{effect} aplicado em {} ({})",
+                        applied.devnode.display(),
+                        model_name(applied.model).unwrap_or("modelo desconhecido")
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(&e, led_exit_code(&e)),
+            }
+        }
+    }
+}
+
+fn parse_color(s: &str) -> Result<Rgb, String> {
+    s.parse().map_err(|e: led::LedError| e.to_string())
+}
+
+/// Um pacote por linha, em hexadecimal, sem o preenchimento de zeros.
+fn format_packets(packets: &[Vec<u8>]) -> String {
+    let mut out = String::new();
+    for p in packets {
+        let hex: Vec<String> = p.iter().map(|b| format!("{b:02X}")).collect();
+        let _ = writeln!(out, "{}", hex.join(" "));
+    }
+    out
+}
+
+fn led_exit_code(err: &ApplyError) -> u8 {
+    match err {
+        ApplyError::NotFound | ApplyError::Open(OpenError::NotFound(_)) => EXIT_NOT_FOUND,
+        ApplyError::Open(OpenError::PermissionDenied(_)) => EXIT_PERMISSION,
+        _ => EXIT_FAILURE,
     }
 }
 
@@ -188,26 +276,65 @@ fn format_waterforce_probe(r: &ProbeReport, raw: bool) -> String {
     );
     for result in &r.results {
         let label = match result.query {
-            FirmwareQuery::Kernel => "Firmware (kernel, D6):  ",
-            FirmwareQuery::OpenRgb => "Firmware (OpenRGB, DE): ",
+            ReadQuery::Firmware => "Firmware (D6):      ",
+            ReadQuery::Model => "Modelo (DE):        ",
+            ReadQuery::SpeedModes => "Modos (DD):         ",
+            ReadQuery::FanCurve => "Curva da fan (D9):  ",
+            ReadQuery::PumpCurve => "Curva da bomba (D9):",
+            ReadQuery::FanQty => "Fans RGB (C7):      ",
+            ReadQuery::LcdMode => "LCD (E8):           ",
         };
-        let value = match (&result.response, result.firmware()) {
+        let value = match (&result.response, result.reading()) {
             (None, _) => "sem resposta em 2 s".to_owned(),
-            (Some(_), Some(v)) => v.to_string(),
+            (Some(_), Some(reading)) => format_reading(reading),
             (Some(_), None) => "resposta curta".to_owned(),
         };
-        let _ = writeln!(out, "{label}{value}");
+        let _ = writeln!(out, "{label} {value}");
     }
     if raw {
         for result in &r.results {
             let Some(response) = &result.response else {
                 continue;
             };
-            let _ = writeln!(out, "Resposta {:02X}:", result.query.command());
+            let payload: Vec<String> = result
+                .query
+                .payload()
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect();
+            let _ = writeln!(out, "Resposta {}:", payload.join(" "));
             write_hex(&mut out, &response[..response.len().min(64)]);
         }
     }
     out
+}
+
+fn format_reading(reading: Reading) -> String {
+    match reading {
+        Reading::Firmware { major, minor } => format!("{major}.{minor}"),
+        Reading::Model(index) => match model_name(index) {
+            Some(name) => format!("{name} [{index}]"),
+            None => format!("desconhecido [{index}]"),
+        },
+        Reading::SpeedModes { fan, pump } => format!(
+            "fan {}, bomba {}",
+            format_speed_mode(fan),
+            format_speed_mode(pump)
+        ),
+        Reading::Curve(points) => {
+            let points: Vec<String> = points
+                .iter()
+                .map(|p| format!("{} °C {} RPM", p.celsius, p.rpm))
+                .collect();
+            points.join(", ")
+        }
+        Reading::FanQty(n) => n.to_string(),
+        Reading::LcdMode(mode) => format!("modo {mode}"),
+    }
+}
+
+fn format_speed_mode(mode: SpeedMode) -> String {
+    format!("{} [{}]", mode.name().unwrap_or("desconhecido"), mode.0)
 }
 
 fn write_hex(out: &mut String, bytes: &[u8]) {
@@ -311,26 +438,67 @@ mod tests {
     #[test]
     fn probe_do_waterforce_formatado() {
         use halo_core::waterforce::probe::QueryResult;
+        let mut d9 = vec![0x99, 0xD9, 0x01, 0x00];
+        d9.extend([
+            0x00, 0x04, 0xB0, 0x1E, 0x04, 0xB0, 0x32, 0x05, 0x78, 0x41, 0x07, 0x08,
+        ]);
+        let responses: [Option<Vec<u8>>; 7] = [
+            Some(vec![0x99, 0xD6, 0x01, 0x06]),
+            Some(vec![0x99, 0xDE, 0x00]),
+            Some(vec![0x99, 0xDD, 0x02, 0x03]),
+            Some(d9),
+            None,
+            Some(vec![0x99, 0xC7, 0x02]),
+            Some(vec![0x99, 0xE8, 0x08]),
+        ];
         let report = ProbeReport {
             devnode: PathBuf::from("/dev/hidraw2"),
             hid_name: Some("ITE Tech. Castor3".into()),
-            results: vec![
-                QueryResult {
-                    query: FirmwareQuery::Kernel,
-                    response: Some(vec![0x99, 0xD6, 0x02, 0x05]),
-                },
-                QueryResult {
-                    query: FirmwareQuery::OpenRgb,
-                    response: None,
-                },
-            ],
+            results: ReadQuery::ALL
+                .into_iter()
+                .zip(responses)
+                .map(|(query, response)| QueryResult { query, response })
+                .collect(),
         };
         let out = format_waterforce_probe(&report, true);
         assert!(out.contains("Nome HID:           ITE Tech. Castor3"));
-        assert!(out.contains("Firmware (kernel, D6):  25"));
-        assert!(out.contains("Firmware (OpenRGB, DE): sem resposta em 2 s"));
-        assert!(out.contains("Resposta D6:\n  00: 99 d6 02 05"));
-        assert!(!out.contains("Resposta DE"));
+        assert!(out.contains("Firmware (D6):       1.6\n"), "{out}");
+        assert!(out.contains("Modelo (DE):         Waterforce X 240 [0]\n"));
+        assert!(out.contains("Modos (DD):          fan Default [2], bomba Balanced [3]\n"));
+        assert!(out.contains(
+            "Curva da fan (D9):   0 °C 1200 RPM, 30 °C 1200 RPM, 50 °C 1400 RPM, 65 °C 1800 RPM\n"
+        ));
+        assert!(out.contains("Curva da bomba (D9): sem resposta em 2 s\n"));
+        assert!(out.contains("Fans RGB (C7):       2\n"));
+        assert!(out.contains("LCD (E8):            modo 7\n"));
+        assert!(out.contains("Resposta D6:\n  00: 99 d6 01 06"));
+        assert!(out.contains("Resposta D9 01:\n  00: 99 d9 01 00 00 04 b0"));
+        assert!(!out.contains("Resposta D9 02"));
+        assert_eq!(out.matches("Resposta ").count(), 6);
+    }
+
+    #[test]
+    fn modelo_desconhecido() {
+        assert_eq!(format_reading(Reading::Model(5)), "desconhecido [5]");
+    }
+
+    #[test]
+    fn pacotes_em_hexadecimal() {
+        let setting =
+            LedSetting::new(Effect::Static, &[Rgb(0xFF, 0x66, 0x00)], None, None).unwrap();
+        assert_eq!(
+            format_packets(&setting.packets()),
+            "99 C9 01 64 0A 02 01\n99 CD FF 66 00\n99 B6\n"
+        );
+    }
+
+    #[test]
+    fn codigos_de_saida_do_led() {
+        assert_eq!(led_exit_code(&ApplyError::NotFound), EXIT_NOT_FOUND);
+        let denied = ApplyError::Open(OpenError::PermissionDenied(PathBuf::from("/dev/hidraw2")));
+        assert_eq!(led_exit_code(&denied), EXIT_PERMISSION);
+        assert_eq!(led_exit_code(&ApplyError::UnknownModel(5)), EXIT_FAILURE);
+        assert_eq!(led_exit_code(&ApplyError::NoModelResponse), EXIT_FAILURE);
     }
 
     #[test]

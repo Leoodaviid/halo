@@ -148,20 +148,60 @@ Comandos enviados: só `99 D6` (do kernel) e `99 DE 00` (do OpenRGB), cada um co
 
 O `D6` dá firmware **1.6**, e o `DE` identifica o modelo como X 240. Os comandos de anel do OpenRGB (`c9`/`cd`/`b0`–`b3`/`b6`) são os mesmos que a `GcLedLib.dll` do GCC envia para o 7A4D, mas o OpenRGB troca os bytes 2 e 3 do `c9`: no GCC, o byte 2 é o brilho e o byte 3 é a velocidade. Vale o layout do GCC (ver [protocols/castor3.md](protocols/castor3.md#anel-e-rgb-das-fans)).
 
+### Probe com as leituras do GCC (2026-10-20)
+
+`halo probe waterforce --raw`, change `waterforce-led`. Comandos enviados, um de cada vez e cada um esperando a própria resposta: `99 D6` (kernel), `99 DE 00`, `99 DD`, `99 D9 01`, `99 D9 02`, `99 C7` e `99 E8` (`DeviceApi`/`LcdApi` do `ucCooler.dll`). Todos responderam com o próprio comando no byte 1. Nada mudou no anel, na tela, na fan nem na bomba.
+
+| Pedido | Resposta (primeiros bytes; o resto é zero) | Interpretação |
+|---|---|---|
+| `99 D6` | `99 d6 01 06` | Firmware 1.6 |
+| `99 DE 00` | `99 de 00` | Modelo 0 = Waterforce X 240 |
+| `99 DD` | `99 dd 05 04` | Fan em Performance (5), bomba em Turbo (4) |
+| `99 D9 01` | `99 d9 01 01 00 03 e8 1e 03 e8 32 05 dc 50 09 c4` | Curva da fan: 0 °C 1000, 30 °C 1000, 50 °C 1500, 80 °C 2500 RPM |
+| `99 D9 02` | `99 d9 02 02 00 0a f0 1e 0a f0 32 0a f0 50 0a f0` | Curva da bomba: 2800 RPM em 0, 30, 50 e 80 °C |
+| `99 C7` | `99 c7 02` | 2 fans RGB |
+| `99 E8` | `99 e8 04` | LCD no modo 3 (`r[2] - 1`), temperatura segundo o `ShowMode` (inferido) |
+
+Observações:
+- O `D9` repete o tipo em `r[2]` e em `r[3]` (`01 01` para a fan, `02 02` para a bomba). O GCC não confere esses bytes, e o halo também não.
+- As curvas guardadas no aparelho não são as tabelas da interface do GCC: o último ponto é 80 °C, e não 65 °C, e os RPM da fan não batem com o Performance do `FanApi.dcX240` (2000/2000/2200/2500). Isso confirma que a interface mostra tabelas próprias quando o modo não é Customized, e que o firmware tem as dele.
+- `C7` = 2 bate com o X 240 (duas fans de 120 mm). O halo não envia `C8`.
+
+O firmware 1.6 entende os pedidos de leitura do GCC. Com isso, a change segue para o comando de LED.
+
 ### Protocolo segundo o GIGABYTE Control Center (2026-10-20)
 
-Análise estática do `ucCooler.dll` e do `AorusLcdService.exe` (GCC 26.09.10.01, decompilados com o ilspycmd e triados com o REA). Detalhes, fontes e grau de confiança em [protocols/castor3.md](protocols/castor3.md). Nenhum desses comandos foi enviado ao aparelho.
+Análise estática do `ucCooler.dll` e do `AorusLcdService.exe` (GCC 26.09.10.01, decompilados com o ilspycmd e triados com o REA). Detalhes, fontes e grau de confiança em [protocols/castor3.md](protocols/castor3.md). Desses, só os pedidos de leitura da seção anterior foram enviados ao aparelho.
 
 | Função | Comandos | Situação |
 |---|---|---|
-| Identificação e status | `DE` modelo, `D6` firmware, `DA` RPM, `DD` modo, `D9` curva, `C7` nº de fans RGB, `C2` progresso de gravação | confirmados no código; `DE` e `D6` também no aparelho |
+| Identificação e status | `DE` modelo, `D6` firmware, `DA` RPM, `DD` modo, `D9` curva, `C7` nº de fans RGB, `C2` progresso de gravação | confirmados no código; `DE`, `D6`, `DD`, `D9`, `C7` e `E8` também no aparelho |
 | Velocidade | `E5 <tipo> <modo>`, `E6` curva de 4 pontos, `B6` salvar | confirmados no código |
 | LCD 320×320 | `E7`/`E8` modo, `E2`/`DF` itens, `E4`/`EA` cores, `FB`/`FC` carrossel, `F1`/`F2` envio de arquivo (JPEG, PNG ou MP4 H.264), `FA` espaço livre, `F0`/`F3`–`F6`/`FD` lista de mídia, `FE` apagar, `E0`/`E1` dados de CPU | confirmados no código; formato do arquivo inferido |
-| Anel e RGB das fans | `C9 <efeito> <brilho×10> <velocidade×2> 02 01`, `CD R G B`, `B0`–`B3` paleta, `B6` aplicar; `C8 <n>` nº de fans | confirmados na `GcLedLib.dll` (Ghidra); anel e fans no mesmo canal (inferido) |
+| Anel e RGB das fans | `C9 <efeito> <brilho×10> <velocidade×2> 02 01`, `CD R G B`, `B0`–`B3` paleta, `B6` aplicar; `C8 <n>` nº de fans | confirmados na `GcLedLib.dll` (Ghidra); `C9`, `CD`, `B0`–`B3` e `B6` também no aparelho, com anel e fans no mesmo canal (ver abaixo); `C8` nunca enviado |
 
 ### RGB das fans
 
-As fans do Waterforce têm RGB, e hoje ficam num modo aleatório (ciclo). Nenhuma fita RGB está ligada à placa-mãe, então o RGB das fans é controlado pelo próprio Waterforce. No GCC, as fans e o anel recebem a mesma configuração (uma região só, `nArea = 1`). A única coisa separada é a quantidade de fans RGB (`99 C8 <n>`, de 1 a 8), que aparece só no 7A4D.
+As fans do Waterforce têm RGB e vinham num modo de cores variadas de fábrica. Nenhuma fita RGB está ligada à placa-mãe, então o RGB das fans é controlado pelo próprio Waterforce. No GCC, as fans e o anel recebem a mesma configuração (uma região só, `nArea = 1`). A única coisa separada é a quantidade de fans RGB (`99 C8 <n>`, de 1 a 8), que aparece só no 7A4D. O aparelho informa 2 (`C7`), e o halo não envia `C8`.
+
+### Primeiro controle de LED com `halo led waterforce` (2026-10-20)
+
+Change `waterforce-led`, com o aval do usuário a cada execução. Cada uma mandou `99 DE 00` (resposta `99 de 00`, X 240), a sequência do efeito e um único `99 B6`. O resultado foi conferido olhando o cooler:
+
+| Comando | Pacotes depois do `DE 00` | Resultado |
+|---|---|---|
+| `static --color ff6600` | `99 C9 01 64 0A 02 01`, `99 CD FF 66 00`, `99 B6` | Anel e fans laranja, **juntos** |
+| `cycle` | `99 C9 03 64 0A 02 01`, `99 B6` | **Igual ao modo de fábrica** |
+| `rainbow` | `99 C9 0A 64 0A 02 01`, `99 B6` | Arco-íris, diferente do `cycle` |
+| `tri-color --color ff0000 --color 00ff00 --color 0000ff` | `99 C9 0B 64 0A 02 01`, `99 B0 0B FF 00 00 00 FF 00`, `99 B1`/`B2`/`B3 0B 00 00 FF 00 00 FF`, `99 B6` | Vermelho, verde e azul |
+| `pulse --speed 2` | `99 C9 02 64 04 02 01`, `99 CD FF 66 00`, `99 B6` | Laranja pulsando devagar |
+| `cycle` | igual ao acima | De volta ao modo de fábrica |
+
+Conclusões:
+- O anel e as fans usam o mesmo canal, como o GCC sugeria.
+- O modo de fábrica é o `cycle` (efeito 03, brilho 10, velocidade 5). Para voltar a ele: `halo led waterforce cycle`.
+- O layout do GCC vale neste firmware: o byte 3 do `C9` é a velocidade (o `04` deixou o pulso lento), e não o brilho, como no OpenRGB.
+- Nenhum erro de escrita. Foram 6 `B6` no total nesta sessão.
 
 ## Mouse Logitech G502 SE HERO
 

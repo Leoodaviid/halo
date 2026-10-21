@@ -46,6 +46,13 @@ fn ajuda_dos_comandos() {
 }
 
 #[test]
+fn ajuda_do_probe_lista_os_pedidos() {
+    let out = halo().args(["probe", "--help"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("D6, DE 00, DD"), "{text}");
+}
+
+#[test]
 fn it5702_nao_encontrado() {
     let sys = sys_with_other_device();
     let out = run(&["probe", "it5702"], sys.path());
