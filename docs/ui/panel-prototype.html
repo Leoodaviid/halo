@@ -1,0 +1,1350 @@
+<!doctype html>
+<!--
+  halo: protótipo do painel (v3, refinado pelo canvas "halo · Apple HIG").
+  Origem do layout: halo-v2.html. Visual: canvas do Claude Design
+  https://claude.ai/artifact/CNo765N8aGcxZjN1bVyuzF (artboards "Painel · claro", "Painel · escuro" e "Estados").
+  Diferenças em relação ao canvas: o destaque segue o accent-color do GNOME; sem fonte da web; sem o atalho ⌘,;
+  "Iniciar halod" e "Ver registro" têm comportamento (design da change, decisão 9).
+  Change: openspec/changes/gnome-panel-prototype. Spec: gnome-panel.
+  Nada aqui fala com o halod nem com o hardware: o daemon é simulado (fakeDaemon).
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Painel do halo</title>
+<style>
+/* Tokens do canvas, tema claro. */
+:root{
+  --label:rgba(0,0,0,.86);--label2:rgba(0,0,0,.6);--label3:rgba(0,0,0,.32);
+  --sep:rgba(0,0,0,.1);--tile:rgba(0,0,0,.045);--tile-hover:rgba(0,0,0,.08);
+  --material:rgba(244,244,246,.78);--edge:rgba(0,0,0,.16);--rim:rgba(255,255,255,.7);
+  --menu:rgba(252,252,253,.94);--control:#ffffff;--control-edge:rgba(0,0,0,.14);
+  --switch-off:rgba(0,0,0,.11);--track:rgba(0,0,0,.08);--fill:#ffffff;--fill-icon:rgba(0,0,0,.55);
+  --field:rgba(0,0,0,.05);--green:#1f9d47;--green-dot:#34c759;--red:#d70015;--red-tint:rgba(255,59,48,.1);
+  --bar:rgba(255,255,255,.42);--bar-fg:rgba(0,0,0,.85);--bar-pill:rgba(0,0,0,.12);
+  --wall:linear-gradient(165deg,#c7d5e0 0%,#9db4c6 48%,#6f8ba1 100%);
+  --scen:rgba(250,250,252,.9);
+  /* Destaque: accent-color do GNOME (laranja neste PC), não as cores do canvas. */
+  --accent:#ed5b00;
+  --accent-strong:color-mix(in srgb,var(--accent) 80%,#000);
+  --led:#ff6600;--led-paint:var(--led);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Helvetica Neue","Adwaita Sans",Cantarell,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,"Adwaita Mono","DejaVu Sans Mono",monospace;
+  color-scheme:light;
+}
+/* Tokens do canvas, tema escuro. */
+:root[data-theme="dark"]{
+  --label:rgba(255,255,255,.9);--label2:rgba(255,255,255,.62);--label3:rgba(255,255,255,.3);
+  --sep:rgba(255,255,255,.1);--tile:rgba(255,255,255,.07);--tile-hover:rgba(255,255,255,.12);
+  --material:rgba(38,38,42,.74);--edge:rgba(0,0,0,.6);--rim:rgba(255,255,255,.14);
+  --menu:rgba(44,44,48,.96);--control:rgba(255,255,255,.14);--control-edge:rgba(255,255,255,.08);
+  --switch-off:rgba(255,255,255,.16);--track:rgba(255,255,255,.12);--fill:rgba(255,255,255,.92);--fill-icon:rgba(0,0,0,.6);
+  --field:rgba(255,255,255,.08);--green:#30d158;--green-dot:#30d158;--red:#ff6961;--red-tint:rgba(255,69,58,.16);
+  --bar:rgba(20,20,24,.5);--bar-fg:rgba(255,255,255,.92);--bar-pill:rgba(255,255,255,.18);
+  --wall:linear-gradient(165deg,#2c3a47 0%,#1a242e 50%,#0d1318 100%);
+  --scen:rgba(36,36,40,.92);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;min-height:100%}
+body{font:13px/1.3 var(--font);color:var(--label);background:var(--wall);min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased;letter-spacing:-.003em}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:default}
+svg{display:block}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
+.mono{font-family:var(--mono)}
+.num{font-variant-numeric:tabular-nums}
+
+/* Barra de menus simulada (como no canvas) */
+.bar{position:sticky;top:0;height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:var(--bar);-webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px);color:var(--bar-fg);font-weight:500;z-index:5}
+.bar-left{display:flex;align-items:center;gap:16px;padding-left:6px}
+.bar-left b{font-weight:700}
+.bar-right{display:flex;align-items:center;gap:4px}
+.bar-icon{height:22px;padding:0 7px;display:flex;align-items:center}
+.pill{height:22px;display:flex;align-items:center;gap:4px;padding:0 8px;border-radius:6px;border:0;background:transparent;color:inherit;font-weight:500}
+.pill:hover,.pill.checked{background:var(--bar-pill)}
+.pill.dim{opacity:.5}
+#indicatorTemp{min-width:22px;text-align:left}
+
+/* Área de trabalho, painel e cenários */
+.desk{position:relative;min-height:calc(100vh - 26px);padding:16px}
+.popover{position:absolute;top:6px;right:196px;z-index:4;transition:opacity .15s,transform .15s;transform-origin:80% top}
+.popover.closed{opacity:0;transform:translateY(-6px);pointer-events:none}
+.material{width:320px;border-radius:16px;padding:8px;background:var(--material);-webkit-backdrop-filter:blur(40px) saturate(1.8);backdrop-filter:blur(40px) saturate(1.8);box-shadow:0 0 0 .5px var(--edge),inset 0 0 0 .5px var(--rim),0 18px 50px rgba(0,0,0,.28),0 2px 8px rgba(0,0,0,.12)}
+.page{display:flex;flex-direction:column;gap:8px}
+.tile{background:var(--tile);border-radius:12px}
+
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:4px 4px 2px 6px;position:relative}
+.brand{font-size:15px;font-weight:700;letter-spacing:-.01em}
+.profile-btn{border:0;background:transparent;padding:0;display:flex;align-items:center;gap:3px;font-size:11px;color:var(--label2)}
+.profile-btn:hover:not(:disabled){color:var(--label)}
+.hdr-right{display:flex;align-items:center;gap:10px}
+.icon-btn{width:28px;height:28px;border-radius:999px;border:0;background:var(--tile);color:var(--label);display:grid;place-items:center}
+.icon-btn:hover:not(:disabled){background:var(--tile-hover)}
+.icon-btn:disabled{opacity:.4}
+.switch{position:relative;width:38px;height:22px;border-radius:999px;border:0;padding:0;background:var(--switch-off);transition:background .2s;flex:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:999px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25),0 0 0 .5px rgba(0,0,0,.06);transition:transform .22s cubic-bezier(.3,.7,.3,1)}
+.switch[aria-checked="true"]{background:var(--accent)}
+.switch[aria-checked="true"]::after{transform:translateX(16px)}
+.switch:disabled{opacity:.4}
+
+/* Menus sobrepostos (popup de efeito e perfis) */
+.menu-list{position:absolute;z-index:10;background:var(--menu);-webkit-backdrop-filter:blur(30px);backdrop-filter:blur(30px);border-radius:10px;padding:5px;box-shadow:0 0 0 .5px var(--edge),0 10px 30px rgba(0,0,0,.25)}
+.menu-item{display:flex;align-items:center;gap:6px;width:100%;height:24px;padding:0 10px 0 6px;border:0;border-radius:5px;background:transparent;color:var(--label);text-align:left}
+.menu-item:hover,.menu-item:focus-visible{background:var(--accent-strong);color:#fff;outline:none}
+.menu-item[aria-disabled="true"]{color:var(--label3);background:transparent;cursor:default}
+.menu-item .chk{width:14px;display:grid;place-items:center}
+.menu-item .hint{margin-left:auto;font-size:11px;opacity:.7}
+.popup{height:24px;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 6px 0 10px;border-radius:7px;border:0;background:var(--control);box-shadow:0 0 0 .5px var(--control-edge),0 1px 1.5px rgba(0,0,0,.08);color:var(--label);min-width:132px}
+.popup:hover{filter:brightness(.98)}
+
+/* Aparelho */
+.stage{position:relative;height:128px;border-radius:8px;display:grid;place-items:center;outline:none;user-select:none;touch-action:pan-y}
+.art{width:280px;height:128px;display:grid;place-items:center;transition:opacity .18s,transform .22s cubic-bezier(.2,.85,.2,1)}
+.art.changing{opacity:.08;transform:translateX(var(--dir,12px)) scale(.975)}
+.art svg{width:280px;height:128px;filter:drop-shadow(0 8px 10px rgba(0,0,0,.22))}
+.led-stroke{stroke:var(--led-paint);transition:stroke .2s}
+.led-fill{fill:var(--led-paint);transition:fill .2s}
+.led-off .led-stroke{stroke:#4a4a50}.led-off .led-fill{fill:#4a4a50}
+.led-off .led-stroke,.led-off .led-fill{opacity:.6}
+.nav{position:absolute;top:50%;transform:translateY(-50%);width:24px;height:24px;border-radius:999px;border:0;background:var(--menu);color:var(--label);display:grid;place-items:center;box-shadow:0 0 0 .5px var(--edge),0 1px 4px rgba(0,0,0,.12);opacity:0;transition:opacity .15s}
+.stage:hover .nav,.stage:focus-within .nav{opacity:1}
+.nav.prev{left:2px}.nav.next{right:2px}
+.meta{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 4px 0}
+.dev-name{font-weight:600}
+.dev-cap{font-size:11px;color:var(--label2)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:500;color:var(--label2);white-space:nowrap}
+.chip i{width:7px;height:7px;border-radius:999px;background:var(--label3)}
+.chip.ok{color:var(--green)}.chip.ok i{background:var(--green-dot)}
+.dots{display:flex;justify-content:center;gap:6px;padding-top:8px}
+.dot{width:6px;height:6px;border-radius:999px;border:0;padding:0;background:var(--label3)}
+.dot.on{background:var(--label)}
+
+/* Efeito, cor e sliders */
+.row{display:flex;align-items:center;justify-content:space-between;position:relative}
+.lbl{font-weight:600}
+.small{font-size:11px;color:var(--label2)}
+.split{border-top:.5px solid var(--sep);padding-top:10px;display:flex;flex-direction:column;gap:10px}
+.field{height:24px;border:0;border-radius:6px;background:var(--field);box-shadow:inset 0 0 0 .5px var(--control-edge);color:var(--label);font:12px var(--mono);padding:0 8px;width:96px}
+.field:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent),inset 0 0 0 .5px var(--accent)}
+.field.bad{box-shadow:0 0 0 3px rgba(255,59,48,.35),inset 0 0 0 .5px var(--red)}
+.swatches{display:flex;align-items:center;justify-content:space-between}
+.sw{width:26px;height:26px;border-radius:999px;border:0;padding:0;display:grid;place-items:center;background:transparent}
+.sw i{display:block;width:20px;height:20px;border-radius:999px;background:var(--c);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.2)}
+.sw.on{box-shadow:0 0 0 2px var(--accent)}
+.hue{position:relative;height:20px;cursor:pointer;touch-action:none;outline:none}
+.hue::before{content:"";position:absolute;left:0;right:0;top:6px;height:8px;border-radius:999px;background:linear-gradient(90deg,#f00,#ff0 16.6%,#0f0 33.3%,#0ff 50%,#00f 66.6%,#f0f 83.3%,#f00);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.15)}
+.hue-knob{position:absolute;top:0;width:20px;height:20px;border-radius:999px;background:#fff;box-shadow:0 0 0 .5px rgba(0,0,0,.15),0 2px 5px rgba(0,0,0,.3);transform:translateX(-50%);pointer-events:none}
+.hue:focus-visible .hue-knob{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 50%,transparent),0 2px 5px rgba(0,0,0,.3)}
+.palette{display:flex;align-items:center;gap:6px}
+.palette i{display:block;width:16px;height:16px;border-radius:999px;background:var(--c);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.2)}
+/* Slider no estilo da Central de Controle */
+.cc{position:relative;height:28px;border-radius:999px;background:var(--track);overflow:hidden;cursor:pointer;touch-action:none;outline:none}
+.cc-fill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:var(--fill);box-shadow:0 0 0 .5px rgba(0,0,0,.08),2px 0 6px rgba(0,0,0,.12);transition:width .08s}
+.cc-icon{position:absolute;left:8px;top:7px;color:var(--fill-icon);pointer-events:none}
+.cc:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
+.cc[aria-disabled="true"]{opacity:.4;cursor:default}
+.dim{opacity:.4;pointer-events:none;filter:saturate(.4)}
+
+/* Avisos */
+.note{padding:16px 14px;display:flex;gap:12px;align-items:flex-start}
+.note .ic{flex:none;color:var(--label2)}
+.note b{display:block;font-weight:600;margin-bottom:4px}
+.note p{margin:0;color:var(--label2);line-height:1.4}
+.btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.text-btn{height:24px;padding:0 10px;border-radius:7px;border:0;background:var(--control);box-shadow:0 0 0 .5px var(--control-edge),0 1px 1.5px rgba(0,0,0,.08);color:var(--label);font-weight:500}
+.text-btn.primary{background:var(--accent-strong);color:#fff;box-shadow:none}
+.text-btn:disabled{opacity:.45}
+.banner{background:var(--red-tint);border-radius:12px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start}
+.banner .ic{flex:none;margin-top:1px;color:var(--red)}
+.banner b{display:block;font-weight:600;margin-bottom:3px}
+.banner p{margin:0;color:var(--label2);line-height:1.4}
+.locked{padding:18px 16px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+.locked p{margin:0;color:var(--label2);line-height:1.4;max-width:250px}
+
+/* Status e itens de menu */
+.foot{display:flex;flex-direction:column;gap:2px;padding:0 2px}
+.status{display:flex;align-items:center;gap:6px;height:22px;padding:0 8px;font-size:11px;color:var(--label2)}
+.status .ok{color:var(--green)}
+.spin{display:block;width:11px;height:11px;border-radius:999px;border:1.6px solid var(--label3);border-top-color:var(--label);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hr{height:.5px;background:var(--sep);margin:2px 8px 4px}
+.menu-row{display:flex;align-items:center;justify-content:space-between;width:100%;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--label);text-align:left}
+.menu-row:hover,.menu-row:focus-visible{background:var(--accent-strong);color:#fff;outline:none}
+
+/* Subpáginas */
+.sub{display:flex;flex-direction:column;gap:10px;padding:2px 2px 4px}
+.sub-top{display:flex;align-items:center;gap:4px}
+.back{display:flex;align-items:center;gap:2px;height:26px;padding:0 6px 0 2px;border:0;border-radius:6px;background:transparent;color:var(--accent-strong);font-weight:500}
+.sub-title{flex:1;text-align:center;font-weight:600;margin-right:52px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.section{font-size:11px;font-weight:600;color:var(--label2);padding:0 12px}
+.grp{background:var(--tile);border-radius:10px;overflow:hidden}
+.grp-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:32px;padding:6px 12px;position:relative;width:100%;border:0;background:transparent;text-align:left}
+.grp-row + .grp-row::before{content:"";position:absolute;left:12px;right:0;top:0;height:.5px;background:var(--sep)}
+button.grp-row:hover{background:var(--tile-hover)}
+.grp-row .k{color:var(--label2)}
+.grp-row .v{font-variant-numeric:tabular-nums;font-weight:500}
+.dev-ic{width:34px;height:34px;border-radius:8px;background:var(--tile);display:grid;place-items:center;flex:none}
+.cmd{flex:1;font:11.5px/1.45 var(--mono);word-break:break-all}
+.journal{margin:0;padding:10px 12px;font:11px/1.5 var(--mono);white-space:pre-wrap;word-break:break-all;color:var(--label)}
+.empty{padding:22px 8px;text-align:center;color:var(--label2)}
+
+/* Preferências (simula a janela de prefs.js) */
+.prefs-wrap{position:fixed;inset:0;display:grid;place-items:center;z-index:20;padding:16px;pointer-events:none}
+.prefs{pointer-events:auto;width:min(400px,100%);border-radius:14px;padding:14px 14px 12px;display:flex;flex-direction:column;gap:10px}
+.prefs h3{margin:0;font-size:13px;text-align:center}
+.prefs label{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.prefs label.off{opacity:.45;cursor:default}
+.prefs input{accent-color:var(--accent);margin-top:2px}
+.prefs .end{display:flex;justify-content:flex-end}
+
+/* Painel de cenários: fora do painel simulado, só para a revisão */
+.scen{position:absolute;left:16px;top:16px;width:290px;max-height:calc(100vh - 26px - 32px);overflow:auto;background:var(--scen);color:var(--label);border-radius:12px;padding:12px 14px;font-size:12px;box-shadow:0 0 0 .5px var(--edge),0 8px 24px rgba(0,0,0,.18)}
+.scen h3{font-size:13px;margin:0 0 2px}
+.scen h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--label2);margin:12px 0 4px}
+.scen label{display:flex;align-items:center;gap:6px;margin:3px 0}
+.scen select{max-width:100%}
+.scen select,.scen input[type=number]{font:inherit;background:var(--field);color:var(--label);border:0;border-radius:6px;padding:3px 6px;box-shadow:inset 0 0 0 .5px var(--control-edge)}
+.scen input[type=number]{width:5.5em}
+.scen input[type=range],.scen input[type=checkbox]{accent-color:var(--accent)}
+.scen input[type=range]{flex:1}
+.scen .btns{margin-top:4px;gap:6px}
+.accents{display:flex;gap:5px;flex-wrap:wrap}
+.accents button{width:20px;height:20px;border-radius:99px;border:0;background:var(--c);padding:0}
+.accents button.on{box-shadow:0 0 0 2px var(--scen),0 0 0 4px var(--label)}
+.counter{display:flex;justify-content:space-between;align-items:baseline;margin-top:4px}
+.counter b{font-size:18px}
+.log{list-style:none;padding:0;margin:4px 0 0;max-height:190px;overflow:auto;font:11px/1.4 var(--mono)}
+.log li{padding:3px 0;border-top:.5px solid var(--sep)}
+.log .t{color:var(--label2)}.log .e{color:var(--red)}
+.tag{font-size:10.5px;color:var(--label2);margin-top:10px}
+
+@media (max-width:860px){
+  .bar-left span{display:none}
+  .bar-date{display:none}
+  .desk{display:flex;flex-direction:column;gap:16px;align-items:center}
+  .popover{position:static;transform:none}
+  .popover.closed{display:none}
+  .scen{position:static;width:min(320px,100%);max-height:none}
+  .material{width:min(320px,calc(100vw - 32px))}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="ledRainbow" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3b30"/><stop offset=".25" stop-color="#ffcc00"/><stop offset=".5" stop-color="#34c759"/><stop offset=".75" stop-color="#0a84ff"/><stop offset="1" stop-color="#bf5af2"/></linearGradient>
+</defs></svg>
+
+<!-- Barra simulada: só o indicador do halo (#indicator) é da extensão. Menus, Wi-Fi, bateria,
+     controles e relógio são cenário, para dar contexto, e não serão implementados. -->
+<header class="bar">
+  <div class="bar-left"><b>Finder</b><span>Arquivo</span><span>Editar</span><span>Visualizar</span></div>
+  <div class="bar-right">
+    <button class="pill" id="indicator" aria-haspopup="dialog" aria-expanded="true" aria-label="halo">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="5.6" stroke-dasharray="29 6.2" stroke-linecap="round" transform="rotate(-60 8 8)"/><circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none"/></svg>
+      <span id="indicatorTemp" class="num"></span>
+    </button>
+    <span class="bar-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.8 6.2a9 9 0 0 1 12.4 0"/><path d="M4 8.6a5.8 5.8 0 0 1 8 0"/><path d="M6.2 11a2.6 2.6 0 0 1 3.6 0"/><circle cx="8" cy="13" r=".6" fill="currentColor"/></svg></span>
+    <span class="bar-icon" aria-hidden="true"><svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="3.5" width="13" height="9" rx="2.4"/><rect x="3.3" y="5.3" width="8" height="5.4" rx="1.2" fill="currentColor" stroke="none"/><path d="M16.2 6.6v2.8" stroke-linecap="round"/></svg></span>
+    <span class="bar-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.8" y="3" width="12.4" height="4.4" rx="2.2"/><circle cx="11.9" cy="5.2" r="1.3" fill="currentColor" stroke="none"/><rect x="1.8" y="8.6" width="12.4" height="4.4" rx="2.2"/><circle cx="4.1" cy="10.8" r="1.3" fill="currentColor" stroke="none"/></svg></span>
+    <span class="bar-date" id="clock" style="padding:0 8px 0 6px"></span>
+  </div>
+</header>
+
+<main class="desk">
+  <div class="popover" id="popover">
+    <div class="material" role="dialog" aria-label="halo">
+
+      <!-- Página principal -->
+      <section class="page" id="mainView">
+        <div class="hdr">
+          <div>
+            <div class="brand">halo</div>
+            <button class="profile-btn" id="profileBtn" aria-haspopup="menu" aria-expanded="false"><span id="profileText">Sem perfil</span><svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2.5 4 2.5 2.5L7.5 4"/></svg></button>
+          </div>
+          <div class="hdr-right">
+            <button class="icon-btn" id="openDevices" aria-label="Aparelhos"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="5" height="5" rx="1.4"/><rect x="9" y="2.5" width="5" height="5" rx="1.4"/><rect x="2" y="9.5" width="5" height="5" rx="1.4"/><rect x="9" y="9.5" width="5" height="5" rx="1.4"/></svg></button>
+            <button class="switch" id="power" role="switch" aria-checked="false" aria-label="Ligar ou desligar o LED"></button>
+          </div>
+          <div class="menu-list" id="profileMenu" role="menu" style="left:4px;top:42px;width:180px" hidden></div>
+        </div>
+
+        <div id="daemonOff" class="tile note" hidden>
+          <svg class="ic" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></svg>
+          <div>
+            <b>O serviço do halo não está rodando</b>
+            <p>Inicie o <span class="mono" style="font-size:12px">halod</span> para controlar a iluminação. O painel se atualiza sozinho quando ele voltar.</p>
+            <div class="btns"><button class="text-btn primary" id="startDaemon">Iniciar halod</button><button class="text-btn" id="openJournal">Ver registro</button></div>
+            <p class="small" id="unitHint" style="margin-top:8px" hidden>O serviço <span class="mono">halod.service</span> não está instalado.</p>
+          </div>
+        </div>
+        <div id="noDevices" class="tile empty" hidden>Nenhum aparelho encontrado.</div>
+
+        <div id="deviceArea" class="page">
+          <div class="tile" style="padding:8px 8px 10px">
+            <div class="stage" id="stage" tabindex="0" role="group" aria-label="Aparelho selecionado. Use a roda do mouse ou as setas para trocar.">
+              <div class="art" id="art"></div>
+              <button class="nav prev" id="prev" aria-label="Aparelho anterior"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg></button>
+              <button class="nav next" id="next" aria-label="Próximo aparelho"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5"/></svg></button>
+            </div>
+            <div class="meta"><div style="min-width:0"><div class="dev-name" id="devName"></div><div class="dev-cap" id="devCap"></div></div><span class="chip" id="devBadge"><i></i><span></span></span></div>
+            <div class="dots" id="pager" aria-label="Selecionar aparelho"></div>
+          </div>
+
+          <div id="errorNote" class="banner" role="alert" hidden>
+            <svg class="ic" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M8 2 14.5 13.5h-13Z"/><path d="M8 6.5v3.2" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".5" fill="currentColor"/></svg>
+            <div style="flex:1"><b id="errorTitle"></b><p id="errorText"></p><div class="btns" style="margin-top:6px"><button class="text-btn" id="retry">Tentar de novo</button></div></div>
+          </div>
+
+          <div id="controls" class="page">
+            <div id="unknownNote" class="tile note" style="padding:10px 12px" hidden>
+              <div><b>Estado do LED desconhecido</b><p>O halod não informou o que está aplicado. Escolha um efeito para começar.</p></div>
+            </div>
+
+            <div class="tile" style="padding:10px 12px;display:flex;flex-direction:column;gap:10px">
+              <div class="row">
+                <span class="lbl">Efeito</span>
+                <button class="popup" id="effectBtn" aria-haspopup="listbox" aria-expanded="false"><span id="effectText">—</span><svg width="9" height="12" viewBox="0 0 9 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m1.8 4.4 2.7-2.6 2.7 2.6"/><path d="m1.8 7.6 2.7 2.6 2.7-2.6"/></svg></button>
+                <div class="menu-list" id="effectMenu" role="listbox" style="right:0;top:30px;width:168px" hidden></div>
+              </div>
+
+              <div id="colorRow" class="split">
+                <div class="row">
+                  <span class="lbl">Cor</span>
+                  <span style="display:flex;align-items:center;gap:8px"><label for="hexEntry" class="small">Hex</label><input class="field" id="hexEntry" maxlength="7" spellcheck="false" autocomplete="off"></span>
+                </div>
+                <div class="swatches" id="swatches"></div>
+                <div class="hue" id="hue" role="slider" tabindex="0" aria-label="Matiz" aria-valuemin="0" aria-valuemax="360"><div class="hue-knob" id="hueKnob"></div></div>
+              </div>
+
+              <div id="paletteRow" class="split" hidden>
+                <div class="row"><span class="lbl">Paleta</span><span class="palette"><span class="palette" id="palette"></span><span class="small" style="margin-left:4px">definida pelo perfil</span></span></div>
+              </div>
+            </div>
+
+            <div class="tile" style="padding:10px 12px 12px;display:flex;flex-direction:column;gap:10px">
+              <div id="brightnessRow" style="display:flex;flex-direction:column;gap:6px">
+                <div class="row" style="align-items:baseline"><span class="lbl">Brilho</span><span class="small num" id="brightnessVal"></span></div>
+                <div class="cc" id="brightness" role="slider" tabindex="0" aria-label="Brilho" data-min="1" data-max="10">
+                  <div class="cc-fill"></div>
+                  <svg class="cc-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6M3.2 3.2l1.1 1.1M11.7 11.7l1.1 1.1M3.2 12.8l1.1-1.1M11.7 4.3l1.1-1.1"/></svg>
+                </div>
+              </div>
+              <div id="speedRow" style="display:flex;flex-direction:column;gap:6px">
+                <div class="row" style="align-items:baseline"><span class="lbl">Velocidade</span><span class="small num" id="speedVal"></span></div>
+                <div class="cc" id="speed" role="slider" tabindex="0" aria-label="Velocidade" data-min="1" data-max="5">
+                  <div class="cc-fill"></div>
+                  <svg class="cc-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2.6 11.5a5.6 5.6 0 1 1 10.8 0"/><path d="m8 9.5 2.6-3.4"/><circle cx="8" cy="9.6" r=".9" fill="currentColor"/></svg>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="locked" class="tile locked" hidden>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--label2)" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.4"/><path d="M8.5 10.5V7a3.5 3.5 0 1 1 7 0v3.5"/></svg>
+            <b>Controle em desenvolvimento</b>
+            <p id="lockedText"></p>
+          </div>
+
+          <div class="foot">
+            <div class="status" id="statusLine"><span id="statusIcon"></span><span role="status" id="statusText"></span></div>
+            <div class="hr"></div>
+            <button class="menu-row" id="openDetails"><span>Detalhes do aparelho…</span><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5"/></svg></button>
+            <button class="menu-row" id="openPrefs"><span>Preferências do halo…</span></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Aparelhos -->
+      <section class="sub" id="devicesView" hidden>
+        <div class="sub-top"><button class="back" aria-label="Voltar"><svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg>halo</button><div class="sub-title">Aparelhos</div></div>
+        <div class="grp" id="deviceList"></div>
+        <div class="small" style="line-height:1.4;padding:0 6px">A lista vem do halod. Aparelhos sem controle aparecem como detectados.</div>
+      </section>
+
+      <!-- Detalhes -->
+      <section class="sub" id="detailsView" hidden>
+        <div class="sub-top"><button class="back" aria-label="Voltar"><svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg>halo</button><div class="sub-title" id="detailsTitle"></div></div>
+        <div class="section">Telemetria e estado</div>
+        <div class="grp" id="detailsKv" style="margin-top:-4px"></div>
+        <div id="cmdBlock" style="display:flex;flex-direction:column;gap:6px" hidden>
+          <div class="section" style="padding-top:4px">Comando equivalente na CLI</div>
+          <div class="grp" style="padding:10px 12px;display:flex;align-items:flex-start;gap:10px"><code class="cmd" id="cmdText"></code><button class="text-btn" id="copyCmd" style="flex:none">Copiar</button></div>
+          <div class="small" style="padding:0 12px;line-height:1.4">Só leitura: o painel não muda ventoinha nem bomba.</div>
+        </div>
+      </section>
+
+      <!-- Registro do halod -->
+      <section class="sub" id="journalView" hidden>
+        <div class="sub-top"><button class="back" aria-label="Voltar"><svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg>halo</button><div class="sub-title">Registro do halod</div></div>
+        <div class="section">Últimas linhas de <span class="mono">journalctl --user -u halod.service</span></div>
+        <div class="grp"><pre class="journal" id="journalText"></pre></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Cenários: só para a revisão do protótipo -->
+  <aside class="scen" aria-label="Cenários do protótipo">
+    <h3>Cenários</h3>
+    <div class="small">Simula o halod. Nada é enviado ao hardware.</div>
+
+    <h4>Daemon</h4>
+    <label><input type="checkbox" id="sRunning" checked> halod rodando</label>
+    <label><input type="checkbox" id="sUnit" checked> <span class="mono">halod.service</span> instalado</label>
+    <div class="btns"><button class="text-btn" id="sRestart">Reiniciar (perde o LastApplied)</button></div>
+    <label>Latência <input type="range" id="sLatency" min="0" max="2000" step="100" value="400"><span id="sLatencyVal" class="num">400 ms</span></label>
+    <label>Próximo pedido falha com
+      <select id="sFail"><option value="">nada</option><option>Busy</option><option>PermissionDenied</option><option>NotFound</option><option>Device</option></select></label>
+
+    <h4>Aparelhos</h4>
+    <label><select id="sDevices">
+      <option value="wf,mb">Waterforce + placa-mãe</option>
+      <option value="wf">Só o Waterforce</option>
+      <option value="wf,mb,g502">Waterforce + placa-mãe + G502 (sem desenho)</option>
+      <option value="mb">Só a placa-mãe (Waterforce desconectado)</option>
+      <option value="">Nenhum</option>
+    </select></label>
+
+    <h4>Telemetria</h4>
+    <label><input type="checkbox" id="sTelem" checked> Telemetria disponível</label>
+    <label>Líquido <input type="number" id="sCoolant" step="0.1" value="31.0"> °C</label>
+    <label><input type="checkbox" id="sCoolantValid" checked> Líquido válido</label>
+    <div class="btns"><button class="text-btn" id="sCoolantBad">Líquido em 224 °C (inválido)</button></div>
+    <label><input type="checkbox" id="sCpuPub"> halod publica a CPU</label>
+    <label>CPU <input type="number" id="sCpu" step="0.1" value="47.5"> °C</label>
+
+    <h4>Perfis</h4>
+    <label><select id="sProfiles"><option value="2">noite (estático) e jogo (três cores)</option><option value="0">nenhum perfil</option></select></label>
+
+    <h4>Aparência</h4>
+    <label><select id="sTheme"><option value="light">Claro</option><option value="dark">Escuro</option></select></label>
+    <div class="accents" id="sAccents"></div>
+
+    <h4>Pedidos ao halod</h4>
+    <div class="counter"><span>Gravações no LED (<span class="mono">B6</span>)</span><b class="num" id="b6Count">0</b></div>
+    <div class="btns"><button class="text-btn" id="sClearLog">Zerar</button></div>
+    <ul class="log" id="log"></ul>
+    <div class="tag">Protótipo v3 · visual do canvas "halo · Apple HIG" · sem acesso ao hardware</div>
+  </aside>
+</main>
+
+<div class="prefs-wrap" id="prefs" hidden>
+  <div class="prefs material" role="dialog" aria-labelledby="prefsTitle">
+    <h3 id="prefsTitle">Preferências do halo</h3>
+    <div class="section" style="padding:0 4px">Temperatura na barra</div>
+    <div class="grp">
+      <label class="grp-row" style="justify-content:flex-start"><input type="radio" name="tsrc" value="coolant" checked><span><b style="font-weight:600">Líquido do Waterforce</b><br><span class="small">Padrão. Muda pouco: segue o líquido do cooler.</span></span></label>
+      <label class="grp-row" id="cpuOption" style="justify-content:flex-start"><input type="radio" name="tsrc" value="cpu"><span><b style="font-weight:600">CPU</b><br><span class="small" id="cpuHint"></span></span></label>
+    </div>
+    <div class="end"><button class="text-btn primary" id="prefsClose">OK</button></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const ERR = 'io.github.leoodaviid.Halo1.Error.';
+
+/* ---------- Catálogo de efeitos (os nomes são os da CLI e do D-Bus) ---------- */
+const EFFECTS = [
+  ['static', 'Estático'], ['pulse', 'Pulso'], ['flash', 'Flash'], ['double-flash', 'Flash duplo'],
+  ['gradient', 'Gradiente'], ['cycle', 'Ciclo'], ['wave', 'Onda'], ['rainbow', 'Arco-íris'], ['off', 'Desligado'],
+];
+const PALETTE_EFFECTS = {
+  'color-shift': 'Transição de cores', 'tri-color': 'Três cores', spin: 'Giro',
+  switch: 'Alternância', lego: 'Lego', aurora: 'Aurora',
+};
+const HAS_COLOR = new Set(['static', 'pulse', 'flash', 'double-flash', 'gradient']);
+const HAS_SPEED = new Set(['pulse', 'flash', 'double-flash', 'gradient', 'cycle', 'wave', 'rainbow']);
+const isPalette = e => e in PALETTE_EFFECTS;
+const effectName = e => (EFFECTS.find(p => p[0] === e) || [])[1] || PALETTE_EFFECTS[e] || e;
+const usesSpeed = e => HAS_SPEED.has(e) || isPalette(e);
+const SWATCHES = [['fffbeb', 'Branco quente'], ['ff6600', 'Laranja'], ['f26f98', 'Rosa'], ['aa7cd8', 'Roxo'], ['5c9fee', 'Azul'], ['53c7b3', 'Turquesa']];
+const DEFAULT_LED = { effect: 'pulse', colors: ['ff6600'], brightness: 8, speed: 2 };
+
+/* ---------- Daemon simulado: mesmos nomes e erros da interface D-Bus ---------- */
+class DBusError extends Error {
+  constructor(name, message) { super(message); this.name = name; }
+}
+const DEVICE_CATALOG = {
+  wf: ['waterforce', 'Waterforce X 240', 'controllable'],
+  mb: ['it5702', 'B550M AORUS ELITE', 'detected'],
+  g502: ['g502', 'Logitech G502 SE HERO', 'detected'],
+};
+const PROFILES = {
+  noite: { led: { effect: 'static', colors: ['aa7cd8'], brightness: 3, speed: 5 } },
+  jogo: { led: { effect: 'tri-color', colors: ['ff0000', '00ff00', '0000ff'], brightness: 10, speed: 5 } },
+};
+const ERROR_DETAIL = {
+  Busy: 'o aparelho continua ocupado depois de 5 s',
+  PermissionDenied: 'sem permissão em /dev/hidraw2; instale a regra udev do halo',
+  NotFound: 'nenhum 1044:7a4d encontrado',
+  Device: 'sem resposta do aparelho',
+};
+
+const fakeDaemon = {
+  running: true,
+  unitInstalled: true,
+  latency: 400,
+  failNext: '',
+  devices: [DEVICE_CATALOG.wf, DEVICE_CATALOG.mb],
+  lastApplied: { ...DEFAULT_LED, colors: [...DEFAULT_LED.colors] },
+  telemetry: { Available: true, FanRpm: 1200, PumpRpm: 2600, FanDuty: 143, PumpDuty: 224, CoolantMilliCelsius: 31000, CoolantValid: true },
+  cpuMilliCelsius: null,
+  profiles: { ...PROFILES },
+  activeProfile: '',
+  b6: 0,
+  listeners: new Set(),
+
+  emit(what) { for (const fn of this.listeners) fn(what); },
+  ensure() {
+    if (!this.running)
+      throw new DBusError('org.freedesktop.DBus.Error.ServiceUnknown', 'O nome io.github.leoodaviid.Halo1 não tem dono');
+  },
+  async call(method, args, body) {
+    this.ensure();
+    const entry = log(`${method}(${args})`);
+    await sleep(this.latency);
+    try {
+      this.ensure();
+      if (this.failNext && (method === 'Apply' || method === 'Activate')) {
+        const name = this.failNext;
+        this.failNext = '';
+        $('sFail').value = '';
+        throw new DBusError(ERR + name, ERROR_DETAIL[name]);
+      }
+      const result = body();
+      entry.done('ok');
+      return result;
+    } catch (e) {
+      entry.done(e.name.replace(ERR, ''), true);
+      throw e;
+    }
+  },
+
+  /* Manager */
+  Devices() { this.ensure(); return this.devices.map(d => [...d]); },
+
+  /* Waterforce.Led */
+  Apply(effect, colors, brightness, speed) {
+    const args = `"${effect}", [${colors.map(c => `"${c}"`).join(', ')}], ${brightness}, ${speed}`;
+    return this.call('Apply', args, () => {
+      if (!isPalette(effect) && !EFFECTS.some(p => p[0] === effect))
+        throw new DBusError(ERR + 'InvalidArgument', `efeito desconhecido: ${effect}`);
+      if (colors.some(c => !/^[0-9a-f]{6}$/.test(c)))
+        throw new DBusError(ERR + 'InvalidArgument', 'cor inválida');
+      this.b6++;
+      updateB6();
+      this.lastApplied = { effect, colors: [...colors], brightness: effect === 'off' ? 0 : brightness, speed };
+      this.emit('LastApplied');
+    });
+  },
+  get LastApplied() { this.ensure(); return this.lastApplied ? structuredClone(this.lastApplied) : {}; },
+
+  /* Profiles */
+  List() { this.ensure(); return Object.keys(this.profiles); },
+  Get(name) {
+    this.ensure();
+    if (!(name in this.profiles)) throw new DBusError(ERR + 'ProfileNotFound', name);
+    return structuredClone(this.profiles[name]);
+  },
+  Activate(name) {
+    return this.call('Activate', `"${name}"`, () => {
+      const p = this.profiles[name];
+      if (!p) throw new DBusError(ERR + 'ProfileNotFound', name);
+      if (p.led) {
+        this.b6++;
+        updateB6();
+        this.lastApplied = structuredClone(p.led);
+        this.emit('LastApplied');
+      }
+      this.activeProfile = name;
+      this.emit('ActiveProfile');
+    });
+  },
+  get ActiveProfile() { this.ensure(); return this.activeProfile; },
+
+  /* Waterforce.Telemetry e a temperatura da CPU (ainda não existe no halod real) */
+  get Telemetry() { this.ensure(); return { ...this.telemetry }; },
+  get CpuMilliCelsius() { this.ensure(); return this.cpuMilliCelsius; },
+};
+
+/* systemd do usuário simulado (org.freedesktop.systemd1 no D-Bus da sessão) */
+const fakeSystemd = {
+  async StartUnit(unit) {
+    const entry = log(`systemd1.StartUnit("${unit}", "replace")`);
+    await sleep(fakeDaemon.latency);
+    if (!fakeDaemon.unitInstalled) { entry.done('NoSuchUnit', true); throw new DBusError('org.freedesktop.systemd1.NoSuchUnit', unit); }
+    entry.done('ok');
+    fakeDaemon.running = true;
+    $('sRunning').checked = true;
+    restartDaemon();
+    refreshAll();
+  },
+  journal() {
+    const t = new Date();
+    const at = s => new Date(t - s * 1000).toLocaleTimeString('pt-BR');
+    return [
+      `${at(812)} halod[2214]: halod 0.1.0 em io.github.leoodaviid.Halo1`,
+      `${at(812)} halod[2214]: Waterforce em /dev/hidraw2 (1044:7a4d)`,
+      `${at(640)} halod[2214]: perfil noite ativado`,
+      `${at(95)} systemd[1402]: Stopping halod.service - halo daemon...`,
+      `${at(95)} halod[2214]: SIGTERM recebido; saindo`,
+      `${at(95)} systemd[1402]: Stopped halod.service - halo daemon.`,
+    ].join('\n');
+  },
+};
+
+/* ---------- Registro de pedidos ---------- */
+function log(text) {
+  const li = document.createElement('li');
+  const t = new Date().toLocaleTimeString('pt-BR');
+  li.innerHTML = `<span class="t">${t}</span> ${escapeHtml(text)} <span class="r">…</span>`;
+  $('log').prepend(li);
+  while ($('log').children.length > 60) $('log').lastChild.remove();
+  return {
+    done(result, error = false) {
+      const r = li.querySelector('.r');
+      r.textContent = '→ ' + result;
+      if (error) r.className = 'r e';
+    },
+  };
+}
+function updateB6() { $('b6Count').textContent = fakeDaemon.b6; }
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+/* ---------- Desenhos: corpo e LED separados (o LED usa .led-stroke/.led-fill) ---------- */
+function drawWaterforce() {
+  const fan = (cx, cy) => `<g transform="translate(${cx} ${cy})"><g class="body"><rect x="-39" y="-39" width="78" height="78" rx="8" fill="#1c2024" stroke="#36393f" stroke-width="2"/><circle r="35" fill="#12161b" stroke="#3b3e42" stroke-width="1.4"/><circle r="29" fill="#23262c"/></g><circle class="led-stroke" r="27" fill="none" opacity=".92" stroke-width="5"/><g class="body"><g fill="#343941" stroke="#41464d" stroke-width=".8">${Array.from({ length: 7 }, (_, i) => `<path d="M 2 -3 C 22 -29 8 -28 -2 -27 C -9 -18 -10 -10 2 -3Z" transform="rotate(${i * 360 / 7})"/>`).join('')}</g><circle r="9" fill="#0e1317" stroke="#5c6268"/><circle r="4" fill="#9b8e5a"/></g></g>`;
+  return `<svg viewBox="0 0 300 156" aria-hidden="true"><defs><linearGradient id="wfCase" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#34383f"/><stop offset=".48" stop-color="#12171d"/><stop offset="1" stop-color="#45484c"/></linearGradient></defs><g transform="translate(15 19)"><g class="body"><rect width="180" height="103" rx="8" fill="url(#wfCase)" stroke="#1d2227" stroke-width="2"/></g>${fan(50, 51)}${fan(129, 51)}<g class="body"><path d="M190 37 Q236 25 243 65" fill="none" stroke="#343a42" stroke-width="12" stroke-linecap="round"/><path d="M191 49 Q225 44 228 84" fill="none" stroke="#272b33" stroke-width="12" stroke-linecap="round"/></g><g transform="translate(239 96)"><g class="body"><circle r="42" fill="url(#wfCase)" stroke="#14191e" stroke-width="1.5"/><circle r="34" fill="#0d1319" stroke="#596169" stroke-width="2"/></g><circle class="led-stroke" r="26" stroke-width="3.2" fill="none" opacity=".92"/><path class="body" d="M-11 8 1 -14 13 -3 1 -5 -7 11 Z" fill="#dadee4" opacity=".76"/><path class="led-fill" d="M-7 12 7 -9 5 5Z" opacity=".92"/></g></g></svg>`;
+}
+function drawBoard() {
+  const rs = Array.from({ length: 24 }, (_, i) => `<rect x="${(i % 6) * 7 + 11}" y="${Math.floor(i / 6) * 8 + 11}" width="3.5" height="5" rx=".6" fill="#666b71"/>`).join('');
+  return `<svg viewBox="0 0 300 156" aria-hidden="true"><g transform="translate(63 3)" class="body"><rect width="170" height="145" rx="2" fill="#20252b" stroke="#454b52" stroke-width="1.3"/><path d="M15 8H75L69 47H15Z" fill="#30353b"/><path d="M17 8H65L39 23H17Z" fill="#5b646c"/><rect x="76" y="28" width="50" height="48" rx="3" fill="#292e34" stroke="#79818a"/><rect x="85" y="35" width="33" height="33" fill="#1f2429" stroke="#4c5158"/>${rs}<path d="M77 80H130L126 84H77Z" fill="#c1c7ce"/><rect x="142" y="9" width="7" height="78" fill="#0c1115" stroke="#636a70"/><rect x="153" y="9" width="7" height="78" fill="#0c1115" stroke="#636a70"/><rect x="164" y="9" width="4" height="78" fill="#0c1115" stroke="#636a70"/><rect x="10" y="102" width="139" height="9" fill="#a8afb6"/><rect x="10" y="115" width="139" height="7" fill="#1c2329" stroke="#737b83"/><rect x="107" y="120" width="37" height="23" fill="#2c3238"/><path d="M20 42H58L33 69" fill="none" stroke="#6f7880" stroke-width="3"/><path d="M25 135L55 119M21 130l41-30" fill="none" stroke="#5c666e" stroke-width="3"/></g></svg>`;
+}
+function drawGeneric(name) {
+  return `<svg viewBox="0 0 300 156" aria-hidden="true"><g class="body"><rect x="95" y="16" width="110" height="82" rx="14" fill="#2a2e34" stroke="#4b5158" stroke-width="2"/><path d="M135 46h30M150 38v22" stroke="#8a9198" stroke-width="5" stroke-linecap="round"/><rect x="138" y="66" width="24" height="12" rx="3" fill="#8a9198"/><text x="150" y="132" text-anchor="middle" font-size="15" fill="currentColor" opacity=".75" font-family="inherit">${escapeHtml(name)}</text></g></svg>`;
+}
+function drawDevice(dev) {
+  if (dev.id === 'waterforce') return drawWaterforce();
+  if (dev.id === 'it5702') return drawBoard();
+  return drawGeneric(dev.name);
+}
+const DEVICE_ICON = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="2"/><circle cx="5.5" cy="8" r="2.2"/><circle cx="10.5" cy="8" r="2.2"/></svg>';
+const CHECK = '<svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2.5 6.3 2.3 2.3 4.7-5.1"/></svg>';
+const CHEVRON = '<svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5"/></svg>';
+
+/* ---------- Estado do painel ---------- */
+const panel = {
+  open: true,
+  page: 'main',         // main | devices | details | journal
+  index: 0,
+  devices: [],          // [{id, name, status}]
+  applied: null,        // último estado confirmado pelo daemon, ou null se desconhecido
+  draft: null,          // o que a interface mostra
+  lastOn: null,         // último estado ligado visto nesta instância do daemon
+  activeProfile: '',
+  profiles: [],
+  running: true,
+  applying: false,
+  pending: null,
+  activating: false,
+  starting: false,
+  error: null,          // {title, text}
+  failed: null,         // pedido que falhou, para "Tentar de novo"
+  tempSource: 'coolant',
+};
+const sameSetting = (a, b) => !!a && !!b && a.effect === b.effect && a.brightness === b.brightness &&
+  a.speed === b.speed && a.colors.join() === b.colors.join();
+const clone = s => s && structuredClone(s);
+const current = () => panel.devices[panel.index];
+const controllable = () => !!current() && current().status === 'controllable';
+
+function fromDaemon(rec) {
+  if (!rec || !rec.effect) return null;
+  return { effect: rec.effect, colors: rec.colors || [], brightness: rec.brightness || 10, speed: rec.speed || 5 };
+}
+
+/* Pede uma aplicação ao fim de um gesto: um pedido por vez, e o último valor vence.
+   A paleta de um efeito de paleta nunca é editada aqui: só brilho e velocidade mudam. */
+function commit(setting) {
+  if (!setting || !setting.effect) return;
+  if (panel.applying) { panel.pending = clone(setting); render(); return; }
+  if (sameSetting(setting, panel.applied)) return;
+  send(setting);
+}
+async function send(setting) {
+  panel.applying = true;
+  panel.error = null;
+  render();
+  const req = normalize(setting);
+  try {
+    await fakeDaemon.Apply(req.effect, req.colors, req.brightness, req.speed);
+    panel.failed = null;
+  } catch (e) {
+    showError(e);
+    panel.failed = clone(setting);
+    panel.pending = null;
+    panel.draft = clone(panel.applied);
+  }
+  panel.applying = false;
+  const next = panel.pending;
+  panel.pending = null;
+  if (next && !sameSetting(next, panel.applied)) { send(next); return; }
+  render();
+}
+/* Só manda o que o efeito usa, como a CLI. */
+function normalize(s) {
+  if (s.effect === 'off') return { effect: 'off', colors: [], brightness: 0, speed: 0 };
+  return {
+    effect: s.effect,
+    colors: HAS_COLOR.has(s.effect) ? s.colors.slice(0, 1) : isPalette(s.effect) ? s.colors : [],
+    brightness: s.brightness,
+    speed: usesSpeed(s.effect) ? s.speed : 0,
+  };
+}
+
+function showError(e) {
+  const kind = e.name.replace(ERR, '');
+  const [title, text] = {
+    Busy: ['O aparelho está em uso por outro processo', 'Outro programa do halo está falando com ele. Tente de novo em alguns segundos.'],
+    PermissionDenied: ['Sem permissão para abrir o aparelho', 'Falta a regra udev do halo. Veja docs/permissions.md.'],
+    NotFound: ['Aparelho não encontrado', 'Confira se o Waterforce está conectado.'],
+    Device: ['Falha de comunicação com o aparelho', 'O pedido não foi confirmado. O LED pode estar no estado anterior.'],
+  }[kind] || ['O halod recusou o pedido', e.message];
+  panel.error = { title, text };
+}
+
+function togglePower() {
+  if (!controllable() || panel.applying) return;
+  const on = panel.applied && panel.applied.effect !== 'off';
+  if (on) {
+    panel.draft = { ...panel.applied, effect: 'off', colors: [] };
+    commit(panel.draft);
+    return;
+  }
+  let target = panel.lastOn;
+  if (!target && panel.activeProfile) {
+    try { target = fromDaemon(fakeDaemon.Get(panel.activeProfile).led); } catch { target = null; }
+  }
+  if (!target) target = { effect: 'cycle', colors: [], brightness: 10, speed: 5 };
+  panel.draft = clone(target);
+  commit(target);
+}
+
+async function activateProfile(name) {
+  panel.activating = true;
+  panel.error = null;
+  closeMenus();
+  render();
+  try { await fakeDaemon.Activate(name); } catch (e) { showError(e); }
+  panel.activating = false;
+  render();
+}
+
+/* ---------- Sincronização com o daemon ---------- */
+function refreshAll() {
+  panel.running = fakeDaemon.running;
+  if (!panel.running) {
+    if (panel.page !== 'journal') panel.page = 'main';
+    closeMenus();
+    render();
+    return;
+  }
+  if (panel.page === 'journal') panel.page = 'main';
+  syncDevices();
+  syncLed();
+  panel.activeProfile = fakeDaemon.ActiveProfile;
+  panel.profiles = fakeDaemon.List();
+  render();
+}
+function syncDevices() {
+  const prevId = current() && current().id;
+  panel.devices = fakeDaemon.Devices().map(([id, name, status]) => ({ id, name, status }));
+  const keep = panel.devices.findIndex(d => d.id === prevId);
+  panel.index = keep >= 0 ? keep : 0;
+  if (keep < 0 && panel.page === 'details') panel.page = 'main';
+  renderArt(0);
+}
+function syncLed() {
+  panel.applied = fromDaemon(fakeDaemon.LastApplied);
+  if (panel.applied && panel.applied.effect !== 'off') panel.lastOn = clone(panel.applied);
+  if (!panel.applying && !panel.pending) panel.draft = clone(panel.applied);
+}
+fakeDaemon.listeners.add(what => {
+  if (what === 'LastApplied') { syncLed(); render(); }
+  if (what === 'ActiveProfile') { panel.activeProfile = fakeDaemon.ActiveProfile; render(); }
+});
+
+/* ---------- Renderização ---------- */
+/* O que os controles mostram: com o LED desligado, os últimos valores ligados, esmaecidos. */
+function shownSetting() {
+  const d = panel.draft;
+  if (d && d.effect !== 'off') return d;
+  const base = panel.lastOn || DEFAULT_LED;
+  return { ...base, effect: d ? 'off' : base.effect };
+}
+
+function setLedPaint() {
+  const d = panel.draft;
+  const art = $('art');
+  art.classList.toggle('led-off', !d || d.effect === 'off');
+  const first = (d && d.colors[0]) || 'ff6600';
+  let paint = '#' + first;
+  if (d && !HAS_COLOR.has(d.effect) && !isPalette(d.effect)) paint = 'url(#ledRainbow)';
+  document.documentElement.style.setProperty('--led', '#' + first);
+  document.documentElement.style.setProperty('--led-paint', paint);
+}
+
+let artTimer = 0;
+function renderArt(dir) {
+  const dev = current();
+  const art = $('art');
+  if (!dev) { art.innerHTML = ''; return; }
+  if (!dir) { art.innerHTML = drawDevice(dev); return; }
+  clearTimeout(artTimer);
+  art.style.setProperty('--dir', `${dir * 12}px`);
+  art.classList.add('changing');
+  artTimer = setTimeout(() => { art.innerHTML = drawDevice(dev); art.classList.remove('changing'); }, 140);
+}
+function select(i, dir) {
+  const n = panel.devices.length;
+  if (n < 2) return;
+  panel.index = ((i % n) + n) % n;
+  panel.error = null;
+  closeMenus();
+  renderArt(dir);
+  render();
+}
+
+function temperatureText() {
+  if (!panel.running) return '';
+  if (panel.tempSource === 'cpu') {
+    const c = fakeDaemon.CpuMilliCelsius;
+    return c == null ? '' : `${Math.round(c / 1000)}°`;
+  }
+  const t = fakeDaemon.Telemetry;
+  if (!t.Available) return '';
+  return t.CoolantValid ? `${Math.round(t.CoolantMilliCelsius / 1000)}°` : '--';
+}
+
+function cliCommand(s) {
+  if (!s) return '';
+  if (s.effect === 'off') return 'halo led waterforce off';
+  const r = normalize(s);
+  let cmd = `halo led waterforce ${r.effect}`;
+  for (const c of r.colors) cmd += ` --color ${c}`;
+  cmd += ` --brightness ${r.brightness}`;
+  if (r.speed) cmd += ` --speed ${r.speed}`;
+  return cmd;
+}
+
+/* Preenchimento da Central de Controle: o "botão" de 28 px fica sempre visível. */
+function renderSlider(el, value) {
+  const min = +el.dataset.min, max = +el.dataset.max;
+  const p = (value - min) / (max - min);
+  el.querySelector('.cc-fill').style.width = `calc(28px + (100% - 28px) * ${p.toFixed(3)})`;
+  el.setAttribute('aria-valuenow', value);
+  el.setAttribute('aria-valuemin', min);
+  el.setAttribute('aria-valuemax', max);
+}
+
+function render() {
+  const ind = $('indicator');
+  ind.classList.toggle('dim', !panel.running);
+  ind.classList.toggle('checked', panel.open);
+  ind.setAttribute('aria-expanded', String(panel.open));
+  $('indicatorTemp').textContent = temperatureText();
+  $('popover').classList.toggle('closed', !panel.open);
+
+  for (const v of ['main', 'devices', 'details', 'journal'])
+    $(v + 'View').hidden = v !== panel.page;
+
+  const up = panel.running;
+  const dev = current();
+  $('daemonOff').hidden = up;
+  $('startDaemon').disabled = !fakeDaemon.unitInstalled || panel.starting;
+  $('startDaemon').textContent = panel.starting ? 'Iniciando…' : 'Iniciar halod';
+  $('openJournal').disabled = !fakeDaemon.unitInstalled;
+  $('unitHint').hidden = fakeDaemon.unitInstalled;
+  $('noDevices').hidden = !up || panel.devices.length > 0;
+  $('deviceArea').hidden = !up || !dev;
+  $('profileBtn').disabled = !up;
+  $('openDevices').disabled = !up;
+  $('profileText').textContent = !up ? '—' : panel.activating ? 'Ativando…' : panel.activeProfile ? `Perfil: ${panel.activeProfile}` : 'Sem perfil';
+
+  const pw = $('power');
+  const ctl = up && controllable();
+  pw.disabled = !ctl || panel.applying || panel.activating;
+  pw.setAttribute('aria-checked', String(!!(ctl && panel.draft && panel.draft.effect !== 'off')));
+
+  if (up && dev) renderDevice(dev, ctl);
+  if (panel.page === 'devices') renderDeviceList();
+  if (panel.page === 'details') renderDetails();
+  if (panel.page === 'journal') $('journalText').textContent = fakeSystemd.journal();
+}
+
+function renderDevice(dev, ctl) {
+  $('devName').textContent = dev.name;
+  $('devCap').textContent = dev.id === 'waterforce' ? 'Anel e ventoinhas RGB' : dev.id === 'it5702' ? 'IT5702 · USB HID' : 'USB HID';
+  const badge = $('devBadge');
+  badge.className = 'chip' + (ctl ? ' ok' : '');
+  badge.lastChild.textContent = ctl ? 'Disponível' : 'Detectado';
+
+  const multi = panel.devices.length > 1;
+  $('prev').hidden = $('next').hidden = $('pager').hidden = !multi;
+  $('pager').innerHTML = multi ? panel.devices.map((d, i) =>
+    `<button class="dot ${i === panel.index ? 'on' : ''}" data-i="${i}" aria-label="Mostrar ${escapeHtml(d.name)}" aria-current="${i === panel.index}"></button>`).join('') : '';
+
+  $('controls').hidden = !ctl;
+  $('locked').hidden = ctl;
+  $('lockedText').textContent = `O halod detectou ${dev.name}, mas ainda não tem controle de iluminação para ele.`;
+  $('errorNote').hidden = !panel.error || !ctl;
+  if (panel.error) { $('errorTitle').textContent = panel.error.title; $('errorText').textContent = panel.error.text; }
+
+  setLedPaint();
+  const d = panel.draft;
+  const off = !d || d.effect === 'off';
+  const s = shownSetting();
+  $('unknownNote').hidden = !!d || !ctl;
+  $('effectText').textContent = d ? effectName(d.effect) : 'Escolher efeito';
+
+  const palette = isPalette(s.effect);
+  $('paletteRow').hidden = !palette;
+  if (palette) $('palette').innerHTML = s.colors.map(c => `<i style="--c:#${c}" title="#${c.toUpperCase()}"></i>`).join('');
+
+  const showColor = HAS_COLOR.has(s.effect) || (off && !palette);
+  $('colorRow').hidden = !showColor;
+  $('colorRow').classList.toggle('dim', off);
+  if (showColor) {
+    const hex = s.colors[0] || 'ff6600';
+    for (const b of $('swatches').children) {
+      const on = b.dataset.c === hex;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
+    if (document.activeElement !== $('hexEntry')) { $('hexEntry').value = '#' + hex.toUpperCase(); setHexError(false); }
+    $('hueKnob').style.left = `calc(10px + (100% - 20px) * ${(hueOf(hex) / 360).toFixed(3)})`;
+    $('hue').setAttribute('aria-valuenow', Math.round(hueOf(hex)));
+  }
+
+  $('brightnessRow').classList.toggle('dim', off);
+  renderSlider($('brightness'), s.brightness);
+  $('brightnessVal').textContent = off ? '—' : `${s.brightness} de 10`;
+
+  const speedOn = usesSpeed(s.effect);
+  $('speedRow').classList.toggle('dim', off);
+  renderSlider($('speed'), s.speed);
+  $('speed').setAttribute('aria-disabled', String(!speedOn));
+  $('speedVal').textContent = off ? '—' : speedOn ? `${s.speed} de 5` : 'não se aplica';
+
+  const icon = $('statusIcon'), text = $('statusText');
+  $('statusLine').hidden = !ctl;
+  if (panel.applying) {
+    icon.innerHTML = '<span class="spin" aria-hidden="true"></span>';
+    text.textContent = panel.pending ? 'Aplicando… (1 na fila)' : 'Aplicando…';
+  } else if (panel.activating) {
+    icon.innerHTML = '<span class="spin" aria-hidden="true"></span>';
+    text.textContent = 'Ativando perfil…';
+  } else if (!panel.applied) {
+    icon.innerHTML = '';
+    text.textContent = 'Estado do LED desconhecido';
+  } else if (panel.applied.effect === 'off') {
+    icon.innerHTML = '';
+    text.textContent = 'LED desligado';
+  } else {
+    icon.innerHTML = `<span class="ok">${CHECK}</span>`;
+    text.textContent = `Aplicado ao ${dev.name}`;
+  }
+}
+
+function renderDeviceList() {
+  const list = $('deviceList');
+  list.innerHTML = '';
+  if (!panel.devices.length) { list.innerHTML = '<div class="empty">Nenhum aparelho encontrado.</div>'; return; }
+  panel.devices.forEach((d, i) => {
+    const ok = d.status === 'controllable';
+    const b = document.createElement('button');
+    b.className = 'grp-row dev-row';
+    b.innerHTML = `<span style="display:flex;align-items:center;gap:10px;min-width:0"><span class="dev-ic">${DEVICE_ICON}</span><span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">${escapeHtml(d.name)}</span><span class="chip ${ok ? 'ok' : ''}"><i></i>${ok ? 'Disponível' : 'Detectado'}</span></span></span><span style="display:flex;align-items:center;gap:8px;color:var(--label3)">${i === panel.index ? `<span style="color:var(--accent-strong)">${CHECK}</span>` : ''}${CHEVRON}</span>`;
+    b.onclick = () => { panel.index = i; panel.page = 'main'; renderArt(0); render(); };
+    list.append(b);
+  });
+}
+
+function renderDetails() {
+  const dev = current();
+  if (!dev) { panel.page = 'main'; render(); return; }
+  $('detailsTitle').textContent = dev.name;
+  const fmt = n => n.toLocaleString('pt-BR');
+  const pct = duty => `${Math.round(duty / 255 * 100)}%`;
+  let rows;
+  if (dev.id === 'waterforce') {
+    const t = fakeDaemon.Telemetry;
+    const a = panel.applied;
+    const on = !!a && a.effect !== 'off';
+    rows = t.Available ? [
+      ['Ventoinha', `${fmt(t.FanRpm)} rpm · ${pct(t.FanDuty)}`],
+      ['Bomba', `${fmt(t.PumpRpm)} rpm · ${pct(t.PumpDuty)}`],
+      ['Líquido', t.CoolantValid ? `${(t.CoolantMilliCelsius / 1000).toFixed(1).replace('.', ',')} °C` : 'inválido'],
+    ] : [['Telemetria', 'indisponível']];
+    rows.push(
+      ['Efeito', a ? effectName(a.effect) : 'desconhecido'],
+      ['Brilho', on ? `${a.brightness} de 10` : '—'],
+      ['Velocidade', on && usesSpeed(a.effect) ? `${a.speed} de 5` : '—'],
+    );
+  } else {
+    rows = dev.id === 'it5702' ? [['Controlador', 'IT5702']] : [];
+    rows.push(['Conexão', 'USB HID'], ['Iluminação', 'Ainda sem suporte']);
+  }
+  $('detailsKv').innerHTML = rows.map(([k, v]) => `<div class="grp-row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`).join('');
+  const show = dev.status === 'controllable' && !!panel.applied;
+  $('cmdBlock').hidden = !show;
+  if (show) $('cmdText').textContent = cliCommand(panel.applied);
+}
+
+/* ---------- Cor ---------- */
+function hueOf(hex) {
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (!d) return 0;
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h *= 60;
+  return h < 0 ? h + 360 : h;
+}
+function hueToHex(h) {
+  const f = n => { const k = (n + h / 60) % 6; return Math.round(255 * (1 - Math.max(0, Math.min(k, 4 - k, 1)))); };
+  return [f(5), f(3), f(1)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function setColor(hex) {
+  if (!panel.draft || !HAS_COLOR.has(panel.draft.effect)) return;
+  panel.draft.colors = [hex];
+  panel.error = null;
+  render();
+}
+function setHexError(bad) {
+  $('hexEntry').classList.toggle('bad', bad);
+  $('hexEntry').setAttribute('aria-invalid', String(bad));
+}
+
+/* Cliques seguidos nos swatches e nas setas da matiz viram um gesto só depois de 300 ms. */
+let colorTimer = 0;
+function commitColorSoon() {
+  clearTimeout(colorTimer);
+  colorTimer = setTimeout(() => commit(panel.draft), 300);
+}
+
+/* ---------- Eventos do painel ---------- */
+function closeMenus() {
+  $('effectMenu').hidden = $('profileMenu').hidden = true;
+  $('effectBtn').setAttribute('aria-expanded', 'false');
+  $('profileBtn').setAttribute('aria-expanded', 'false');
+}
+$('indicator').onclick = () => {
+  panel.open = !panel.open;
+  if (!panel.open) { if (panel.page !== 'journal' || panel.running) panel.page = 'main'; closeMenus(); }
+  render();
+};
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest('#effectMenu,#effectBtn')) { $('effectMenu').hidden = true; $('effectBtn').setAttribute('aria-expanded', 'false'); }
+  if (!e.target.closest('#profileMenu,#profileBtn')) { $('profileMenu').hidden = true; $('profileBtn').setAttribute('aria-expanded', 'false'); }
+  if (!panel.open) return;
+  if (e.target.closest('#popover,#indicator,.scen,.prefs-wrap')) return;
+  panel.open = false;
+  render();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!$('prefs').hidden) { $('prefs').hidden = true; return; }
+  if (!$('effectMenu').hidden || !$('profileMenu').hidden) { closeMenus(); return; }
+  if (panel.open) { panel.open = false; render(); $('indicator').focus(); }
+});
+
+$('power').onclick = togglePower;
+$('openDevices').onclick = () => { panel.page = 'devices'; closeMenus(); render(); };
+$('openDetails').onclick = () => { panel.page = 'details'; closeMenus(); render(); };
+$('openPrefs').onclick = () => openPrefs();
+for (const b of document.querySelectorAll('.back')) b.onclick = () => { panel.page = 'main'; render(); };
+$('prev').onclick = () => select(panel.index - 1, -1);
+$('next').onclick = () => select(panel.index + 1, 1);
+$('pager').onclick = e => { const b = e.target.closest('.dot'); if (b) select(+b.dataset.i, +b.dataset.i >= panel.index ? 1 : -1); };
+$('retry').onclick = () => {
+  const f = panel.failed;
+  panel.error = null;
+  panel.failed = null;
+  if (f) { panel.draft = clone(f); commit(f); }
+  render();
+};
+$('startDaemon').onclick = async () => {
+  panel.starting = true;
+  render();
+  try { await fakeSystemd.StartUnit('halod.service'); } catch { /* a unidade sumiu: o aviso continua */ }
+  panel.starting = false;
+  render();
+};
+$('openJournal').onclick = () => { panel.page = 'journal'; render(); };
+
+let wheelSum = 0, wheelLast = 0;
+$('stage').addEventListener('wheel', e => {
+  if (panel.devices.length < 2 || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+  e.preventDefault();
+  const now = performance.now();
+  if (now - wheelLast > 350) wheelSum = 0;
+  wheelSum += e.deltaY;
+  if (Math.abs(wheelSum) > 24 && now - wheelLast > 330) {
+    const dir = Math.sign(wheelSum);
+    select(panel.index + dir, dir);
+    wheelLast = now;
+    wheelSum = 0;
+  }
+}, { passive: false });
+$('stage').addEventListener('keydown', e => {
+  if (e.target !== $('stage')) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); select(panel.index + 1, 1); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); select(panel.index - 1, -1); }
+});
+let touchX = null;
+$('stage').addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+$('stage').addEventListener('touchend', e => {
+  if (touchX === null) return;
+  const diff = e.changedTouches[0].clientX - touchX;
+  if (Math.abs(diff) > 44) select(panel.index + (diff < 0 ? 1 : -1), diff < 0 ? 1 : -1);
+  touchX = null;
+}, { passive: true });
+
+/* Popup de efeito */
+$('effectBtn').onclick = () => {
+  const m = $('effectMenu');
+  const open = m.hidden;
+  closeMenus();
+  if (!open) return;
+  const cur = panel.draft && panel.draft.effect;
+  m.innerHTML = EFFECTS.map(([k, n]) => `<button class="menu-item" role="option" aria-selected="${k === cur}" data-e="${k}"><span class="chk">${k === cur ? CHECK : ''}</span><span>${n}</span></button>`).join('');
+  m.hidden = false;
+  $('effectBtn').setAttribute('aria-expanded', 'true');
+};
+$('effectMenu').onclick = e => {
+  const b = e.target.closest('[data-e]');
+  if (!b) return;
+  const effect = b.dataset.e;
+  closeMenus();
+  if (panel.draft && panel.draft.effect === effect) return;
+  const base = (panel.draft && panel.draft.effect !== 'off' ? panel.draft : null) || panel.lastOn || DEFAULT_LED;
+  const colors = HAS_COLOR.has(effect) ? [(!isPalette(base.effect) && base.colors[0]) || 'ff6600'] : [];
+  panel.draft = { effect, colors, brightness: base.brightness || 10, speed: base.speed || 5 };
+  panel.error = null;
+  render();
+  commit(panel.draft);
+};
+
+/* Swatches, matiz e hex */
+$('swatches').innerHTML = SWATCHES.map(([c, n]) => `<button class="sw" data-c="${c}" style="--c:#${c}" aria-label="${n}" aria-pressed="false"><i></i></button>`).join('');
+$('swatches').onclick = e => {
+  const b = e.target.closest('.sw');
+  if (!b) return;
+  setColor(b.dataset.c);
+  commitColorSoon();
+};
+function hueFromPointer(e) {
+  const r = $('hue').getBoundingClientRect();
+  return Math.max(0, Math.min(359.9, (e.clientX - r.left - 10) / (r.width - 20) * 360));
+}
+$('hue').addEventListener('pointerdown', e => {
+  $('hue').setPointerCapture(e.pointerId);
+  setColor(hueToHex(hueFromPointer(e)));
+});
+$('hue').addEventListener('pointermove', e => {
+  if ($('hue').hasPointerCapture(e.pointerId)) setColor(hueToHex(hueFromPointer(e)));
+});
+$('hue').addEventListener('pointerup', e => {
+  if (!$('hue').hasPointerCapture(e.pointerId)) return;
+  $('hue').releasePointerCapture(e.pointerId);
+  commit(panel.draft);
+});
+$('hue').addEventListener('keydown', e => {
+  if (!panel.draft || !['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+  e.preventDefault();
+  const h = (hueOf(panel.draft.colors[0] || 'ff6600') + (e.key === 'ArrowRight' ? 10 : -10) + 360) % 360;
+  setColor(hueToHex(h));
+  commitColorSoon();
+});
+/* O hex vale com Enter ou ao sair do campo; Esc desfaz. */
+function commitHex() {
+  const v = $('hexEntry').value.trim().replace(/^#/, '').toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(v)) { setHexError(true); return; }
+  setHexError(false);
+  setColor(v);
+  commit(panel.draft);
+}
+$('hexEntry').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.stopPropagation(); setHexError(false); $('hexEntry').dataset.cancel = '1'; e.target.blur(); return; }
+  if (e.key === 'Enter') { e.preventDefault(); commitHex(); }
+});
+$('hexEntry').addEventListener('blur', () => {
+  if ($('hexEntry').dataset.cancel) { delete $('hexEntry').dataset.cancel; render(); return; }
+  if ($('hexEntry').classList.contains('bad')) return;
+  commitHex();
+});
+$('hexEntry').addEventListener('input', () => setHexError(false));
+
+/* Sliders: o valor muda no arraste, a aplicação vem no fim (o drag-end do Slider do Shell). */
+function bindSlider(el, key) {
+  const min = +el.dataset.min, max = +el.dataset.max;
+  const valueAt = e => {
+    const r = el.getBoundingClientRect();
+    const p = (e.clientX - r.left - 14) / (r.width - 28);
+    return Math.round(min + Math.max(0, Math.min(1, p)) * (max - min));
+  };
+  const locked = () => !panel.draft || panel.draft.effect === 'off' || el.getAttribute('aria-disabled') === 'true';
+  const set = v => { if (panel.draft[key] !== v) { panel.draft[key] = v; panel.error = null; render(); } };
+  el.addEventListener('pointerdown', e => {
+    if (locked()) return;
+    el.setPointerCapture(e.pointerId);
+    set(valueAt(e));
+  });
+  el.addEventListener('pointermove', e => { if (el.hasPointerCapture(e.pointerId)) set(valueAt(e)); });
+  el.addEventListener('pointerup', e => {
+    if (!el.hasPointerCapture(e.pointerId)) return;
+    el.releasePointerCapture(e.pointerId);
+    commit(panel.draft);
+  });
+  el.addEventListener('keydown', e => {
+    if (locked()) return;
+    const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    set(Math.max(min, Math.min(max, panel.draft[key] + step)));
+    commit(panel.draft);
+  });
+}
+bindSlider($('brightness'), 'brightness');
+bindSlider($('speed'), 'speed');
+
+/* Perfis */
+$('profileBtn').onclick = () => {
+  const m = $('profileMenu');
+  const open = m.hidden;
+  closeMenus();
+  if (!open) return;
+  m.innerHTML = panel.profiles.length
+    ? panel.profiles.map(p => {
+      const on = p === panel.activeProfile;
+      const led = fakeDaemon.profiles[p] && fakeDaemon.profiles[p].led;
+      return `<button class="menu-item" role="menuitemradio" aria-checked="${on}" data-p="${escapeHtml(p)}"><span class="chk">${on ? CHECK : ''}</span><span>${escapeHtml(p)}</span><span class="hint">${led ? effectName(led.effect).toLowerCase() : ''}</span></button>`;
+    }).join('')
+    : '<button class="menu-item" aria-disabled="true" tabindex="-1"><span class="chk"></span><span>Nenhum perfil salvo</span></button>';
+  m.hidden = false;
+  $('profileBtn').setAttribute('aria-expanded', 'true');
+};
+$('profileMenu').onclick = e => {
+  const b = e.target.closest('[data-p]');
+  if (b && !panel.activating) activateProfile(b.dataset.p);
+};
+
+/* Copiar comando */
+$('copyCmd').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($('cmdText').textContent);
+    $('copyCmd').textContent = 'Copiado';
+  } catch {
+    getSelection().selectAllChildren($('cmdText'));
+    $('copyCmd').textContent = 'Selecionado';
+  }
+  setTimeout(() => { $('copyCmd').textContent = 'Copiar'; }, 1400);
+};
+
+/* ---------- Preferências ---------- */
+function renderPrefs() {
+  const pub = fakeDaemon.running && fakeDaemon.cpuMilliCelsius != null;
+  const opt = $('cpuOption');
+  opt.classList.toggle('off', !pub);
+  opt.querySelector('input').disabled = !pub && panel.tempSource !== 'cpu';
+  $('cpuHint').textContent = pub ? 'Temperatura da CPU publicada pelo halod.' : 'Indisponível: o halod ainda não fornece a temperatura da CPU.';
+  for (const r of document.querySelectorAll('input[name=tsrc]')) r.checked = r.value === panel.tempSource;
+}
+function openPrefs() { renderPrefs(); $('prefs').hidden = false; }
+$('prefsClose').onclick = () => { $('prefs').hidden = true; };
+for (const r of document.querySelectorAll('input[name=tsrc]'))
+  r.onchange = () => { panel.tempSource = r.value; renderPrefs(); render(); };
+
+/* ---------- Painel de cenários ---------- */
+/* Um halod que volta é uma instância nova: o LastApplied (só em memória) volta vazio,
+   e o perfil ativo continua, porque o daemon real o grava em $XDG_STATE_HOME/halo/. */
+function restartDaemon() {
+  fakeDaemon.lastApplied = null;
+  panel.lastOn = null;
+  log('— halod iniciado —').done('LastApplied vazio');
+}
+$('sRunning').onchange = e => {
+  fakeDaemon.running = e.target.checked;
+  if (fakeDaemon.running) restartDaemon();
+  else { panel.applying = false; panel.pending = null; panel.activating = false; }
+  refreshAll();
+};
+$('sUnit').onchange = e => { fakeDaemon.unitInstalled = e.target.checked; render(); };
+$('sRestart').onclick = () => {
+  if (!fakeDaemon.running) return;
+  restartDaemon();
+  refreshAll();
+};
+$('sLatency').oninput = e => { fakeDaemon.latency = +e.target.value; $('sLatencyVal').textContent = `${e.target.value} ms`; };
+$('sFail').onchange = e => { fakeDaemon.failNext = e.target.value; };
+$('sDevices').onchange = e => {
+  fakeDaemon.devices = e.target.value ? e.target.value.split(',').map(k => DEVICE_CATALOG[k]) : [];
+  log('DevicesChanged').done(`${fakeDaemon.devices.length} aparelho(s)`);
+  if (fakeDaemon.running) { syncDevices(); render(); }
+};
+function setTelemetry() {
+  const t = fakeDaemon.telemetry;
+  t.Available = $('sTelem').checked;
+  t.CoolantMilliCelsius = Math.round(+$('sCoolant').value * 1000);
+  t.CoolantValid = $('sCoolantValid').checked;
+  fakeDaemon.cpuMilliCelsius = $('sCpuPub').checked ? Math.round(+$('sCpu').value * 1000) : null;
+  render();
+  if (!$('prefs').hidden) renderPrefs();
+}
+for (const id of ['sTelem', 'sCoolant', 'sCoolantValid', 'sCpuPub', 'sCpu']) $(id).addEventListener('input', setTelemetry);
+$('sCoolantBad').onclick = () => { $('sCoolant').value = '224.0'; $('sCoolantValid').checked = false; setTelemetry(); };
+$('sProfiles').onchange = e => {
+  fakeDaemon.profiles = e.target.value === '0' ? {} : { ...PROFILES };
+  if (!(fakeDaemon.activeProfile in fakeDaemon.profiles)) fakeDaemon.activeProfile = '';
+  closeMenus();
+  if (fakeDaemon.running) refreshAll();
+};
+$('sClearLog').onclick = () => { $('log').innerHTML = ''; fakeDaemon.b6 = 0; updateB6(); };
+
+/* Aparência: claro/escuro e os destaques do GNOME (org.gnome.desktop.interface accent-color) */
+const ACCENTS = [['blue', '#3584e4'], ['teal', '#2190a4'], ['green', '#3a944a'], ['yellow', '#c88800'], ['orange', '#ed5b00'], ['red', '#e62d42'], ['pink', '#d56199'], ['purple', '#9141ac'], ['slate', '#6f8396']];
+$('sAccents').innerHTML = ACCENTS.map(([n, c]) => `<button data-a="${c}" style="--c:${c}" aria-label="Destaque ${n}" class="${n === 'orange' ? 'on' : ''}"></button>`).join('');
+$('sAccents').onclick = e => {
+  const b = e.target.closest('[data-a]');
+  if (!b) return;
+  document.documentElement.style.setProperty('--accent', b.dataset.a);
+  for (const x of $('sAccents').children) x.classList.toggle('on', x === b);
+};
+function setTheme(t) { document.documentElement.dataset.theme = t; $('sTheme').value = t; }
+$('sTheme').onchange = e => setTheme(e.target.value);
+try { if (matchMedia('(prefers-color-scheme: dark)').matches) setTheme('dark'); } catch {}
+
+/* Relógio da barra, no formato do canvas ("Qui 22 de out  14:51") */
+function tick() {
+  const d = new Date();
+  const wd = d.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '');
+  const mo = d.toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '');
+  const hm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  $('clock').textContent = `${wd[0].toUpperCase()}${wd.slice(1)} ${d.getDate()} de ${mo}  ${hm}`;
+}
+tick();
+setInterval(tick, 15000);
+
+refreshAll();
+</script>
+</body>
+</html>
