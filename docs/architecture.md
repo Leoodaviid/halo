@@ -18,6 +18,39 @@ O estilo desejado é de ícones discretos na barra superior que abrem um painel 
 
 Se for preciso uma tela de edição maior (desenhar efeitos por LED, por exemplo), ela pode vir depois como um app GTK4/libadwaita que usa o mesmo D-Bus.
 
+## Painel do GNOME Shell
+
+O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (ver [docs/ui/README.md](ui/README.md)), que segue o canvas "halo · Apple HIG" com o destaque do GNOME. O painel é só um cliente do `halod`: ele não abre hidraw nem lê o sysfs.
+
+- **Barra:** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
+- **Aparelhos:** o carrossel mostra o que o `Devices` lista, com o status que o daemon informa. A extensão não guarda catálogo de hardware.
+- **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
+- **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
+- **Daemon parado:** "Iniciar halod" pede `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas até a `systemd-user-service` instalar a unidade.
+
+Equivalência de cada elemento do protótipo no St (Shell 50):
+
+| No protótipo | Na extensão |
+|---|---|
+| Indicador com ícone e `38°` numa pílula | `PanelMenu.Button` com um `St.BoxLayout` (ícone simbólico + `St.Label`) |
+| Painel em material translúcido | O `menu` do `PanelMenu.Button` com CSS próprio e um `Shell.BlurEffect` em modo `BACKGROUND` (sem blur, se pesar: fundo opaco com a mesma cor) |
+| Blocos agrupados | `St.BoxLayout` com fundo e raio no CSS |
+| Carrossel com transição | `St.Widget` e `ease()` do Clutter; roda pelo `scroll-event` |
+| Desenho do aparelho com o anel tingido | `St.DrawingArea` com Cairo, ou camadas de SVG em que só a camada do LED é simbólica e recebe a cor |
+| Swatches | `St.Button` redondos com a cor no estilo inline |
+| Barra de matiz | `St.DrawingArea` com gradiente Cairo e um marcador arrastável |
+| Campo hex | `St.Entry` |
+| Brilho e velocidade no estilo da Central de Controle | Subclasse do `Slider` de `resource:///org/gnome/shell/ui/slider.js` com o `vfunc_repaint` próprio, aplicando no `drag-end` |
+| Popup de efeito e menu de perfis | Um `PopupMenu.PopupMenu` próprio ancorado no botão |
+| Linha de status e itens de menu | `St.Label` e `PopupMenu.PopupMenuItem` |
+| Iniciar halod e ver registro | Proxy de `org.freedesktop.systemd1` e `Gio.Subprocess` com `journalctl` |
+| Liga/desliga | O switch do `PopupMenu` |
+| Detalhes, Aparelhos e Registro | Troca de página dentro do mesmo menu |
+| Copiar comando | `St.Clipboard` |
+| Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |
+
+Pré-requisitos no `halod` para a extensão: o `Devices` com status (ainda sem change) e a temperatura da CPU (`waterforce-cpu-feed`).
+
 ## Daemon (`halod`, change `halo-daemon`)
 
 - Crate `crates/halo-daemon`, binário `halod`. Fala com os aparelhos só pelo `halo-core`, sem lógica de protocolo própria, e encontra cada um pelo VID:PID e pela usage page a cada operação.
