@@ -22,10 +22,11 @@ Nada fala com o `halod` nem com o hardware. O protótipo tem um daemon falso com
 |---|---|
 | halod rodando | O nome `io.github.leoodaviid.Halo1` com ou sem dono no D-Bus. Quando o daemon volta, ele é uma instância nova, com o `LastApplied` vazio |
 | `halod.service` instalado | Se a unidade do systemd do usuário existe. Sem ela, "Iniciar halod" e "Ver registro" ficam desabilitados. O registro mostrado é simulado |
-| Reiniciar | Um restart do `halod`: o `LastApplied`, que só fica em memória, volta vazio, e o perfil ativo continua |
+| Reiniciar | Um restart do `halod`: o `LastApplied` e o modelo do Waterforce, que só ficam em memória, voltam vazios, e o perfil ativo continua |
 | Latência | O tempo de cada `Apply` e `Activate`, para ver a fila de pedidos |
 | Próximo pedido falha com | O próximo `Apply` ou `Activate` responde com `Busy`, `PermissionDenied`, `NotFound` ou `Device` |
-| Aparelhos | O que o `Devices` devolve, com o status de cada aparelho. É o formato sugerido para a change do daemon (`id`, nome e `controllable`/`detected`) |
+| Aparelhos | Quais aparelhos estão presentes. O `Devices` falso devolve os três no formato do `halod` (`aa{sv}` com `id`, `name`, `present`, `devnode` e `capabilities`), com os ausentes na lista. O painel mostra só os presentes e põe os controles onde há `led`. O padrão tem o G502 ausente |
+| Waterforce revela o modelo | O `DevicesChanged` com o nome `AORUS Waterforce X 240` no lugar de `AORUS Waterforce X`, como depois da primeira operação no aparelho. Um `Apply` ou `Activate` faz o mesmo, e o restart volta ao nome sem modelo |
 | Telemetria | Fan, bomba e líquido do hwmon, o líquido inválido (224 °C) e a telemetria indisponível |
 | halod publica a CPU | A temperatura da CPU, que o `halod` real ainda não publica (change `waterforce-cpu-feed`) |
 | Perfis | Os perfis `noite` (estático) e `jogo` (três cores), ou nenhum |

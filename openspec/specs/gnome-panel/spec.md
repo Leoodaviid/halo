@@ -70,19 +70,23 @@ Com o daemon fora do ar, o painel SHALL oferecer duas ações: iniciar o serviç
 - **THEN** as ações de iniciar e de ver o registro aparecem desabilitadas, com a explicação de que o serviço não está instalado
 
 ### Requirement: Aparelhos vindos do daemon
-O carrossel SHALL mostrar só os aparelhos que o daemon lista, na ordem e com o status que ele informa. O painel MUST NOT ter um catálogo próprio de hardware. Com um único aparelho, a navegação do carrossel (setas e indicador de página) SHALL ficar oculta.
+O carrossel SHALL mostrar só os aparelhos que o daemon lista como presentes, na ordem da lista, com o nome que o daemon informa e o status "Disponível" quando o aparelho tem a capacidade `led`, ou "Detectado" quando não tem. O painel MUST NOT ter um catálogo próprio de hardware. Com um único aparelho, a navegação do carrossel (setas e indicador de página) SHALL ficar oculta.
 
 #### Scenario: Lista do daemon
-- **WHEN** o daemon lista o Waterforce como controlável e a placa-mãe como detectada
-- **THEN** o carrossel tem duas páginas, nessa ordem, cada uma com o status informado
+- **WHEN** o daemon lista o Waterforce presente com a capacidade `led`, a placa-mãe presente sem capacidades e o G502 ausente
+- **THEN** o carrossel tem duas páginas, o Waterforce como "Disponível" e a placa-mãe como "Detectado", nessa ordem, sem o G502
 
 #### Scenario: Um aparelho só
-- **WHEN** o daemon lista só o Waterforce
+- **WHEN** o daemon lista só o Waterforce como presente
 - **THEN** o carrossel mostra o Waterforce sem setas e sem indicador de página
 
 #### Scenario: Aparelho desconectado
-- **WHEN** o daemon anuncia que a lista mudou e o aparelho da página atual saiu dela
-- **THEN** o carrossel vai para o primeiro aparelho da nova lista, ou mostra que nenhum aparelho foi encontrado se a lista ficar vazia
+- **WHEN** o daemon anuncia que a lista mudou e o aparelho da página atual deixou de estar presente
+- **THEN** o carrossel vai para o primeiro aparelho presente da nova lista, ou mostra que nenhum aparelho foi encontrado se nenhum estiver presente
+
+#### Scenario: Nome muda
+- **WHEN** o daemon anuncia o Waterforce com o nome `AORUS Waterforce X 240` no lugar de `AORUS Waterforce X`
+- **THEN** o carrossel continua na mesma página e mostra o nome novo
 
 ### Requirement: Navegação do carrossel
 O usuário SHALL poder trocar de aparelho pelas setas, pela roda do mouse sobre a imagem, pelas teclas de seta com o carrossel em foco e pelo indicador de página. A navegação SHALL ser circular.
@@ -96,10 +100,10 @@ O usuário SHALL poder trocar de aparelho pelas setas, pela roda do mouse sobre 
 - **THEN** o primeiro aparelho é selecionado
 
 ### Requirement: Aparelho sem controle
-Um aparelho que o daemon lista sem controle de iluminação SHALL aparecer com o aviso de controle em desenvolvimento no lugar dos controles, com o status que o daemon informa. O liga/desliga SHALL ficar desabilitado nessa página.
+Um aparelho presente sem a capacidade `led` SHALL aparecer com o aviso de controle em desenvolvimento no lugar dos controles, com o status "Detectado". O liga/desliga SHALL ficar desabilitado nessa página.
 
 #### Scenario: Placa-mãe detectada
-- **WHEN** o usuário navega até a placa-mãe, listada como detectada
+- **WHEN** o usuário navega até a placa-mãe, listada sem capacidades
 - **THEN** o painel mostra o aviso de controle em desenvolvimento, sem cor, efeito, brilho ou velocidade, e com o liga/desliga desabilitado
 
 ### Requirement: Imagens locais

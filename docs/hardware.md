@@ -328,6 +328,15 @@ hora     temp1   Tctl | b2..13 do DA
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.
 
+As duas interfaces, lidas em 2026-10-22 do `report_descriptor` e do `uevent` no sysfs, sem abrir nenhum hidraw (`HID_NAME=Logitech G502 HERO Gaming Mouse` nas duas):
+
+| hidraw | Interface | Coleções de topo (usage page) |
+|---|---|---|
+| `hidraw0` | `input0` | `0x0001` (o mouse comum), descritor de 67 bytes |
+| `hidraw1` | `input1` | `0x0001` (teclado), `0x000C` (consumer), `0x0001` (system control), `0xFF00` e `0xFF00`, descritor de 151 bytes |
+
+O `hidraw1` é a interface de fabricante que o driver Logitech do OpenRGB usa: `Controllers/LogitechController/LogitechControllerDetect.cpp`, `REGISTER_HID_DETECTOR_IPU("Logitech G502 HERO Gaming Mouse", DetectLogitechWired, LOGITECH_VID, LOGITECH_G502_HERO_PID, 1, 0xFF00, 2)` (interface 1, usage page `0xFF00`, commit `72262b8`). O `halod` encontra o mouse por `046d:c08b` com a usage page `0xFF00` (módulo `g502` do `halo-core`) e só lê o sysfs: nenhum comando foi enviado ao mouse até agora.
+
 ## Teclado Redragon (edição Horda, World of Warcraft)
 
 | Item | Valor |

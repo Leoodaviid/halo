@@ -14,8 +14,8 @@ use zbus::{Connection, MatchRule, Message, MessageStream, connection};
 
 use crate::bus::{self, BUS_NAME};
 use crate::profiles::ProfileStore;
-use crate::worker::Worker;
 use crate::worker::fake::FakeBackend;
+use crate::worker::{KnownModel, Worker};
 
 /// `dbus-daemon` de sessão só para um teste, com o socket num diretório curto
 /// em `/tmp` (o caminho do socket tem limite de tamanho).
@@ -79,6 +79,10 @@ impl Drop for TestBus {
 /// O daemon com o backend falso, um sysfs falso e diretórios temporários.
 pub struct Harness {
     pub backend: FakeBackend,
+    /// O modelo que o worker grava, como os ticks do daemon o veem.
+    pub model: KnownModel,
+    /// Os pedidos de volta dos ticks que o worker manda.
+    pub wake: async_channel::Receiver<()>,
     pub server: Connection,
     pub client: Connection,
     pub sys: PathBuf,
@@ -97,7 +101,9 @@ impl Harness {
         let state = dirs.path().join("state/halo");
         std::fs::create_dir_all(&sys).unwrap();
         let backend = FakeBackend::default();
-        let worker = Worker::spawn(backend.clone());
+        let model = KnownModel::default();
+        let (refresh, wake) = async_channel::bounded(1);
+        let worker = Worker::spawn(backend.clone(), model.clone(), refresh);
         let (server, client) = zbus::block_on(async {
             let server = bus::serve(
                 connection::Builder::address(bus.address.as_str()).unwrap(),
@@ -118,6 +124,8 @@ impl Harness {
         });
         Self {
             backend,
+            model,
+            wake,
             server,
             client,
             sys,

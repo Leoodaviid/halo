@@ -10,35 +10,101 @@ use async_channel::{Receiver, Sender};
 use futures_util::StreamExt;
 use futures_util::future::{Either, select};
 use halo_core::hid::{DeviceMatch, find_devices};
+use halo_core::waterforce::probe::model_name;
 use halo_core::waterforce::telemetry::{self, Coolant, TelemetryError};
-use halo_core::{it5702, waterforce};
+use halo_core::{g502, it5702, waterforce};
 use zbus::Connection;
 
-use crate::bus::{DeviceEntry, Manager, ROOT_PATH, Telemetry, TelemetryState, WATERFORCE_PATH};
+use crate::bus::{
+    Device, Manager, ROOT_PATH, Telemetry, TelemetryState, WATERFORCE_PATH, devices_to_dbus,
+};
+use crate::worker::{KnownModel, Model};
 
 /// O intervalo mínimo do status no driver do kernel.
 pub const INTERVAL: Duration = Duration::from_secs(2);
 
-const DEVICES: [(&str, DeviceMatch); 2] = [
-    ("it5702", it5702::DEVICE),
-    ("waterforce", waterforce::DEVICE),
+/// Nome do Waterforce antes de o daemon conhecer o modelo.
+pub const WATERFORCE_NAME: &str = "AORUS Waterforce X";
+/// Nome da placa sem o `board_name` do DMI.
+pub const BOARD_NAME: &str = "Placa-mãe (IT5702)";
+
+/// De onde vem o nome de um aparelho, sem abrir o hidraw.
+enum NameSource {
+    /// O modelo que o worker leu no `DE 00`.
+    WaterforceModel,
+    /// `class/dmi/id/board_name` do sysfs.
+    DmiBoard,
+    Fixed(&'static str),
+}
+
+struct Known {
+    id: &'static str,
+    wanted: DeviceMatch,
+    capabilities: &'static [&'static str],
+    name: NameSource,
+}
+
+/// Os aparelhos conhecidos, na ordem em que o painel os mostra.
+const DEVICES: [Known; 3] = [
+    Known {
+        id: "waterforce",
+        wanted: waterforce::DEVICE,
+        capabilities: &["led", "speed", "telemetry"],
+        name: NameSource::WaterforceModel,
+    },
+    Known {
+        id: "it5702",
+        wanted: it5702::DEVICE,
+        capabilities: &[],
+        name: NameSource::DmiBoard,
+    },
+    Known {
+        id: "g502",
+        wanted: g502::DEVICE,
+        capabilities: &[],
+        name: NameSource::Fixed("Logitech G502 SE HERO"),
+    },
 ];
 
-/// Presença de cada aparelho, só pelo sysfs.
-pub fn scan_devices(sys_root: &Path) -> Vec<DeviceEntry> {
+/// `AORUS ` mais o nome do modelo, ou [`WATERFORCE_NAME`] sem modelo
+/// conhecido.
+pub fn waterforce_name(model: Option<Model>) -> String {
+    match model.and_then(model_name) {
+        Some(name) => format!("AORUS {name}"),
+        None => WATERFORCE_NAME.to_owned(),
+    }
+}
+
+/// O `board_name` do DMI sob `sys_root`, ou [`BOARD_NAME`].
+pub fn board_name(sys_root: &Path) -> String {
+    std::fs::read_to_string(sys_root.join("class/dmi/id/board_name"))
+        .ok()
+        .map(|s| s.trim_end().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| BOARD_NAME.to_owned())
+}
+
+/// Presença e nome de cada aparelho, só pelo sysfs e pelo modelo já lido.
+pub fn scan_devices(sys_root: &Path, model: Option<Model>) -> Vec<Device> {
     let class = sys_root.join("class/hidraw");
     DEVICES
         .iter()
-        .map(|(id, wanted)| {
-            let devnode = find_devices(&class, *wanted)
+        .map(|known| {
+            let devnode = find_devices(&class, known.wanted)
                 .ok()
                 .and_then(|found| found.into_iter().next())
                 .map(|info| info.devnode.to_string_lossy().into_owned());
-            (
-                (*id).to_owned(),
-                devnode.is_some(),
-                devnode.unwrap_or_default(),
-            )
+            Device {
+                id: known.id,
+                name: match known.name {
+                    NameSource::WaterforceModel => waterforce_name(model),
+                    NameSource::DmiBoard => board_name(sys_root),
+                    NameSource::Fixed(name) => name.to_owned(),
+                },
+                present: devnode.is_some(),
+                devnode: devnode.unwrap_or_default(),
+                capabilities: known.capabilities,
+            }
         })
         .collect()
 }
@@ -67,18 +133,19 @@ pub fn next_telemetry(
 
 pub struct Ticks {
     sys_root: PathBuf,
+    model: KnownModel,
 }
 
 impl Ticks {
-    pub fn new(sys_root: PathBuf) -> Self {
-        Self { sys_root }
+    pub fn new(sys_root: PathBuf, model: KnownModel) -> Self {
+        Self { sys_root, model }
     }
 
-    /// Lê presença e telemetria e emite os sinais só do que mudou.
+    /// Lê presença, nomes e telemetria e emite os sinais só do que mudou.
     pub async fn run_once(&self, conn: &Connection) -> zbus::Result<()> {
         let server = conn.object_server();
 
-        let devices = scan_devices(&self.sys_root);
+        let devices = scan_devices(&self.sys_root, self.model.get());
         let manager = server.interface::<_, Manager>(ROOT_PATH).await?;
         let changed = {
             let mut m = manager.get_mut().await;
@@ -87,7 +154,7 @@ impl Ticks {
             changed
         };
         if changed {
-            Manager::devices_changed(manager.signal_emitter(), devices).await?;
+            Manager::devices_changed(manager.signal_emitter(), devices_to_dbus(&devices)).await?;
         }
 
         let iface = server.interface::<_, Telemetry>(WATERFORCE_PATH).await?;
@@ -191,33 +258,90 @@ mod tests {
     use crate::testbus::add_hidraw;
     use std::fs;
 
+    fn device(id: &str, devices: &[Device]) -> Device {
+        devices.iter().find(|d| d.id == id).unwrap().clone()
+    }
+
     #[test]
-    fn um_presente_e_outro_ausente() {
+    fn waterforce_conectado_e_placa_desconectada() {
         let sys = tempfile::tempdir().unwrap();
         add_hidraw(sys.path(), "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        let devices = scan_devices(sys.path(), None);
+        let ids: Vec<&str> = devices.iter().map(|d| d.id).collect();
+        assert_eq!(ids, ["waterforce", "it5702", "g502"]);
         assert_eq!(
-            scan_devices(sys.path()),
-            [
-                ("it5702".to_owned(), false, String::new()),
-                ("waterforce".to_owned(), true, "/dev/hidraw3".to_owned()),
-            ]
+            devices[0],
+            Device {
+                id: "waterforce",
+                name: "AORUS Waterforce X".into(),
+                present: true,
+                devnode: "/dev/hidraw3".into(),
+                capabilities: &["led", "speed", "telemetry"],
+            }
         );
+        let board = device("it5702", &devices);
+        assert!(!board.present);
+        assert_eq!(board.devnode, "");
+    }
+
+    #[test]
+    fn g502_detectado_so_pelo_sysfs() {
+        // O sysfs falso não tem hidraw de verdade por trás: a busca só lê
+        // `uevent` e `report_descriptor`.
+        let sys = tempfile::tempdir().unwrap();
+        add_hidraw(sys.path(), "hidraw0", 0x046D, 0xC08B, 0x0001);
+        add_hidraw(sys.path(), "hidraw1", 0x046D, 0xC08B, 0xFF00);
+        let mouse = device("g502", &scan_devices(sys.path(), None));
+        assert_eq!(
+            mouse,
+            Device {
+                id: "g502",
+                name: "Logitech G502 SE HERO".into(),
+                present: true,
+                devnode: "/dev/hidraw1".into(),
+                capabilities: &[],
+            }
+        );
+    }
+
+    #[test]
+    fn placa_pelo_nome_dmi() {
+        let sys = tempfile::tempdir().unwrap();
+        add_hidraw(sys.path(), "hidraw2", 0x048D, 0x5702, 0xFF89);
+        let board = device("it5702", &scan_devices(sys.path(), None));
+        assert_eq!(board.name, "Placa-mãe (IT5702)");
+
+        let dmi = sys.path().join("class/dmi/id");
+        fs::create_dir_all(&dmi).unwrap();
+        fs::write(dmi.join("board_name"), "B550M AORUS ELITE\n").unwrap();
+        let board = device("it5702", &scan_devices(sys.path(), None));
+        assert!(board.present);
+        assert_eq!(board.name, "B550M AORUS ELITE");
+        assert!(board.capabilities.is_empty());
+
+        fs::write(dmi.join("board_name"), "\n").unwrap();
+        assert_eq!(board_name(sys.path()), "Placa-mãe (IT5702)");
+    }
+
+    #[test]
+    fn nome_do_waterforce_pelo_modelo() {
+        assert_eq!(waterforce_name(None), "AORUS Waterforce X");
+        assert_eq!(waterforce_name(Some(0)), "AORUS Waterforce X 240");
+        assert_eq!(waterforce_name(Some(2)), "AORUS Waterforce X 360");
+        assert_eq!(waterforce_name(Some(5)), "AORUS Waterforce X");
     }
 
     #[test]
     fn devnode_muda() {
         let sys = tempfile::tempdir().unwrap();
         add_hidraw(sys.path(), "hidraw3", 0x1044, 0x7A4D, 0x0000);
-        let before = scan_devices(sys.path());
+        let before = scan_devices(sys.path(), None);
         fs::remove_dir_all(sys.path().join("class/hidraw/hidraw3")).unwrap();
         add_hidraw(sys.path(), "hidraw5", 0x1044, 0x7A4D, 0x0000);
-        let after = scan_devices(sys.path());
+        let after = scan_devices(sys.path(), None);
         assert_ne!(before, after);
-        assert_eq!(
-            after[1],
-            ("waterforce".to_owned(), true, "/dev/hidraw5".to_owned())
-        );
-        assert_eq!(scan_devices(sys.path()), after);
+        assert_eq!(after[0].devnode, "/dev/hidraw5");
+        assert_eq!(scan_devices(sys.path(), None), after);
     }
 
     fn reading(millicelsius: i32) -> telemetry::Telemetry {

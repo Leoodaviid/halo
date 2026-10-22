@@ -5,10 +5,12 @@
 //! métodos D-Bus esperam a resposta sem bloquear o executor do zbus.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
+use async_channel::Sender;
 use halo_core::waterforce::led::{self, LedSetting};
+use halo_core::waterforce::probe::model_name;
 use halo_core::waterforce::speed::{
     self, CurveRequest, DesiredState, SetRequest, SnapshotStore, SpeedError, SpeedStatus,
     StateOutcome, Which,
@@ -16,16 +18,20 @@ use halo_core::waterforce::speed::{
 
 use crate::error::Error;
 
+/// Modelo lido no `DE 00` (`r[2]`; ver [`model_name`]).
+pub type Model = u8;
+
 /// O que o daemon faz no Waterforce. A implementação real é o
-/// [`CoreBackend`]; os testes usam um falso.
+/// [`CoreBackend`]; os testes usam um falso. Toda operação começa pelo
+/// `DE 00` e devolve o modelo lido.
 pub trait WaterforceBackend: Send {
-    fn apply_led(&mut self, setting: &LedSetting) -> Result<(), Error>;
+    fn apply_led(&mut self, setting: &LedSetting) -> Result<Model, Error>;
     fn speed_status(&mut self) -> Result<SpeedStatus, Error>;
-    fn set_presets(&mut self, request: &SetRequest) -> Result<(), Error>;
-    fn set_curve(&mut self, request: &CurveRequest) -> Result<(), Error>;
-    fn restore(&mut self, which: Which) -> Result<(), Error>;
+    fn set_presets(&mut self, request: &SetRequest) -> Result<Model, Error>;
+    fn set_curve(&mut self, request: &CurveRequest) -> Result<Model, Error>;
+    fn restore(&mut self, which: Which) -> Result<Model, Error>;
     /// `true` se escreveu, `false` se o aparelho já estava em `desired`.
-    fn apply_state(&mut self, desired: &DesiredState) -> Result<bool, Error>;
+    fn apply_state(&mut self, desired: &DesiredState) -> Result<(bool, Model), Error>;
 }
 
 /// Backend sobre o `halo-core`, com o mesmo `SnapshotStore` da CLI.
@@ -49,33 +55,106 @@ impl CoreBackend {
 }
 
 impl WaterforceBackend for CoreBackend {
-    fn apply_led(&mut self, setting: &LedSetting) -> Result<(), Error> {
-        led::apply(&self.sys_root, setting)?;
-        Ok(())
+    fn apply_led(&mut self, setting: &LedSetting) -> Result<Model, Error> {
+        Ok(led::apply(&self.sys_root, setting)?.model)
     }
 
     fn speed_status(&mut self) -> Result<SpeedStatus, Error> {
         Ok(speed::status(&self.sys_root)?)
     }
 
-    fn set_presets(&mut self, request: &SetRequest) -> Result<(), Error> {
-        speed::set(&self.sys_root, self.store()?, request)?;
-        Ok(())
+    fn set_presets(&mut self, request: &SetRequest) -> Result<Model, Error> {
+        let applied = speed::set(&self.sys_root, self.store()?, request)?;
+        Ok(applied.written.before.model)
     }
 
-    fn set_curve(&mut self, request: &CurveRequest) -> Result<(), Error> {
-        speed::curve(&self.sys_root, self.store()?, request)?;
-        Ok(())
+    fn set_curve(&mut self, request: &CurveRequest) -> Result<Model, Error> {
+        let applied = speed::curve(&self.sys_root, self.store()?, request)?;
+        Ok(applied.written.before.model)
     }
 
-    fn restore(&mut self, which: Which) -> Result<(), Error> {
-        speed::restore(&self.sys_root, self.store()?, which)?;
-        Ok(())
+    fn restore(&mut self, which: Which) -> Result<Model, Error> {
+        let applied = speed::restore(&self.sys_root, self.store()?, which)?;
+        Ok(applied.written.before.model)
     }
 
-    fn apply_state(&mut self, desired: &DesiredState) -> Result<bool, Error> {
+    fn apply_state(&mut self, desired: &DesiredState) -> Result<(bool, Model), Error> {
         let applied = speed::apply_state(&self.sys_root, self.store()?, desired)?;
-        Ok(matches!(applied.outcome, StateOutcome::Written(_)))
+        Ok(match applied.outcome {
+            StateOutcome::Written(w) => (true, w.before.model),
+            StateOutcome::Unchanged(s) => (false, s.model),
+        })
+    }
+}
+
+/// Modelo do Waterforce que as operações do worker já leram, compartilhado
+/// com os ticks. `None` até a primeira operação que deu certo; não é guardado
+/// entre execuções do daemon.
+#[derive(Clone, Default)]
+pub struct KnownModel(Arc<Mutex<Option<Model>>>);
+
+impl KnownModel {
+    pub fn get(&self) -> Option<Model> {
+        *self.0.lock().unwrap()
+    }
+
+    /// Grava `model` e diz se ele mudou.
+    fn set(&self, model: Model) -> bool {
+        self.0.lock().unwrap().replace(model) != Some(model)
+    }
+}
+
+/// Envolve o backend e, depois de cada operação que deu certo com um modelo
+/// conhecido, grava o modelo e pede uma volta dos ticks em `refresh`, que
+/// montam o nome novo e emitem o `DevicesChanged`.
+struct Observed<B> {
+    inner: B,
+    known: KnownModel,
+    refresh: Sender<()>,
+}
+
+impl<B> Observed<B> {
+    fn saw<T>(&self, result: Result<T, Error>, model: impl Fn(&T) -> Model) -> Result<T, Error> {
+        if let Ok(value) = &result {
+            let model = model(value);
+            if model_name(model).is_some() && self.known.set(model) {
+                // Canal cheio: os ticks já vão rodar.
+                let _ = self.refresh.try_send(());
+            }
+        }
+        result
+    }
+}
+
+impl<B: WaterforceBackend> WaterforceBackend for Observed<B> {
+    fn apply_led(&mut self, setting: &LedSetting) -> Result<Model, Error> {
+        let r = self.inner.apply_led(setting);
+        self.saw(r, |m| *m)
+    }
+
+    fn speed_status(&mut self) -> Result<SpeedStatus, Error> {
+        let r = self.inner.speed_status();
+        self.saw(r, |s| s.state.model)
+    }
+
+    fn set_presets(&mut self, request: &SetRequest) -> Result<Model, Error> {
+        let r = self.inner.set_presets(request);
+        self.saw(r, |m| *m)
+    }
+
+    fn set_curve(&mut self, request: &CurveRequest) -> Result<Model, Error> {
+        let r = self.inner.set_curve(request);
+        self.saw(r, |m| *m)
+    }
+
+    fn restore(&mut self, which: Which) -> Result<Model, Error> {
+        let r = self.inner.restore(which);
+        self.saw(r, |m| *m)
+    }
+
+    fn apply_state(&mut self, desired: &DesiredState) -> Result<(bool, Model), Error> {
+        let r = self.inner.apply_state(desired);
+        self.saw(r, |(_, m)| *m)
     }
 }
 
@@ -88,7 +167,18 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(mut backend: impl WaterforceBackend + 'static) -> Self {
+    /// O modelo lido pelas operações vai para `known`, com um aviso em
+    /// `refresh` quando muda.
+    pub fn spawn(
+        backend: impl WaterforceBackend + 'static,
+        known: KnownModel,
+        refresh: Sender<()>,
+    ) -> Self {
+        let mut backend = Observed {
+            inner: backend,
+            known,
+            refresh,
+        };
         let (jobs, queue) = mpsc::channel::<Job>();
         thread::Builder::new()
             .name("waterforce".into())
@@ -151,6 +241,8 @@ pub(crate) mod fake {
         pub failures: VecDeque<Option<Error>>,
         /// Enquanto `true`, a próxima chamada espera.
         pub hold: bool,
+        /// Modelo devolvido pelas operações que dão certo.
+        pub model: Model,
     }
 
     #[derive(Clone, Default)]
@@ -173,19 +265,23 @@ pub(crate) mod fake {
             cond.notify_all();
         }
 
-        fn record(&self, call: Call) -> Result<(), Error> {
+        pub fn set_model(&self, model: Model) {
+            self.script.0.lock().unwrap().model = model;
+        }
+
+        fn record(&self, call: Call) -> Result<Model, Error> {
             let (lock, cond) = &*self.script;
             let mut script = cond.wait_while(lock.lock().unwrap(), |s| s.hold).unwrap();
             script.calls.push(call);
             match script.failures.pop_front().flatten() {
                 Some(e) => Err(e),
-                None => Ok(()),
+                None => Ok(script.model),
             }
         }
     }
 
     /// Estado devolvido pelo status falso: fan em Performance, bomba em Turbo.
-    pub fn status() -> SpeedStatus {
+    pub fn status(model: Model) -> SpeedStatus {
         let points = |rpm: [u16; 4]| {
             let celsius = [0, 30, 50, 80];
             std::array::from_fn(|i| CurvePoint {
@@ -197,7 +293,7 @@ pub(crate) mod fake {
             devnode: PathBuf::from("/dev/hidraw3"),
             state: Snapshot {
                 taken_unix: 0,
-                model: 0,
+                model,
                 fan_mode: 5,
                 pump_mode: 4,
                 fan_curve: points([1000, 1000, 1500, 2500]),
@@ -207,28 +303,28 @@ pub(crate) mod fake {
     }
 
     impl WaterforceBackend for FakeBackend {
-        fn apply_led(&mut self, setting: &LedSetting) -> Result<(), Error> {
+        fn apply_led(&mut self, setting: &LedSetting) -> Result<Model, Error> {
             self.record(Call::Led(setting.clone()))
         }
 
         fn speed_status(&mut self) -> Result<SpeedStatus, Error> {
-            self.record(Call::Status).map(|()| status())
+            self.record(Call::Status).map(status)
         }
 
-        fn set_presets(&mut self, request: &SetRequest) -> Result<(), Error> {
+        fn set_presets(&mut self, request: &SetRequest) -> Result<Model, Error> {
             self.record(Call::Presets(*request))
         }
 
-        fn set_curve(&mut self, request: &CurveRequest) -> Result<(), Error> {
+        fn set_curve(&mut self, request: &CurveRequest) -> Result<Model, Error> {
             self.record(Call::Curve(*request))
         }
 
-        fn restore(&mut self, which: Which) -> Result<(), Error> {
+        fn restore(&mut self, which: Which) -> Result<Model, Error> {
             self.record(Call::Restore(which))
         }
 
-        fn apply_state(&mut self, desired: &DesiredState) -> Result<bool, Error> {
-            self.record(Call::State(*desired)).map(|()| true)
+        fn apply_state(&mut self, desired: &DesiredState) -> Result<(bool, Model), Error> {
+            self.record(Call::State(*desired)).map(|m| (true, m))
         }
     }
 }
@@ -242,7 +338,8 @@ mod tests {
     #[test]
     fn tarefas_em_ordem_e_uma_de_cada_vez() {
         let backend = FakeBackend::default();
-        let worker = Worker::spawn(backend.clone());
+        let (refresh, _wake) = async_channel::bounded(1);
+        let worker = Worker::spawn(backend.clone(), KnownModel::default(), refresh);
         backend.hold(true);
         let first = {
             let worker = worker.clone();

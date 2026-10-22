@@ -110,7 +110,7 @@ Exemplos com o `busctl` (o nome do bus é `io.github.leoodaviid.Halo1`):
 ```sh
 N=io.github.leoodaviid.Halo1; R=/io/github/leoodaviid/Halo1; W=$R/waterforce
 
-busctl --user call $N $R $N.Manager Devices                            # aparelhos presentes
+busctl --user call $N $R $N.Manager Devices                            # todos os aparelhos, presentes ou não
 busctl --user call $N $W $N.Waterforce.Led Apply sasyy static 1 ff6600 10 0
 busctl --user call $N $W $N.Waterforce.Led Apply sasyy cycle 0 0 0     # 0 = padrão do efeito
 busctl --user call $N $W $N.Waterforce.Speed Status                    # só leitura
@@ -120,6 +120,13 @@ busctl --user call $N $W $N.Waterforce.Speed Restore s previous
 busctl --user get-property $N $W $N.Waterforce.Telemetry FanRpm CoolantMilliCelsius Available
 ```
 
+- O `Devices` devolve um dicionário por aparelho (`aa{sv}`), sempre na ordem `waterforce`, `it5702`, `g502`, com as chaves `id`, `name`, `present`, `devnode` (vazio quando ausente) e `capabilities` (as interfaces que o daemon expõe para o aparelho: hoje só o Waterforce tem `led`, `speed` e `telemetry`). A ordem das chaves na saída do `busctl` varia. Um trecho, com o Waterforce em `/dev/hidraw3`:
+
+  ```text
+  aa{sv} 3 5 "id" s "waterforce" "name" s "AORUS Waterforce X" "present" b true "devnode" s "/dev/hidraw3" "capabilities" as 3 "led" "speed" "telemetry" 5 "id" s "it5702" "name" s "B550M AORUS ELITE" ...
+  ```
+
+- A presença vem só do sysfs: o daemon não abre a placa-mãe nem o mouse. O nome da placa é o `board_name` do DMI, e o do Waterforce é `AORUS Waterforce X` até a primeira operação no aparelho (LED, velocidade ou perfil), que já lê o modelo com o `DE 00`; depois vira o modelo completo, como `AORUS Waterforce X 240`, com um `DevicesChanged`. O `DevicesChanged` sai quando a presença, o caminho ou o nome de um aparelho muda.
 - O `Apply` recebe o efeito, as cores (de 0 a 8, `rrggbb`), o brilho e a velocidade. Brilho ou velocidade 0 valem o padrão do efeito, e o `off` só aceita brilho 0.
 - As escritas pelo D-Bus sempre terminam com `B6`. O `--no-save` e o `--dry-run` existem só na CLI.
 - A propriedade `LastApplied` da interface `Led` é o último LED aplicado **pelo daemon**, e não o estado do aparelho, que não tem leitura do LED.
