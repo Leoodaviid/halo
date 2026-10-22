@@ -58,8 +58,43 @@ pub fn claim_name(
         .replace_existing_names(false))
 }
 
-/// `(id, presente, devnode)`, com o devnode vazio quando ausente.
-pub type DeviceEntry = (String, bool, String);
+/// Um aparelho da lista do `Manager`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Device {
+    /// `waterforce`, `it5702` ou `g502`.
+    pub id: &'static str,
+    /// Nome para mostrar.
+    pub name: String,
+    /// Encontrado no sysfs.
+    pub present: bool,
+    /// `/dev/hidrawN`, ou vazio quando ausente.
+    pub devnode: String,
+    /// As interfaces D-Bus que o daemon expõe para o aparelho (`led`,
+    /// `speed`, `telemetry`), presente ou não.
+    pub capabilities: &'static [&'static str],
+}
+
+impl Device {
+    /// `a{sv}` com as chaves fixas `id`, `name`, `present`, `devnode` e
+    /// `capabilities`.
+    fn to_dbus(&self) -> HashMap<String, OwnedValue> {
+        HashMap::from([
+            ("id".into(), owned(Value::from(self.id))),
+            ("name".into(), owned(Value::from(self.name.as_str()))),
+            ("present".into(), owned(Value::from(self.present))),
+            ("devnode".into(), owned(Value::from(self.devnode.as_str()))),
+            (
+                "capabilities".into(),
+                owned(Value::from(self.capabilities.to_vec())),
+            ),
+        ])
+    }
+}
+
+/// A lista no formato `aa{sv}` do `Devices()` e do `DevicesChanged`.
+pub fn devices_to_dbus(devices: &[Device]) -> Vec<HashMap<String, OwnedValue>> {
+    devices.iter().map(Device::to_dbus).collect()
+}
 
 fn owned(value: Value<'_>) -> OwnedValue {
     value
@@ -70,7 +105,7 @@ fn owned(value: Value<'_>) -> OwnedValue {
 // Manager
 
 pub struct Manager {
-    pub devices: Vec<DeviceEntry>,
+    pub devices: Vec<Device>,
 }
 
 #[interface(name = "io.github.leoodaviid.Halo1.Manager")]
@@ -80,14 +115,15 @@ impl Manager {
         env!("CARGO_PKG_VERSION").to_owned()
     }
 
-    fn devices(&self) -> Vec<DeviceEntry> {
-        self.devices.clone()
+    /// Todos os aparelhos conhecidos, presentes ou não, na ordem do painel.
+    fn devices(&self) -> Vec<HashMap<String, OwnedValue>> {
+        devices_to_dbus(&self.devices)
     }
 
     #[zbus(signal)]
     pub async fn devices_changed(
         emitter: &SignalEmitter<'_>,
-        devices: Vec<DeviceEntry>,
+        devices: Vec<HashMap<String, OwnedValue>>,
     ) -> zbus::Result<()>;
 }
 
@@ -272,14 +308,16 @@ impl Speed {
             pump,
             save: true,
         };
-        self.worker.run(move |b| b.set_presets(&request)).await
+        self.worker.run(move |b| b.set_presets(&request)).await?;
+        Ok(())
     }
 
     /// Curva Customized plana de um lado (`fan` ou `pump`). Sempre com `B6`.
     async fn set_flat_curve(&self, side_name: &str, rpm: u16) -> Result<(), Error> {
         let curve = Curve::flat(side(side_name)?, rpm)?;
         let request = CurveRequest { curve, save: true };
-        self.worker.run(move |b| b.set_curve(&request)).await
+        self.worker.run(move |b| b.set_curve(&request)).await?;
+        Ok(())
     }
 
     /// `previous` ou `original`.
@@ -293,7 +331,8 @@ impl Speed {
                 )));
             }
         };
-        self.worker.run(move |b| b.restore(which)).await
+        self.worker.run(move |b| b.restore(which)).await?;
+        Ok(())
     }
 }
 
@@ -491,7 +530,44 @@ mod tests {
     }
 
     fn tick(h: &Harness) {
-        zbus::block_on(Ticks::new(h.sys.clone()).run_once(&h.server)).unwrap();
+        zbus::block_on(Ticks::new(h.sys.clone(), h.model.clone()).run_once(&h.server)).unwrap();
+    }
+
+    type DeviceDict = HashMap<String, OwnedValue>;
+
+    /// `(id, name, present, devnode)` de cada aparelho.
+    fn summary(devices: &[DeviceDict]) -> Vec<(String, String, bool, String)> {
+        let text = |d: &DeviceDict, key: &str| <&str>::try_from(&d[key]).unwrap().to_owned();
+        devices
+            .iter()
+            .map(|d| {
+                (
+                    text(d, "id"),
+                    text(d, "name"),
+                    bool::try_from(&d["present"]).unwrap(),
+                    text(d, "devnode"),
+                )
+            })
+            .collect()
+    }
+
+    fn listed(h: &Harness) -> Vec<DeviceDict> {
+        h.call(ROOT_PATH, MANAGER, "Devices", &()).unwrap()
+    }
+
+    /// A lista do próximo `DevicesChanged`, ou `None`.
+    fn next_devices(stream: &mut zbus::MessageStream) -> Option<Vec<DeviceDict>> {
+        let msg = next_signal(stream, SHORT)?;
+        let (devices,): (Vec<DeviceDict>,) = msg.body().deserialize().unwrap();
+        Some(devices)
+    }
+
+    fn waterforce_name(devices: &[DeviceDict]) -> String {
+        summary(devices)
+            .into_iter()
+            .find(|d| d.0 == "waterforce")
+            .unwrap()
+            .1
     }
 
     /// Nomes das propriedades de `iface` no próximo `PropertiesChanged`.
@@ -525,32 +601,151 @@ mod tests {
     // 4.1
 
     #[test]
+    fn lista_em_aa_sv() {
+        let h = Harness::new();
+        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw1", 0x046D, 0xC08B, 0xFF00);
+        tick(&h);
+        let devices = listed(&h);
+        for d in &devices {
+            let mut keys: Vec<&str> = d.keys().map(String::as_str).collect();
+            keys.sort();
+            assert_eq!(keys, ["capabilities", "devnode", "id", "name", "present"]);
+            let sig = |key: &str| d[key].value_signature().to_string();
+            assert_eq!(
+                [sig("id"), sig("name"), sig("present"), sig("devnode")],
+                ["s", "s", "b", "s"]
+            );
+            assert_eq!(sig("capabilities"), "as");
+        }
+        assert_eq!(
+            summary(&devices),
+            [
+                (
+                    "waterforce".into(),
+                    "AORUS Waterforce X".into(),
+                    true,
+                    "/dev/hidraw3".into()
+                ),
+                (
+                    "it5702".into(),
+                    "Placa-mãe (IT5702)".into(),
+                    false,
+                    String::new()
+                ),
+                (
+                    "g502".into(),
+                    "Logitech G502 SE HERO".into(),
+                    true,
+                    "/dev/hidraw1".into()
+                ),
+            ]
+        );
+        let caps: Vec<String> = devices[0]["capabilities"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(caps, ["led", "speed", "telemetry"]);
+        let caps: Vec<String> = devices[2]["capabilities"]
+            .try_clone()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(caps.is_empty());
+    }
+
+    #[test]
     fn sinal_de_aparelhos() {
         let h = Harness::new();
         add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
         let mut stream = h.signals(MANAGER, "DevicesChanged");
         tick(&h);
-        let msg = next_signal(&mut stream, SHORT).expect("DevicesChanged");
-        let (devices,): (Vec<DeviceEntry>,) = msg.body().deserialize().unwrap();
-        assert_eq!(
-            devices[1],
-            ("waterforce".into(), true, "/dev/hidraw3".into())
-        );
-        let listed: Vec<DeviceEntry> = h.call(ROOT_PATH, MANAGER, "Devices", &()).unwrap();
-        assert_eq!(listed, devices);
+        let devices = next_devices(&mut stream).expect("DevicesChanged");
+        assert_eq!(summary(&devices)[0].3, "/dev/hidraw3");
+        assert_eq!(summary(&listed(&h)), summary(&devices));
 
         std::fs::remove_dir_all(h.sys.join("class/hidraw/hidraw3")).unwrap();
         add_hidraw(&h.sys, "hidraw5", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
-        let msg = next_signal(&mut stream, SHORT).expect("DevicesChanged");
-        let (devices,): (Vec<DeviceEntry>,) = msg.body().deserialize().unwrap();
+        let devices = next_devices(&mut stream).expect("DevicesChanged");
         assert_eq!(
-            devices[1],
-            ("waterforce".into(), true, "/dev/hidraw5".into())
+            summary(&devices)[0],
+            (
+                "waterforce".into(),
+                "AORUS Waterforce X".into(),
+                true,
+                "/dev/hidraw5".into()
+            )
         );
 
+        // Nada mudou: dois ciclos iguais, nenhum sinal.
         tick(&h);
-        assert!(next_signal(&mut stream, SHORT).is_none());
+        tick(&h);
+        assert!(next_devices(&mut stream).is_none());
+    }
+
+    #[test]
+    fn daemon_recem_iniciado() {
+        let h = Harness::new();
+        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        tick(&h);
+        assert_eq!(waterforce_name(&listed(&h)), "AORUS Waterforce X");
+        assert!(h.backend.calls().is_empty());
+        assert!(h.wake.try_recv().is_err());
+    }
+
+    #[test]
+    fn nome_muda_depois_da_primeira_operacao() {
+        let h = Harness::new();
+        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        tick(&h);
+        let mut stream = h.signals(MANAGER, "DevicesChanged");
+        apply(&h, "cycle", &[], 0, 0).unwrap();
+        // O worker pede uma volta dos ticks, que monta o nome novo.
+        assert!(h.wake.try_recv().is_ok());
+        tick(&h);
+        let devices = next_devices(&mut stream).expect("DevicesChanged");
+        assert_eq!(waterforce_name(&devices), "AORUS Waterforce X 240");
+
+        // O mesmo modelo de novo: nem pedido de volta nem sinal.
+        apply(&h, "cycle", &[], 0, 0).unwrap();
+        assert!(h.wake.try_recv().is_err());
+        tick(&h);
+        assert!(next_devices(&mut stream).is_none());
+    }
+
+    #[test]
+    fn leitura_de_velocidade_revela_o_modelo() {
+        let h = Harness::new();
+        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        tick(&h);
+        let mut stream = h.signals(MANAGER, "DevicesChanged");
+        h.backend.set_model(2);
+        let _: HashMap<String, OwnedValue> = h.call(WATERFORCE_PATH, SPEED, "Status", &()).unwrap();
+        assert!(h.wake.try_recv().is_ok());
+        tick(&h);
+        let devices = next_devices(&mut stream).expect("DevicesChanged");
+        assert_eq!(waterforce_name(&devices), "AORUS Waterforce X 360");
+    }
+
+    #[test]
+    fn modelo_desconhecido() {
+        let h = Harness::new();
+        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        tick(&h);
+        let mut stream = h.signals(MANAGER, "DevicesChanged");
+        // No backend real, o modelo fora da tabela faz a operação falhar.
+        h.backend
+            .fail_next([Some(Error::Device("modelo desconhecido: 5".into()))]);
+        assert_eq!(apply(&h, "cycle", &[], 0, 0), Err(err("Device")));
+        // E, mesmo se uma operação devolvesse o modelo 5, o nome não muda.
+        h.backend.set_model(5);
+        let _: HashMap<String, OwnedValue> = h.call(WATERFORCE_PATH, SPEED, "Status", &()).unwrap();
+        assert!(h.wake.try_recv().is_err());
+        tick(&h);
+        assert!(next_devices(&mut stream).is_none());
+        assert_eq!(waterforce_name(&listed(&h)), "AORUS Waterforce X");
     }
 
     // 4.3
@@ -569,8 +764,18 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         tick(&h);
         assert!(h.backend.calls().is_empty());
-        let listed: Vec<DeviceEntry> = h.call(ROOT_PATH, MANAGER, "Devices", &()).unwrap();
-        assert!(listed.iter().all(|(_, present, _)| *present), "{listed:?}");
+        let present: Vec<(String, bool)> = summary(&listed(&h))
+            .into_iter()
+            .map(|(id, _, present, _)| (id, present))
+            .collect();
+        assert_eq!(
+            present,
+            [
+                ("waterforce".into(), true),
+                ("it5702".into(), true),
+                ("g502".into(), false)
+            ]
+        );
     }
 
     // 5.1
@@ -592,7 +797,7 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(100));
         let started = std::time::Instant::now();
-        let _: Vec<DeviceEntry> = h.call(ROOT_PATH, MANAGER, "Devices", &()).unwrap();
+        let _ = listed(&h);
         let _: Vec<String> = h.call(ROOT_PATH, PROFILES, "List", &()).unwrap();
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(h.backend.calls().is_empty());

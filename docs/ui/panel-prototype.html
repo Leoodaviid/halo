@@ -402,12 +402,13 @@ button.grp-row:hover{background:var(--tile-hover)}
 
     <h4>Aparelhos</h4>
     <label><select id="sDevices">
-      <option value="wf,mb">Waterforce + placa-mãe</option>
+      <option value="wf,mb">Waterforce + placa-mãe (G502 ausente)</option>
       <option value="wf">Só o Waterforce</option>
       <option value="wf,mb,g502">Waterforce + placa-mãe + G502 (sem desenho)</option>
       <option value="mb">Só a placa-mãe (Waterforce desconectado)</option>
       <option value="">Nenhum</option>
     </select></label>
+    <div class="btns"><button class="text-btn" id="sModel">Waterforce revela o modelo (X 240)</button></div>
 
     <h4>Telemetria</h4>
     <label><input type="checkbox" id="sTelem" checked> Telemetria disponível</label>
@@ -471,11 +472,14 @@ const DEFAULT_LED = { effect: 'pulse', colors: ['ff6600'], brightness: 8, speed:
 class DBusError extends Error {
   constructor(name, message) { super(message); this.name = name; }
 }
-const DEVICE_CATALOG = {
-  wf: ['waterforce', 'Waterforce X 240', 'controllable'],
-  mb: ['it5702', 'B550M AORUS ELITE', 'detected'],
-  g502: ['g502', 'Logitech G502 SE HERO', 'detected'],
-};
+/* Os aparelhos que o halod conhece, na ordem do Devices(). O nome do
+   Waterforce só ganha o modelo depois de uma operação que lê o DE 00. */
+const DEVICE_TABLE = [
+  { key: 'wf', id: 'waterforce', devnode: '/dev/hidraw3', capabilities: ['led', 'speed', 'telemetry'] },
+  { key: 'mb', id: 'it5702', name: 'B550M AORUS ELITE', devnode: '/dev/hidraw2', capabilities: [] },
+  { key: 'g502', id: 'g502', name: 'Logitech G502 SE HERO', devnode: '/dev/hidraw1', capabilities: [] },
+];
+const WATERFORCE_MODELS = ['Waterforce X 240', 'Waterforce X 280', 'Waterforce X 360'];
 const PROFILES = {
   noite: { led: { effect: 'static', colors: ['aa7cd8'], brightness: 3, speed: 5 } },
   jogo: { led: { effect: 'tri-color', colors: ['ff0000', '00ff00', '0000ff'], brightness: 10, speed: 5 } },
@@ -492,7 +496,9 @@ const fakeDaemon = {
   unitInstalled: true,
   latency: 400,
   failNext: '',
-  devices: [DEVICE_CATALOG.wf, DEVICE_CATALOG.mb],
+  present: new Set(['wf', 'mb']),
+  model: null,          // modelo do Waterforce lido no DE 00 nesta execução
+
   lastApplied: { ...DEFAULT_LED, colors: [...DEFAULT_LED.colors] },
   telemetry: { Available: true, FanRpm: 1200, PumpRpm: 2600, FanDuty: 143, PumpDuty: 224, CoolantMilliCelsius: 31000, CoolantValid: true },
   cpuMilliCelsius: null,
@@ -527,8 +533,26 @@ const fakeDaemon = {
     }
   },
 
-  /* Manager */
-  Devices() { this.ensure(); return this.devices.map(d => [...d]); },
+  /* Manager: aa{sv}, com os ausentes na lista */
+  Devices() {
+    this.ensure();
+    return DEVICE_TABLE.map(d => ({
+      id: d.id,
+      name: d.id === 'waterforce'
+        ? (this.model === null ? 'AORUS Waterforce X' : `AORUS ${WATERFORCE_MODELS[this.model]}`)
+        : d.name,
+      present: this.present.has(d.key),
+      devnode: this.present.has(d.key) ? d.devnode : '',
+      capabilities: [...d.capabilities],
+    }));
+  },
+  /* Toda operação no Waterforce lê o modelo; o primeiro muda o nome. */
+  sawModel(model) {
+    if (this.model === model) return;
+    this.model = model;
+    log('DevicesChanged').done(`AORUS ${WATERFORCE_MODELS[model]}`);
+    this.emit('DevicesChanged');
+  },
 
   /* Waterforce.Led */
   Apply(effect, colors, brightness, speed) {
@@ -542,6 +566,7 @@ const fakeDaemon = {
       updateB6();
       this.lastApplied = { effect, colors: [...colors], brightness: effect === 'off' ? 0 : brightness, speed };
       this.emit('LastApplied');
+      this.sawModel(0);
     });
   },
   get LastApplied() { this.ensure(); return this.lastApplied ? structuredClone(this.lastApplied) : {}; },
@@ -562,6 +587,7 @@ const fakeDaemon = {
         updateB6();
         this.lastApplied = structuredClone(p.led);
         this.emit('LastApplied');
+        this.sawModel(0);
       }
       this.activeProfile = name;
       this.emit('ActiveProfile');
@@ -646,7 +672,7 @@ const panel = {
   open: true,
   page: 'main',         // main | devices | details | journal
   index: 0,
-  devices: [],          // [{id, name, status}]
+  devices: [],          // só os presentes: [{id, name, led}]
   applied: null,        // último estado confirmado pelo daemon, ou null se desconhecido
   draft: null,          // o que a interface mostra
   lastOn: null,         // último estado ligado visto nesta instância do daemon
@@ -665,7 +691,7 @@ const sameSetting = (a, b) => !!a && !!b && a.effect === b.effect && a.brightnes
   a.speed === b.speed && a.colors.join() === b.colors.join();
 const clone = s => s && structuredClone(s);
 const current = () => panel.devices[panel.index];
-const controllable = () => !!current() && current().status === 'controllable';
+const controllable = () => !!current() && current().led;
 
 function fromDaemon(rec) {
   if (!rec || !rec.effect) return null;
@@ -767,7 +793,8 @@ function refreshAll() {
 }
 function syncDevices() {
   const prevId = current() && current().id;
-  panel.devices = fakeDaemon.Devices().map(([id, name, status]) => ({ id, name, status }));
+  panel.devices = fakeDaemon.Devices().filter(d => d.present)
+    .map(d => ({ id: d.id, name: d.name, led: d.capabilities.includes('led') }));
   const keep = panel.devices.findIndex(d => d.id === prevId);
   panel.index = keep >= 0 ? keep : 0;
   if (keep < 0 && panel.page === 'details') panel.page = 'main';
@@ -779,6 +806,7 @@ function syncLed() {
   if (!panel.applying && !panel.pending) panel.draft = clone(panel.applied);
 }
 fakeDaemon.listeners.add(what => {
+  if (what === 'DevicesChanged') { syncDevices(); render(); }
   if (what === 'LastApplied') { syncLed(); render(); }
   if (what === 'ActiveProfile') { panel.activeProfile = fakeDaemon.ActiveProfile; render(); }
 });
@@ -970,7 +998,7 @@ function renderDeviceList() {
   list.innerHTML = '';
   if (!panel.devices.length) { list.innerHTML = '<div class="empty">Nenhum aparelho encontrado.</div>'; return; }
   panel.devices.forEach((d, i) => {
-    const ok = d.status === 'controllable';
+    const ok = d.led;
     const b = document.createElement('button');
     b.className = 'grp-row dev-row';
     b.innerHTML = `<span style="display:flex;align-items:center;gap:10px;min-width:0"><span class="dev-ic">${DEVICE_ICON}</span><span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="font-weight:500">${escapeHtml(d.name)}</span><span class="chip ${ok ? 'ok' : ''}"><i></i>${ok ? 'Disponível' : 'Detectado'}</span></span></span><span style="display:flex;align-items:center;gap:8px;color:var(--label3)">${i === panel.index ? `<span style="color:var(--accent-strong)">${CHECK}</span>` : ''}${CHEVRON}</span>`;
@@ -1005,7 +1033,7 @@ function renderDetails() {
     rows.push(['Conexão', 'USB HID'], ['Iluminação', 'Ainda sem suporte']);
   }
   $('detailsKv').innerHTML = rows.map(([k, v]) => `<div class="grp-row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`).join('');
-  const show = dev.status === 'controllable' && !!panel.applied;
+  const show = dev.led && !!panel.applied;
   $('cmdBlock').hidden = !show;
   if (show) $('cmdText').textContent = cliCommand(panel.applied);
 }
@@ -1279,8 +1307,9 @@ for (const r of document.querySelectorAll('input[name=tsrc]'))
    e o perfil ativo continua, porque o daemon real o grava em $XDG_STATE_HOME/halo/. */
 function restartDaemon() {
   fakeDaemon.lastApplied = null;
+  fakeDaemon.model = null;
   panel.lastOn = null;
-  log('— halod iniciado —').done('LastApplied vazio');
+  log('— halod iniciado —').done('LastApplied vazio, modelo desconhecido');
 }
 $('sRunning').onchange = e => {
   fakeDaemon.running = e.target.checked;
@@ -1297,10 +1326,11 @@ $('sRestart').onclick = () => {
 $('sLatency').oninput = e => { fakeDaemon.latency = +e.target.value; $('sLatencyVal').textContent = `${e.target.value} ms`; };
 $('sFail').onchange = e => { fakeDaemon.failNext = e.target.value; };
 $('sDevices').onchange = e => {
-  fakeDaemon.devices = e.target.value ? e.target.value.split(',').map(k => DEVICE_CATALOG[k]) : [];
-  log('DevicesChanged').done(`${fakeDaemon.devices.length} aparelho(s)`);
+  fakeDaemon.present = new Set(e.target.value ? e.target.value.split(',') : []);
+  log('DevicesChanged').done(`${fakeDaemon.present.size} presente(s) de ${DEVICE_TABLE.length}`);
   if (fakeDaemon.running) { syncDevices(); render(); }
 };
+$('sModel').onclick = () => { if (fakeDaemon.running) fakeDaemon.sawModel(0); };
 function setTelemetry() {
   const t = fakeDaemon.telemetry;
   t.Available = $('sTelem').checked;

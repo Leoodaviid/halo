@@ -22,7 +22,7 @@ use zbus::connection;
 use crate::bus::BUS_NAME;
 use crate::profiles::ProfileStore;
 use crate::ticks::Ticks;
-use crate::worker::{CoreBackend, Worker};
+use crate::worker::{CoreBackend, KnownModel, Worker};
 
 #[derive(Parser)]
 #[command(
@@ -56,10 +56,14 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<(), String> {
     let state_dir = speed::state_dir().ok_or("sem XDG_STATE_HOME nem HOME")?;
     let config_dir = profiles::config_dir().ok_or("sem XDG_CONFIG_HOME nem HOME")?;
-    let worker = Worker::spawn(CoreBackend::new(
-        cli.sys_root.clone(),
-        Some(SnapshotStore::new(&state_dir)),
-    ));
+    // O worker acorda os ticks pelo `refresh` quando lê um modelo novo.
+    let (refresh, wake) = async_channel::bounded(1);
+    let model = KnownModel::default();
+    let worker = Worker::spawn(
+        CoreBackend::new(cli.sys_root.clone(), Some(SnapshotStore::new(&state_dir))),
+        model.clone(),
+        refresh.clone(),
+    );
 
     let builder = match &cli.address {
         Some(a) => connection::Builder::address(a.as_str()),
@@ -79,8 +83,7 @@ async fn run(cli: Cli) -> Result<(), String> {
         })?;
     eprintln!("halod: {BUS_NAME} no D-Bus da sessão");
 
-    let (refresh, wake) = async_channel::bounded(1);
-    let ticks = Ticks::new(cli.sys_root);
+    let ticks = Ticks::new(cli.sys_root, model);
     futures_util::future::join(
         ticks.run(&conn, wake),
         ticks::watch_resume(cli.system_address, refresh),

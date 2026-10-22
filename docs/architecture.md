@@ -23,7 +23,7 @@ Se for preciso uma tela de edição maior (desenhar efeitos por LED, por exemplo
 O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (ver [docs/ui/README.md](ui/README.md)), que segue o canvas "halo · Apple HIG" com o destaque do GNOME. O painel é só um cliente do `halod`: ele não abre hidraw nem lê o sysfs.
 
 - **Barra:** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
-- **Aparelhos:** o carrossel mostra o que o `Devices` lista, com o status que o daemon informa. A extensão não guarda catálogo de hardware.
+- **Aparelhos:** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
 - **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
 - **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
 - **Daemon parado:** "Iniciar halod" pede `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas até a `systemd-user-service` instalar a unidade.
@@ -49,7 +49,7 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Copiar comando | `St.Clipboard` |
 | Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |
 
-Pré-requisitos no `halod` para a extensão: o `Devices` com status (ainda sem change) e a temperatura da CPU (`waterforce-cpu-feed`).
+Pré-requisitos no `halod` para a extensão: o `Devices` com nome e capacidades (change `daemon-device-status`) e a temperatura da CPU (`waterforce-cpu-feed`).
 
 ## Daemon (`halod`, change `halo-daemon`)
 
@@ -59,7 +59,7 @@ Pré-requisitos no `halod` para a extensão: o `Devices` com status (ainda sem c
 
 ```text
 /io/github/leoodaviid/Halo1
-  .Manager    prop Version; Devices() -> a(sbs); signal DevicesChanged
+  .Manager    prop Version; Devices() -> aa{sv}; signal DevicesChanged(aa{sv})
   .Profiles   List, Get, Save, Delete, Activate; prop ActiveProfile
 /io/github/leoodaviid/Halo1/waterforce
   .Waterforce.Led        Apply(s, as, y, y); prop LastApplied
@@ -68,8 +68,12 @@ Pré-requisitos no `halod` para a extensão: o `Devices` com status (ainda sem c
                          CoolantMilliCelsius, CoolantValid
 ```
 
+- **Lista de aparelhos.** Um `a{sv}` por aparelho, na ordem `waterforce`, `it5702`, `g502`, com os ausentes na lista. As chaves são fixas e sempre têm o mesmo tipo: `id` (`s`), `name` (`s`), `present` (`b`), `devnode` (`s`, vazio quando ausente) e `capabilities` (`as`). Uma chave nova no futuro não quebra os clientes, que ignoram as que não conhecem.
+  - **Capacidades** são as interfaces D-Bus que o daemon expõe para o aparelho (`Waterforce.Led` vira `led`), constantes por aparelho e independentes da presença. O Waterforce tem `led`, `speed` e `telemetry`; a placa-mãe e o G502 começam sem nenhuma, e cada change de aparelho acrescenta a sua.
+  - **Nomes** sem abrir hidraw: a placa pelo `class/dmi/id/board_name` do sysfs (`Placa-mãe (IT5702)` sem ele), o G502 com o nome fixo `Logitech G502 SE HERO`, e o Waterforce pelo modelo que o worker já leu no `DE 00` de uma operação pedida. Até lá, e depois de cada restart do daemon, ele é `AORUS Waterforce X`. Quando o worker lê um modelo novo da tabela, ele o grava num `KnownModel` compartilhado e pede uma volta dos ticks pelo mesmo canal do resume; o tick monta o nome (`AORUS Waterforce X 240`) e emite o `DevicesChanged` no executor do zbus.
+  - **G502** (`046d:c08b`): encontrado pela usage page de fabricante `0xFF00`, a interface do driver Logitech do OpenRGB. O daemon não abre o mouse.
 - **Um worker por aparelho.** Uma thread é dona das chamadas bloqueantes ao core do Waterforce e atende um pedido de cada vez, na ordem de chegada. Os métodos D-Bus esperam a resposta por um canal, então o executor do zbus não bloqueia com as esperas de resposta do Castor3, e lista, perfis e telemetria continuam respondendo.
-- **Ticks.** A cada 2 s, o daemon lê só o sysfs: a presença dos aparelhos (com `DevicesChanged` quando muda) e a telemetria do hwmon (com `PropertiesChanged` só nas propriedades que mudaram). No fim de uma suspensão (`PrepareForSleep(false)` do logind, no D-Bus do sistema), roda os ticks na hora. Nenhum tick abre hidraw: o `waterforce-cpu-feed` vai acrescentar um que envia o `E0` pelo worker, e o `systemd-user-service` vai decidir o que reaplicar no login e no resume.
+- **Ticks.** A cada 2 s, o daemon lê só o sysfs: a presença e o nome dos aparelhos (com `DevicesChanged` quando a presença, o caminho ou o nome muda) e a telemetria do hwmon (com `PropertiesChanged` só nas propriedades que mudaram). No fim de uma suspensão (`PrepareForSleep(false)` do logind, no D-Bus do sistema), roda os ticks na hora. Nenhum tick abre hidraw: o `waterforce-cpu-feed` vai acrescentar um que envia o `E0` pelo worker, e o `systemd-user-service` vai decidir o que reaplicar no login e no resume.
 - **Perfis.** TOML em `$XDG_CONFIG_HOME/halo/profiles/`, validados pelos tipos do core e gravados de forma atômica. A ativação da velocidade é um `DesiredState` do core: lê o estado e só escreve (com `B6`) se ele for diferente, com a mesma sequência do `set` e do `curve`.
 
 ## Acesso exclusivo ao hidraw
