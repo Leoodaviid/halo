@@ -377,6 +377,14 @@ impl LedSetting {
         &self.colors
     }
 
+    pub fn brightness(&self) -> Brightness {
+        self.brightness
+    }
+
+    pub fn speed(&self) -> Speed {
+        self.speed
+    }
+
     /// Sequência do efeito, cada pacote com o report ID `0x99` e sem o
     /// preenchimento até 6144 bytes. Termina sempre com um único `B6`.
     pub fn packets(&self) -> Vec<Vec<u8>> {

@@ -3,13 +3,16 @@
 //! Acesso a `/dev/hidrawN`: feature reports com os ioctls `HIDIOCSFEATURE` e
 //! `HIDIOCGFEATURE` de `linux/hidraw.h`, output reports com `write(2)` e
 //! input reports com `read(2)`.
+//!
+//! Abrir um hidraw toma um `flock` exclusivo no nó, para que só um processo do
+//! halo por vez converse com o aparelho.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Falha ao abrir um hidraw.
 #[derive(Debug)]
@@ -18,6 +21,8 @@ pub enum OpenError {
     NotFound(PathBuf),
     /// O usuário não tem permissão de leitura e escrita no nó.
     PermissionDenied(PathBuf),
+    /// Outro processo do halo segurou o nó além de [`LOCK_TIMEOUT`].
+    Busy(PathBuf),
     Other(PathBuf, io::Error),
 }
 
@@ -39,6 +44,7 @@ impl fmt::Display for OpenError {
         match self {
             Self::NotFound(p) => write!(f, "{} não existe", p.display()),
             Self::PermissionDenied(p) => write!(f, "sem permissão para abrir {}", p.display()),
+            Self::Busy(p) => write!(f, "{} ocupado por outro processo do halo", p.display()),
             Self::Other(p, e) => write!(f, "erro ao abrir {}: {e}", p.display()),
         }
     }
@@ -65,14 +71,40 @@ const fn hidiocgfeature(len: usize) -> u64 {
     hid_ioc_rw(0x07, len)
 }
 
+/// Quanto tempo [`Hidraw::open`] espera pelo `flock` de outro processo.
+pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Intervalo entre as tentativas de `flock`.
+const LOCK_RETRY: Duration = Duration::from_millis(50);
+
 impl Hidraw {
+    /// Abre o nó e toma o `flock` exclusivo, esperando até [`LOCK_TIMEOUT`].
     pub fn open(path: &Path) -> Result<Self, OpenError> {
-        OpenOptions::new()
+        Self::open_with_timeout(path, LOCK_TIMEOUT)
+    }
+
+    fn open_with_timeout(path: &Path, timeout: Duration) -> Result<Self, OpenError> {
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
-            .map(|file| Self { file })
-            .map_err(|e| OpenError::from_io(path, e))
+            .map_err(|e| OpenError::from_io(path, e))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            // SAFETY: o descritor pertence a `file`, aberto acima. O lock é
+            // solto quando `file` fecha.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self { file });
+            }
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+                return Err(OpenError::Other(path.to_owned(), err));
+            }
+            if Instant::now() >= deadline {
+                return Err(OpenError::Busy(path.to_owned()));
+            }
+            std::thread::sleep(LOCK_RETRY);
+        }
     }
 
     /// Envia um feature report. `data[0]` é o report ID.
@@ -139,6 +171,7 @@ impl Hidraw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::os::fd::FromRawFd;
 
     /// Pipe com a ponta de leitura num `Hidraw`, para testar input reports.
@@ -214,6 +247,57 @@ mod tests {
     fn mensagem_de_permissao_mostra_o_caminho() {
         let err = OpenError::PermissionDenied(PathBuf::from("/dev/hidraw2"));
         assert_eq!(err.to_string(), "sem permissão para abrir /dev/hidraw2");
+    }
+
+    fn arquivo(dir: &tempfile::TempDir, name: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        fs::write(&path, b"").unwrap();
+        path
+    }
+
+    #[test]
+    fn segundo_open_ocupado() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = arquivo(&dir, "hidraw7");
+        let _first = Hidraw::open(&path).unwrap();
+        let second = Hidraw::open_with_timeout(&path, Duration::from_millis(120));
+        assert!(matches!(second, Err(OpenError::Busy(ref p)) if *p == path));
+    }
+
+    #[test]
+    fn segundo_open_espera_o_primeiro_fechar() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = arquivo(&dir, "hidraw7");
+        let first = Hidraw::open(&path).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(first);
+        });
+        let started = Instant::now();
+        let second = Hidraw::open_with_timeout(&path, Duration::from_secs(3));
+        closer.join().unwrap();
+        assert!(second.is_ok());
+        assert!(started.elapsed() >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn nos_diferentes_nao_esperam() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = arquivo(&dir, "hidraw1");
+        let b = arquivo(&dir, "hidraw2");
+        let _first = Hidraw::open(&a).unwrap();
+        let started = Instant::now();
+        Hidraw::open_with_timeout(&b, Duration::from_secs(3)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn mensagem_de_ocupado_mostra_o_caminho() {
+        let err = OpenError::Busy(PathBuf::from("/dev/hidraw2"));
+        assert_eq!(
+            err.to_string(),
+            "/dev/hidraw2 ocupado por outro processo do halo"
+        );
     }
 
     #[test]

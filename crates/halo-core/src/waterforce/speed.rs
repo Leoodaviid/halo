@@ -14,7 +14,8 @@
 //! - `99 B6`: `DeviceApi.Save`.
 //!
 //! A ordem `E5` fan, `E5` bomba, `E6` fan, `E6` bomba e `B6` é a do
-//! `FanControl.OnClickApply`. Antes de qualquer escrita, o estado lido é
+//! `FanControl.OnClickApply`. Um [`DesiredState`] (o de um perfil) usa essa
+//! mesma sequência, e só quando o estado lido é diferente dele. Antes de qualquer escrita, o estado lido é
 //! gravado como snapshot em `$XDG_STATE_HOME/halo/`. Sem snapshot gravado,
 //! nada é enviado.
 
@@ -25,7 +26,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::curve::Curve;
+use super::curve::{Curve, CurveError};
 use super::led::{OutputReports, PACKET_INTERVAL};
 use super::probe::{
     CurvePoint, InputReports, RESPONSE_TIMEOUT, ReadQuery, Reading, SpeedMode, model_name, packet,
@@ -792,6 +793,16 @@ fn write_to(
 ) -> Result<Written, SpeedError> {
     let before = read_state(device, true)?;
     let packets = plan(&before)?.packets(save);
+    send_after_snapshot(device, store, before, packets)
+}
+
+/// Grava `before` como snapshot e só então envia `packets`.
+fn send_after_snapshot(
+    device: &impl OutputReports,
+    store: &SnapshotStore,
+    before: Snapshot,
+    packets: Vec<Vec<u8>>,
+) -> Result<Written, SpeedError> {
     let original_created = store.save(&before)?;
     for (i, payload) in packets.iter().enumerate() {
         if i > 0 {
@@ -872,6 +883,131 @@ pub fn restore_to(
     write_to(device, store, |_| Ok(target.target()), true)
 }
 
+/// Lado da fan de um [`DesiredState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FanSetting {
+    Preset(FanPreset),
+    /// RPM de uma curva Customized plana.
+    Flat(u16),
+}
+
+/// Lado da bomba de um [`DesiredState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PumpSetting {
+    Preset(PumpPreset),
+    /// RPM de uma curva Customized plana.
+    Flat(u16),
+}
+
+/// Um lado já validado: o modo do `E5` e, numa curva plana, os pontos do `E6`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SideState {
+    mode: u8,
+    curve: Option<[CurvePoint; 4]>,
+}
+
+impl SideState {
+    fn preset(wire: u8) -> Self {
+        Self {
+            mode: wire,
+            curve: None,
+        }
+    }
+
+    fn flat(side: Side, rpm: u16) -> Result<Self, CurveError> {
+        Ok(Self {
+            mode: mode::CUSTOMIZED,
+            curve: Some(*Curve::flat(side, rpm)?.points()),
+        })
+    }
+
+    /// Um preset é igual quando o modo é o mesmo; uma curva plana, quando o
+    /// modo é Customized e o slot do `D9` tem os mesmos pontos.
+    fn matches(&self, mode: u8, slot: &[CurvePoint; 4]) -> bool {
+        match &self.curve {
+            None => mode == self.mode,
+            Some(curve) => mode == mode::CUSTOMIZED && slot == curve,
+        }
+    }
+}
+
+/// Estado de velocidade desejado, como o de um perfil. Um lado `None` mantém
+/// o modo lido no `DD`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesiredState {
+    fan: Option<SideState>,
+    pump: Option<SideState>,
+}
+
+impl DesiredState {
+    /// Valida o RPM de cada lado em curva plana com [`Curve::flat`].
+    pub fn new(fan: Option<FanSetting>, pump: Option<PumpSetting>) -> Result<Self, CurveError> {
+        let fan = fan
+            .map(|s| match s {
+                FanSetting::Preset(p) => Ok(SideState::preset(p.wire())),
+                FanSetting::Flat(rpm) => SideState::flat(Side::Fan, rpm),
+            })
+            .transpose()?;
+        let pump = pump
+            .map(|s| match s {
+                PumpSetting::Preset(p) => Ok(SideState::preset(p.wire())),
+                PumpSetting::Flat(rpm) => SideState::flat(Side::Pump, rpm),
+            })
+            .transpose()?;
+        Ok(Self { fan, pump })
+    }
+
+    /// `None` quando `current` já é o desejado. Senão, os dois `E5` (o lado
+    /// ausente repete o modo lido) e um `E6` só nos lados em curva plana.
+    fn plan(&self, current: &Snapshot) -> Result<Option<Target>, SpeedError> {
+        let same = |want: Option<SideState>, mode: u8, slot: &[CurvePoint; 4]| {
+            want.is_none_or(|s| s.matches(mode, slot))
+        };
+        if same(self.fan, current.fan_mode, &current.fan_curve)
+            && same(self.pump, current.pump_mode, &current.pump_curve)
+        {
+            return Ok(None);
+        }
+        let resolve = |want: Option<SideState>, side, raw: u8| match want {
+            Some(s) => Ok((s.mode, s.curve)),
+            None if restorable_mode(raw) => Ok((raw, None)),
+            None => Err(SpeedError::CurrentModeUnknown { side, raw }),
+        };
+        let (fan, fan_curve) = resolve(self.fan, Side::Fan, current.fan_mode)?;
+        let (pump, pump_curve) = resolve(self.pump, Side::Pump, current.pump_mode)?;
+        Ok(Some(Target {
+            fan,
+            pump,
+            fan_curve,
+            pump_curve,
+        }))
+    }
+}
+
+/// Resultado de [`apply_state_to`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateOutcome {
+    /// O aparelho já estava no estado desejado: só as leituras foram enviadas,
+    /// sem snapshot.
+    Unchanged(Snapshot),
+    Written(Written),
+}
+
+/// Lê o estado e, se ele for diferente de `desired`, grava o snapshot e envia
+/// a sequência com um único `B6`.
+pub fn apply_state_to(
+    device: &(impl InputReports + OutputReports),
+    store: &SnapshotStore,
+    desired: &DesiredState,
+) -> Result<StateOutcome, SpeedError> {
+    let before = read_state(device, true)?;
+    match desired.plan(&before)? {
+        None => Ok(StateOutcome::Unchanged(before)),
+        Some(target) => send_after_snapshot(device, store, before, target.packets(true))
+            .map(StateOutcome::Written),
+    }
+}
+
 /// Estado mostrado pelo `status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeedStatus {
@@ -924,6 +1060,24 @@ pub fn curve(
     let (devnode, device) = open(sys_root)?;
     let written = curve_to(&device, store, request)?;
     Ok(Applied { devnode, written })
+}
+
+/// Resultado de [`apply_state`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateApplied {
+    pub devnode: PathBuf,
+    pub outcome: StateOutcome,
+}
+
+/// Abre o hidraw e chama [`apply_state_to`]. O estado já chega validado.
+pub fn apply_state(
+    sys_root: &Path,
+    store: &SnapshotStore,
+    desired: &DesiredState,
+) -> Result<StateApplied, SpeedError> {
+    let (devnode, device) = open(sys_root)?;
+    let outcome = apply_state_to(&device, store, desired)?;
+    Ok(StateApplied { devnode, outcome })
 }
 
 /// Lê e valida o snapshot antes de abrir o hidraw e chama [`restore_to`].
@@ -1677,6 +1831,139 @@ mod tests {
         store.save(&snapshot(5, 4)).unwrap();
         assert!(matches!(
             restore(sys.path(), &store, Which::Previous),
+            Err(SpeedError::NotFound)
+        ));
+    }
+
+    // halo-daemon 2.1
+
+    fn device_with_fan_slot(fan: u8, pump: u8, slot: &[CurvePoint; 4]) -> FakeDevice {
+        FakeDevice::new(&[
+            &[0x99, 0xDE, 0x00],
+            &[0x99, 0xDD, fan, pump],
+            &d9(1, slot),
+            &d9(2, &pump_slot()),
+        ])
+    }
+
+    #[test]
+    fn velocidade_ja_igual() {
+        let dev = device(mode::QUIET, mode::TURBO);
+        let (_tmp, store) = store();
+        let desired = DesiredState::new(
+            Some(FanSetting::Preset(FanPreset::Quiet)),
+            Some(PumpSetting::Preset(PumpPreset::Turbo)),
+        )
+        .unwrap();
+        let out = apply_state_to(&dev, &store, &desired).unwrap();
+        assert!(matches!(out, StateOutcome::Unchanged(s) if s.fan_mode == 6));
+        dev.assert_written(&READS);
+        assert!(!store.path(Which::Previous).exists());
+        assert!(!store.path(Which::Original).exists());
+    }
+
+    #[test]
+    fn fan_em_curva_e_bomba_em_preset() {
+        let dev = device(mode::PERFORMANCE, mode::TURBO);
+        let (_tmp, store) = store();
+        let desired = DesiredState::new(
+            Some(FanSetting::Flat(1500)),
+            Some(PumpSetting::Preset(PumpPreset::Balanced)),
+        )
+        .unwrap();
+        let out = apply_state_to(&dev, &store, &desired).unwrap();
+        let StateOutcome::Written(w) = out else {
+            panic!("{out:?}")
+        };
+        assert_eq!(w.before.fan_mode, mode::PERFORMANCE);
+        let mut expected: Vec<&[u8]> = READS.to_vec();
+        expected.extend([
+            &[0x99, 0xE5, 0x01, 0x01, 0x00][..],
+            &[0x99, 0xE5, 0x02, 0x00, 0x00],
+            &[
+                0x99, 0xE6, 0x00, 0x01, 0x00, 0x05, 0xDC, 0x1E, 0x05, 0xDC, 0x32, 0x05, 0xDC, 0x50,
+                0x05, 0xDC,
+            ],
+            &[0x99, 0xB6],
+        ]);
+        dev.assert_written(&expected);
+        assert_eq!(store.load(Which::Previous).unwrap().fan_mode, 5);
+    }
+
+    #[test]
+    fn lado_ausente_em_fixed_rpm() {
+        let dev = device(mode::PERFORMANCE, mode::FIXED_RPM);
+        let (_tmp, store) = store();
+        let desired = DesiredState::new(Some(FanSetting::Preset(FanPreset::Quiet)), None).unwrap();
+        let err = apply_state_to(&dev, &store, &desired).unwrap_err();
+        assert!(matches!(
+            err,
+            SpeedError::CurrentModeUnknown {
+                side: Side::Pump,
+                raw: 3
+            }
+        ));
+        dev.assert_written(&READS);
+        assert!(!store.path(Which::Previous).exists());
+    }
+
+    #[test]
+    fn lado_ausente_mantem_o_modo_sem_e6() {
+        let dev = device(mode::CUSTOMIZED, mode::TURBO);
+        let (_tmp, store) = store();
+        let desired =
+            DesiredState::new(None, Some(PumpSetting::Preset(PumpPreset::Balanced))).unwrap();
+        apply_state_to(&dev, &store, &desired).unwrap();
+        let mut expected: Vec<&[u8]> = READS.to_vec();
+        expected.extend([
+            &[0x99, 0xE5, 0x01, 0x01, 0x00][..],
+            &[0x99, 0xE5, 0x02, 0x00, 0x00],
+            &[0x99, 0xB6],
+        ]);
+        dev.assert_written(&expected);
+    }
+
+    #[test]
+    fn curva_plana_igual_e_diferente() {
+        let flat = |rpm| curve([(0, rpm), (30, rpm), (50, rpm), (80, rpm)]);
+        let desired = DesiredState::new(Some(FanSetting::Flat(1500)), None).unwrap();
+
+        let (_tmp, store) = store();
+        let dev = device_with_fan_slot(mode::CUSTOMIZED, mode::TURBO, &flat(1500));
+        let out = apply_state_to(&dev, &store, &desired).unwrap();
+        assert!(matches!(out, StateOutcome::Unchanged(_)));
+
+        // Customized, mas com outro RPM no slot: grava.
+        let dev = device_with_fan_slot(mode::CUSTOMIZED, mode::TURBO, &flat(1000));
+        let out = apply_state_to(&dev, &store, &desired).unwrap();
+        assert!(matches!(out, StateOutcome::Written(_)));
+
+        // A curva certa no slot, mas a fan num preset: grava.
+        let dev = device_with_fan_slot(mode::QUIET, mode::TURBO, &flat(1500));
+        let out = apply_state_to(&dev, &store, &desired).unwrap();
+        assert!(matches!(out, StateOutcome::Written(_)));
+    }
+
+    #[test]
+    fn estado_desejado_com_rpm_fora_da_faixa() {
+        let err = DesiredState::new(None, Some(PumpSetting::Flat(2000))).unwrap_err();
+        assert_eq!(
+            err,
+            CurveError {
+                side: Side::Pump,
+                rpm: 2000
+            }
+        );
+        assert!(DesiredState::new(Some(FanSetting::Flat(800)), None).is_err());
+    }
+
+    #[test]
+    fn estado_desejado_sem_aparelho() {
+        let sys = tempfile::tempdir().unwrap();
+        let (_tmp, store) = store();
+        let desired = DesiredState::new(Some(FanSetting::Flat(1500)), None).unwrap();
+        assert!(matches!(
+            apply_state(sys.path(), &store, &desired),
             Err(SpeedError::NotFound)
         ));
     }
