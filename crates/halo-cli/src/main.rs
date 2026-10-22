@@ -947,6 +947,31 @@ mod tests {
     }
 
     #[test]
+    fn aparelho_ocupado_e_codigo_5_sem_regra_udev() {
+        let busy = || OpenError::Busy(PathBuf::from("/dev/hidraw2"));
+        let led = ApplyError::Open(busy());
+        let speed = SpeedError::Open(busy());
+        let probe = ProbeError::Open(busy());
+        let wf = wf_probe::ProbeError::Open(busy());
+        assert_eq!(led_exit_code(&led), EXIT_FAILURE);
+        assert_eq!(speed_exit_code(&speed), EXIT_FAILURE);
+        assert_eq!(exit_code(&probe), EXIT_FAILURE);
+        assert_eq!(waterforce_probe_exit_code(&wf), EXIT_FAILURE);
+        for msg in [
+            led.to_string(),
+            speed.to_string(),
+            probe.to_string(),
+            wf.to_string(),
+        ] {
+            assert!(
+                msg.contains("/dev/hidraw2 ocupado por outro processo do halo"),
+                "{msg}"
+            );
+            assert!(!msg.contains("udev"), "{msg}");
+        }
+    }
+
+    #[test]
     fn codigos_de_saida() {
         assert_eq!(exit_code(&ProbeError::NotFound), EXIT_NOT_FOUND);
         let denied = ProbeError::Open(OpenError::PermissionDenied(PathBuf::from("/dev/hidraw5")));

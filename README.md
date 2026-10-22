@@ -56,7 +56,7 @@ halo led waterforce static --color ff6600 --dry-run           # só mostra os pa
 99 B6
 ```
 
-O protocolo não tem leitura do estado do LED, então o modo de fábrica não pode ser restaurado com exatidão. `cycle` e `rainbow` são os mais próximos. Códigos de saída: 2 para argumento inválido, 3 para aparelho não encontrado, 4 para falta de permissão (instale a regra udev) e 5 para falha de comunicação ou modelo desconhecido.
+O protocolo não tem leitura do estado do LED, então o modo de fábrica não pode ser restaurado com exatidão. `cycle` e `rainbow` são os mais próximos. Códigos de saída: 2 para argumento inválido, 3 para aparelho não encontrado, 4 para falta de permissão (instale a regra udev) e 5 para falha de comunicação, modelo desconhecido ou aparelho ocupado.
 
 ### Velocidade do Waterforce
 
@@ -96,6 +96,69 @@ halo speed waterforce restore                        # volta ao estado de antes 
 - `--dry-run` exige `--fan` e `--pump` e não procura o aparelho nem grava snapshot.
 
 Antes de cada `set`, `curve` ou `restore`, o halo grava o estado atual em `$XDG_STATE_HOME/halo/` (sem a variável, `~/.local/state/halo/`): `waterforce-speed.previous` é substituído a cada escrita, e `waterforce-speed.original` é gravado só na primeira e nunca mais alterado. Para começar um original novo, apague esse arquivo. Se a gravação falhar, nada é enviado. Dois `restore` seguidos alternam entre os dois últimos estados. Os códigos de saída são os mesmos do LED. O 2 vale também para uma curva inválida e quando o modo atual do lado não informado é um que o halo não repete.
+
+### Daemon (`halod`)
+
+O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a futura extensão do GNOME. Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Nesta versão ele não reaplica o perfil no login nem depois da suspensão.
+
+```sh
+cargo run -q -p halo-daemon            # fica rodando; uma segunda instância recusa e sai
+```
+
+Exemplos com o `busctl` (o nome do bus é `io.github.leoodaviid.Halo1`):
+
+```sh
+N=io.github.leoodaviid.Halo1; R=/io/github/leoodaviid/Halo1; W=$R/waterforce
+
+busctl --user call $N $R $N.Manager Devices                            # aparelhos presentes
+busctl --user call $N $W $N.Waterforce.Led Apply sasyy static 1 ff6600 10 0
+busctl --user call $N $W $N.Waterforce.Led Apply sasyy cycle 0 0 0     # 0 = padrão do efeito
+busctl --user call $N $W $N.Waterforce.Speed Status                    # só leitura
+busctl --user call $N $W $N.Waterforce.Speed SetPresets ss quiet ""    # "" mantém a bomba
+busctl --user call $N $W $N.Waterforce.Speed SetFlatCurve sq fan 1500
+busctl --user call $N $W $N.Waterforce.Speed Restore s previous
+busctl --user get-property $N $W $N.Waterforce.Telemetry FanRpm CoolantMilliCelsius Available
+```
+
+- O `Apply` recebe o efeito, as cores (de 0 a 8, `rrggbb`), o brilho e a velocidade. Brilho ou velocidade 0 valem o padrão do efeito, e o `off` só aceita brilho 0.
+- As escritas pelo D-Bus sempre terminam com `B6`. O `--no-save` e o `--dry-run` existem só na CLI.
+- A propriedade `LastApplied` da interface `Led` é o último LED aplicado **pelo daemon**, e não o estado do aparelho, que não tem leitura do LED.
+- Os erros têm nome sob `io.github.leoodaviid.Halo1.Error`: `InvalidArgument`, `NotFound`, `PermissionDenied`, `Busy`, `Device`, `ProfileNotFound` e `Storage`.
+
+#### Perfis
+
+Cada perfil é um arquivo em `$XDG_CONFIG_HOME/halo/profiles/<nome>.toml` (sem a variável, `~/.config/halo/profiles/`), com seções opcionais:
+
+```toml
+[waterforce.led]
+effect = "static"
+colors = ["ff6600"]
+brightness = 10      # opcional, de 1 a 10
+speed = 5            # opcional, de 1 a 5
+
+[waterforce.speed]
+fan = "quiet"        # um preset ou um RPM de curva plana: fan = 1500
+pump = "turbo"       # o lado ausente mantém o modo atual
+```
+
+O nome tem de 1 a 32 letras minúsculas, dígitos e hífen. As regras são as da CLI, e um perfil inválido é recusado sem alterar o arquivo. Pelo D-Bus:
+
+```sh
+busctl --user call $N $R $N.Profiles Save 'sa{sv}' noite 2 \
+  waterforce.led 'a{sv}' 2 effect s static colors as 1 ff6600 \
+  waterforce.speed 'a{sv}' 2 fan s quiet pump s turbo
+busctl --user call $N $R $N.Profiles List
+busctl --user call $N $R $N.Profiles Get s noite
+busctl --user call $N $R $N.Profiles Activate s noite                  # devolve as seções aplicadas
+busctl --user get-property $N $R $N.Profiles ActiveProfile
+busctl --user call $N $R $N.Profiles Delete s noite
+```
+
+O `Activate` aplica a velocidade antes do LED. A velocidade é lida antes (`DE 00`, `DD`, `D9 01`, `D9 02`) e só é gravada, com `B6`, se for diferente do perfil, para não gravar a flash à toa. O LED é sempre aplicado, porque não tem leitura. Se uma seção falhar, as outras são tentadas mesmo assim, o erro diz quais foram aplicadas e o perfil ativo não muda. O nome do ativo fica em `$XDG_STATE_HOME/halo/active-profile`.
+
+### Um processo por aparelho
+
+Só um processo do halo por vez conversa com cada aparelho. Ao abrir o hidraw, o halo toma um `flock` exclusivo no nó e espera até 5 s se outro processo do halo (a CLI ou o daemon) estiver com ele. Depois disso, desiste sem enviar nada e termina com código 5: `halo: /dev/hidraw2 ocupado por outro processo do halo`. A telemetria e o `--dry-run` não abrem o hidraw e não esperam.
 
 Precisa do Rust estável (rustup). Licença: GPL-2.0-or-later, porque a lógica de protocolo é portada do OpenRGB.
 

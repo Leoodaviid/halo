@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/halo-core", "crates/halo-cli"]
+members = ["crates/halo-core", "crates/halo-cli", "crates/halo-daemon"]
 
 [workspace.package]
 version = "0.1.0"
