@@ -22,17 +22,28 @@ Se for preciso uma tela de edição maior (desenhar efeitos por LED, por exemplo
 
 O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (ver [docs/ui/README.md](ui/README.md)), que segue o canvas "halo · Apple HIG" com o destaque do GNOME. O painel é só um cliente do `halod`: ele não abre hidraw nem lê o sysfs.
 
-- **Barra:** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
+A extensão sai em três changes: `gnome-shell-extension` (barra, estado do daemon e atalhos, em andamento), `gnome-panel-led` (carrossel e controles de LED) e `gnome-panel-extras` (perfis, detalhes, erros, preferências e fonte CPU). O que está abaixo descreve o painel completo; o que já existe está marcado.
+
+**Estrutura da extensão** (`extension/`, JavaScript puro em ESM, UUID `halo@leoodaviid.github.io`):
+
+- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`).
+- `daemon.js`: o estado único (dono do nome, telemetria, aparelhos presentes, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança.
+- `indicator.js`: só desenha, a partir do estado e das funções de `lib/`.
+- `extension.js`: `enable()` cria o indicador, e `disable()` desfaz tudo (sinais, proxies, subprocessos e cancelables).
+
+**D-Bus sem ativação:** os proxies do `halod` (`Manager` e `Waterforce.Telemetry`) são criados com `DO_NOT_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
+
+- **Barra (já existe, só com o líquido):** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
 - **Aparelhos:** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
 - **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
 - **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
-- **Daemon parado:** "Iniciar halod" pede `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas quando a unidade não está instalada (`packaging/install.sh`).
+- **Daemon parado (já existe):** "Iniciar halod" pede `ResetFailedUnit` e depois `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas quando a unidade não está instalada (`packaging/install.sh`): o `LoadUnit` devolve `LoadState` igual a `not-found`. O registro roda `journalctl` num `Gio.Subprocess`, com `Cancellable`.
 
 Equivalência de cada elemento do protótipo no St (Shell 50):
 
 | No protótipo | Na extensão |
 |---|---|
-| Indicador com ícone e `38°` numa pílula | `PanelMenu.Button` com um `St.BoxLayout` (ícone simbólico + `St.Label`) |
+| Indicador com ícone e `38°` numa pílula (já existe) | `PanelMenu.Button` com um `St.BoxLayout` (ícone simbólico + `St.Label`) |
 | Painel em material translúcido | O `menu` do `PanelMenu.Button` com CSS próprio e um `Shell.BlurEffect` em modo `BACKGROUND` (sem blur, se pesar: fundo opaco com a mesma cor) |
 | Blocos agrupados | `St.BoxLayout` com fundo e raio no CSS |
 | Carrossel com transição | `St.Widget` e `ease()` do Clutter; roda pelo `scroll-event` |
@@ -43,9 +54,9 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Brilho e velocidade no estilo da Central de Controle | Subclasse do `Slider` de `resource:///org/gnome/shell/ui/slider.js` com o `vfunc_repaint` próprio, aplicando no `drag-end` |
 | Popup de efeito e menu de perfis | Um `PopupMenu.PopupMenu` próprio ancorado no botão |
 | Linha de status e itens de menu | `St.Label` e `PopupMenu.PopupMenuItem` |
-| Iniciar halod e ver registro | Proxy de `org.freedesktop.systemd1` e `Gio.Subprocess` com `journalctl` |
+| Iniciar halod e ver registro (já existe) | Proxy de `org.freedesktop.systemd1` e `Gio.Subprocess` com `journalctl` |
 | Liga/desliga | O switch do `PopupMenu` |
-| Detalhes, Aparelhos e Registro | Troca de página dentro do mesmo menu |
+| Detalhes, Aparelhos e Registro (só o registro existe) | Troca de página dentro do mesmo menu |
 | Copiar comando | `St.Clipboard` |
 | Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |
 
@@ -79,12 +90,13 @@ Pré-requisitos no `halod` para a extensão: o `Devices` com nome e capacidades 
 
 ## Instalação e unidade (change `systemd-user-service`)
 
-`packaging/install.sh` instala tudo no usuário, sem sudo, e `--uninstall` desfaz. O teste dele é `sh packaging/tests/install-test.sh`, com `cargo` e `systemctl` falsos num diretório temporário.
+`packaging/install.sh` instala tudo no usuário, sem sudo, e `--uninstall` desfaz. O teste dele é `sh packaging/tests/install-test.sh`, com `cargo`, `systemctl` e `gsettings` falsos num diretório temporário.
 
 ```text
 packaging/systemd/halod.service ---(@BINDIR@)--> $XDG_CONFIG_HOME/systemd/user/halod.service
 packaging/dbus/...Halo1.service ---(@BINDIR@)--> $XDG_DATA_HOME/dbus-1/services/
 target/release/{halo,halod} -------------------> $BINDIR (~/.local/bin)
+extension/ (sem tests/) -----------------------> $XDG_DATA_HOME/gnome-shell/extensions/halo@leoodaviid.github.io/
 packaging/udev/70-halo.rules ----(só cmp)------> /etc/udev/rules.d/  (sudo, à mão)
 
 login do GNOME --> graphical-session.target --> halod.service (Type=dbus)
@@ -94,6 +106,7 @@ cliente D-Bus  --> dbus-daemon (SystemdService=halod.service) --^
 - **Unidade:** `Type=dbus` com `BusName=io.github.leoodaviid.Halo1`, então o systemd só a considera pronta quando o nome aparece. `Restart=on-failure` com `RestartSec=2` e o limite padrão de inícios: com o nome tomado por um `halod` iniciado à mão, a unidade tenta algumas vezes e desiste. `PartOf`/`WantedBy=graphical-session.target`: o daemon sobe e desce com a sessão do GNOME, o único cliente.
 - **Ativação pelo D-Bus:** com o daemon parado, uma chamada ao nome faz o `dbus-daemon` pedir a unidade ao systemd, mesmo com ela desabilitada.
 - **Atualização:** o script compila antes de copiar, troca cada arquivo por um temporário e um `mv`, e faz `restart`, que também inicia o daemon na primeira instalação.
+- **Extensão** (última etapa, depois do restart do daemon): o script copia `extension/` sem `tests/` para `<destino>.new` e só troca a pasta instalada se `diff -r` achar diferença, para pedir "saia e entre na sessão" apenas quando a extensão mudou (no Wayland não há como recarregar o código). Ela é habilitada editando `org.gnome.shell enabled-extensions` com o `gsettings`, e não com `gnome-extensions enable`, que falha com uma extensão recém-copiada enquanto o Shell roda. Um formato inesperado da lista não é gravado, e o script mostra o comando para habilitar depois. O `--uninstall` tira só o UUID da lista e remove a pasta.
 - **Sem reaplicar no login.** O Castor3 guarda a velocidade gravada com `B6` mesmo sem energia (confirmado no aparelho), e no Windows nada reenvia LED nem velocidade no boot: o `AorusLcdService` só manda os dados da tela, e o `ucCooler` só envia quando o usuário aplica. Se o anel perder o LED ao desligar (não testado), a reaplicação vira uma change própria.
 
 ## Acesso exclusivo ao hidraw
