@@ -45,10 +45,10 @@ mod tests {
     #[test]
     fn so_a_interface_de_fabricante() {
         let root = tempfile::tempdir().unwrap();
-        add(root.path(), "hidraw0", 0x0001);
-        add(root.path(), "hidraw1", 0xFF00);
+        add(root.path(), "hidraw96", 0x0001);
+        add(root.path(), "hidraw95", 0xFF00);
         let found = find_devices(root.path(), DEVICE).unwrap();
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].devnode, PathBuf::from("/dev/hidraw1"));
+        assert_eq!(found[0].devnode, PathBuf::from("/dev/hidraw95"));
     }
 }

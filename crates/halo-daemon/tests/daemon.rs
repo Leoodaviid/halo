@@ -288,7 +288,7 @@ fn add_hwmon(sys: &Path) {
 fn primeira_chamada_ja_tem_aparelhos_e_telemetria() {
     let bus = Bus::start();
     let home = tempfile::tempdir().unwrap();
-    let sys = sys_with_castor3("hidraw3");
+    let sys = sys_with_castor3("hidraw99");
     add_hwmon(sys.path());
     let _daemon = start(&bus, home.path(), sys.path(), &[]);
     let client = bus.client();

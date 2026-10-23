@@ -1,17 +1,35 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Só classes do halo. Cores e fontes vêm do tema do Shell, que já segue o
-   estilo claro ou escuro e a cor de destaque do sistema. */
+/* Só classes do halo. Medidas do protótipo (docs/ui/panel-prototype.html);
+   as cores dos tokens do protótipo ficam em stylesheet-light.css e
+   stylesheet-dark.css, que importam este arquivo e que o Shell troca junto
+   com o estilo claro ou escuro. As cores daqui são neutras, para o caso de
+   nenhuma variante ser carregada. A cor de destaque vem do sistema. */
 
 .halo-temp {
   margin-left: 4px;
   font-feature-settings: "tnum";
 }
 
+/* Painel com 320 px, como o .material: 304 px de conteúdo, mais 1 px de
+   padding, os 6 px do .popup-menu-content e a borda de 1 px do Shell. */
 .halo-panel {
-  min-width: 18em;
+  width: 304px;
+  padding: 1px;
+  spacing: 8px;
+  font-size: 13px;
+}
+
+.halo-panel .halo-item {
+  padding: 0;
+  spacing: 0;
+}
+
+.halo-panel .halo-header {
+  padding: 4px 4px 2px 6px;
 }
 
 .halo-title {
+  font-size: 15px;
   font-weight: bold;
 }
 
@@ -31,5 +49,129 @@
 .halo-journal {
   font-family: monospace;
   font-size: smaller;
-  max-width: 40em;
+}
+
+/* Carrossel dos aparelhos. A cor do LED só entra no desenho (lib/art.js). */
+.halo-carousel {
+  spacing: 8px;
+}
+
+.halo-tile {
+  border-radius: 12px;
+  background-color: rgba(127, 127, 127, 0.1);
+}
+
+.halo-device-tile {
+  padding: 8px 8px 10px 8px;
+}
+
+.halo-stage {
+  height: 128px;
+  border-radius: 8px;
+}
+
+.halo-art-clip {
+  width: 280px;
+  height: 128px;
+}
+
+.halo-nav {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  margin: 0 2px;
+  background-color: rgba(127, 127, 127, 0.9);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.halo-nav-icon {
+  icon-size: 12px;
+}
+
+.halo-nav:focus {
+  box-shadow: inset 0 0 0 2px -st-accent-color;
+}
+
+.halo-meta {
+  spacing: 8px;
+  padding: 6px 4px 0 4px;
+}
+
+.halo-device-name {
+  font-weight: 600;
+}
+
+.halo-chip {
+  spacing: 5px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.halo-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background-color: rgba(127, 127, 127, 0.6);
+}
+
+.halo-pager {
+  spacing: 6px;
+  padding-top: 8px;
+}
+
+.halo-page-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  padding: 0;
+  background-color: rgba(127, 127, 127, 0.45);
+}
+
+.halo-page-dot:checked {
+  background-color: rgba(127, 127, 127, 1);
+}
+
+.halo-page-dot:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-device-body {
+  spacing: 8px;
+}
+
+/* Aparelho sem controle: o .locked do protótipo (texto com até 250 px). */
+.halo-locked {
+  padding: 18px 27px;
+  spacing: 6px;
+}
+
+.halo-locked-icon {
+  icon-size: 22px;
+}
+
+.halo-locked-title,
+.halo-locked-text {
+  text-align: center;
+}
+
+.halo-locked-title {
+  font-weight: 600;
+}
+
+.halo-locked-text {
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-note {
+  padding: 10px 12px;
+}
+
+.halo-note-text {
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-empty {
+  padding: 22px 8px;
+  text-align: center;
+  color: rgba(127, 127, 127, 1);
 }

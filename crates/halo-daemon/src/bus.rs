@@ -598,8 +598,8 @@ mod tests {
     #[test]
     fn lista_em_aa_sv() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
-        add_hidraw(&h.sys, "hidraw1", 0x046D, 0xC08B, 0xFF00);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw95", 0x046D, 0xC08B, 0xFF00);
         tick(&h);
         let devices = listed(&h);
         for d in &devices {
@@ -620,7 +620,7 @@ mod tests {
                     "waterforce".into(),
                     "AORUS Waterforce X".into(),
                     true,
-                    "/dev/hidraw3".into()
+                    "/dev/hidraw99".into()
                 ),
                 (
                     "it5702".into(),
@@ -632,7 +632,7 @@ mod tests {
                     "g502".into(),
                     "Logitech G502 SE HERO".into(),
                     true,
-                    "/dev/hidraw1".into()
+                    "/dev/hidraw95".into()
                 ),
             ]
         );
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn estado_inicial_antes_do_primeiro_tick() {
         let h = Harness::with_sys(|sys| {
-            add_hidraw(sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+            add_hidraw(sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
             add_hwmon(sys, 1200, 26_000);
         });
         // Nenhum tick rodou: a lista e a telemetria vêm da primeira leitura.
@@ -663,7 +663,7 @@ mod tests {
                 "waterforce".into(),
                 "AORUS Waterforce X".into(),
                 true,
-                "/dev/hidraw3".into()
+                "/dev/hidraw99".into()
             )
         );
         let available: bool = h.property(WATERFORCE_PATH, TELEMETRY, "Available");
@@ -683,15 +683,15 @@ mod tests {
     #[test]
     fn sinal_de_aparelhos() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
         let mut stream = h.signals(MANAGER, "DevicesChanged");
         tick(&h);
         let devices = next_devices(&mut stream).expect("DevicesChanged");
-        assert_eq!(summary(&devices)[0].3, "/dev/hidraw3");
+        assert_eq!(summary(&devices)[0].3, "/dev/hidraw99");
         assert_eq!(summary(&listed(&h)), summary(&devices));
 
-        std::fs::remove_dir_all(h.sys.join("class/hidraw/hidraw3")).unwrap();
-        add_hidraw(&h.sys, "hidraw5", 0x1044, 0x7A4D, 0x0000);
+        std::fs::remove_dir_all(h.sys.join("class/hidraw/hidraw99")).unwrap();
+        add_hidraw(&h.sys, "hidraw98", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
         let devices = next_devices(&mut stream).expect("DevicesChanged");
         assert_eq!(
@@ -700,7 +700,7 @@ mod tests {
                 "waterforce".into(),
                 "AORUS Waterforce X".into(),
                 true,
-                "/dev/hidraw5".into()
+                "/dev/hidraw98".into()
             )
         );
 
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn daemon_recem_iniciado() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
         assert_eq!(waterforce_name(&listed(&h)), "AORUS Waterforce X");
         assert!(h.backend.calls().is_empty());
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn nome_muda_depois_da_primeira_operacao() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
         let mut stream = h.signals(MANAGER, "DevicesChanged");
         apply(&h, "cycle", &[], 0, 0).unwrap();
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn leitura_de_velocidade_revela_o_modelo() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
         let mut stream = h.signals(MANAGER, "DevicesChanged");
         h.backend.set_model(2);
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn modelo_desconhecido() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
         tick(&h);
         let mut stream = h.signals(MANAGER, "DevicesChanged");
         // No backend real, o modelo fora da tabela faz a operação falhar.
@@ -778,8 +778,8 @@ mod tests {
     #[test]
     fn ticks_e_resume_nao_chamam_o_backend() {
         let h = Harness::new();
-        add_hidraw(&h.sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
-        add_hidraw(&h.sys, "hidraw1", 0x048D, 0x5702, 0xFF89);
+        add_hidraw(&h.sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(&h.sys, "hidraw97", 0x048D, 0x5702, 0xFF89);
         add_hwmon(&h.sys, 1200, 26_000);
         for _ in 0..3 {
             tick(&h);

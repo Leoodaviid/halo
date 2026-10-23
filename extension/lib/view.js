@@ -48,3 +48,36 @@ export function panelView(state) {
 export function indicatorDimmed(state) {
     return !state.owner;
 }
+
+// A lista do Devices() (ou do DevicesChanged) já desempacotada com
+// recursiveUnpack, só com o que o painel usa. Tolera chaves ausentes: sem
+// present é ausente, sem capabilities é lista vazia, sem name usa o id.
+export function devicesFrom(list) {
+    if (!Array.isArray(list))
+        return [];
+    return list
+        .filter(d => d && typeof d.id === 'string')
+        .map(d => ({
+            id: d.id,
+            name: typeof d.name === 'string' && d.name !== '' ? d.name : d.id,
+            present: d.present === true,
+            capabilities: Array.isArray(d.capabilities)
+                ? d.capabilities.filter(c => typeof c === 'string')
+                : [],
+        }));
+}
+
+// O LastApplied do Waterforce.Led já desempacotado. Vazio (antes da primeira
+// aplicação) ou sem effect dá null.
+export function lastAppliedFrom(dict) {
+    if (!dict || typeof dict.effect !== 'string' || dict.effect === '')
+        return null;
+    return {
+        effect: dict.effect,
+        colors: Array.isArray(dict.colors)
+            ? dict.colors.filter(c => typeof c === 'string')
+            : [],
+        brightness: Number(dict.brightness ?? 0),
+        speed: Number(dict.speed ?? 0),
+    };
+}

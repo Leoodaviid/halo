@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Cores do tema escuro: os tokens do protótipo ([data-theme="dark"]). */
+@import url("stylesheet.css");
+
+/* O Shell esmaece os itens de menu que não são clicáveis (:insensitive); o
+   texto do painel fica com a cor de rótulo do protótipo. */
+.halo-panel .halo-item,
+.halo-panel .halo-item:insensitive { color: rgba(255, 255, 255, 0.9); }
+
+.halo-tile { background-color: rgba(255, 255, 255, 0.07); }
+
+.halo-nav {
+  color: rgba(255, 255, 255, 0.9);
+  background-color: rgba(44, 44, 48, 0.96);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.halo-chip-text,
+.halo-locked-text,
+.halo-locked-icon,
+.halo-note-text,
+.halo-empty,
+.halo-reason { color: rgba(255, 255, 255, 0.62); }
+
+.halo-chip-dot { background-color: rgba(255, 255, 255, 0.3); }
+.halo-chip-ok .halo-chip-text { color: #30d158; }
+.halo-chip-ok .halo-chip-dot { background-color: #30d158; }
+
+.halo-page-dot { background-color: rgba(255, 255, 255, 0.3); }
+.halo-page-dot:checked { background-color: rgba(255, 255, 255, 0.9); }
