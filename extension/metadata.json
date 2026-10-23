@@ -1,0 +1,7 @@
+{
+  "uuid": "halo@leoodaviid.github.io",
+  "name": "halo",
+  "description": "Temperatura e controle de RGB do halo na barra superior. Fala só com o halod pelo D-Bus da sessão.",
+  "shell-version": ["50"],
+  "url": "https://github.com/Leoodaviid/halo"
+}

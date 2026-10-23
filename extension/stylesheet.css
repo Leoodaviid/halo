@@ -1,0 +1,35 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Só classes do halo. Cores e fontes vêm do tema do Shell, que já segue o
+   estilo claro ou escuro e a cor de destaque do sistema. */
+
+.halo-temp {
+  margin-left: 4px;
+  font-feature-settings: "tnum";
+}
+
+.halo-panel {
+  min-width: 18em;
+}
+
+.halo-title {
+  font-weight: bold;
+}
+
+.halo-reason {
+  font-size: smaller;
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-actions {
+  spacing: 8px;
+}
+
+.halo-button:insensitive {
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-journal {
+  font-family: monospace;
+  font-size: smaller;
+  max-width: 40em;
+}

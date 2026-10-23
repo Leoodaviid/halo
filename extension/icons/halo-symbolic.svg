@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+  <!-- Ícone do halo: o anel aberto e o ponto do protótipo (docs/ui/panel-prototype.html),
+     em caminhos preenchidos para o Shell recolorir como ícone simbólico. -->
+  <!-- Os comentários ficam dentro do <svg>: o carregador reconhece o formato pelos primeiros bytes. -->
+  <path fill="#2e3436" d="M11.200 2.457A6.3999999999999995 6.3999999999999995 0 1 1 4.487 2.650A0.8 0.8 0 0 1 5.365 3.988A4.8 4.8 0 1 0 10.400 3.843A0.8 0.8 0 0 1 11.200 2.457Z"/>
+  <path fill="#2e3436" d="M9.6 8A1.6 1.6 0 1 1 6.4 8A1.6 1.6 0 1 1 9.6 8Z"/>
+</svg>

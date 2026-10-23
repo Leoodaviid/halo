@@ -99,12 +99,12 @@ Antes de cada `set`, `curve` ou `restore`, o halo grava o estado atual em `$XDG_
 
 ### Daemon (`halod`)
 
-O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a futura extensão do GNOME. Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Ele não reaplica o perfil no login nem depois da suspensão: o Waterforce guarda a velocidade gravada com `B6` mesmo sem energia (ver [docs/hardware.md](docs/hardware.md)), e o GCC também não reenvia nada no boot. Reaplicar a cada login seria um `B6` a mais, sem ganho.
+O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a extensão do GNOME (ver "Extensão do GNOME"). Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Ele não reaplica o perfil no login nem depois da suspensão: o Waterforce guarda a velocidade gravada com `B6` mesmo sem energia (ver [docs/hardware.md](docs/hardware.md)), e o GCC também não reenvia nada no boot. Reaplicar a cada login seria um `B6` a mais, sem ganho.
 
 #### Instalação
 
 ```sh
-packaging/install.sh                   # compila, instala e sobe o halod; também atualiza
+packaging/install.sh                   # compila, instala e sobe o halod e a extensão; também atualiza
 packaging/install.sh --uninstall       # remove; perfis e snapshots ficam
 ```
 
@@ -115,8 +115,9 @@ Tudo vai para o seu usuário, sem sudo:
 | `halo` e `halod` | `~/.local/bin` (ou `$BINDIR`) |
 | Unidade `halod.service` do systemd do usuário | `~/.config/systemd/user/` |
 | Ativação pelo D-Bus de `io.github.leoodaviid.Halo1` | `~/.local/share/dbus-1/services/` |
+| Extensão do GNOME Shell (`halo@leoodaviid.github.io`) | `~/.local/share/gnome-shell/extensions/halo@leoodaviid.github.io/` |
 
-O script compila com `cargo build --release --locked` antes de tocar no que já está instalado: se a compilação falhar, nada muda. Depois ele habilita a unidade, que sobe com a sessão gráfica, e (re)inicia o daemon, para que uma atualização passe a valer na hora. Com a unidade parada ou desabilitada, qualquer chamada ao nome no D-Bus sobe o daemon de novo. A desinstalação mantém os perfis (`~/.config/halo`) e os snapshots de velocidade (`~/.local/state/halo`), inclusive o `waterforce-speed.original`.
+O script compila com `cargo build --release --locked` antes de tocar no que já está instalado: se a compilação falhar, nada muda. Depois ele habilita a unidade, que sobe com a sessão gráfica, e (re)inicia o daemon, para que uma atualização passe a valer na hora. Com a unidade parada ou desabilitada, qualquer chamada ao nome no D-Bus sobe o daemon de novo. A extensão é copiada sem a pasta `tests/` e habilitada pelo `gsettings` (`org.gnome.shell enabled-extensions`), e a pasta só é trocada quando o conteúdo mudou. Depois de instalar ou atualizar a extensão, **saia e entre na sessão**: no Wayland o Shell não recarrega o código de uma extensão. O script só pede isso quando a extensão mudou. A desinstalação desabilita e remove a extensão e mantém os perfis (`~/.config/halo`) e os snapshots de velocidade (`~/.local/state/halo`), inclusive o `waterforce-speed.original`.
 
 A regra udev não é instalada pelo script, porque precisa de sudo: ele só confere se ela está em `/etc/udev/rules.d/` e igual à do repositório e, se não estiver, mostra os comandos (ver [docs/permissions.md](docs/permissions.md)).
 
@@ -189,6 +190,38 @@ busctl --user call $N $R $N.Profiles Delete s noite
 ```
 
 O `Activate` aplica a velocidade antes do LED. A velocidade é lida antes (`DE 00`, `DD`, `D9 01`, `D9 02`) e só é gravada, com `B6`, se for diferente do perfil, para não gravar a flash à toa. O LED é sempre aplicado, porque não tem leitura. Se uma seção falhar, as outras são tentadas mesmo assim, o erro diz quais foram aplicadas e o perfil ativo não muda. O nome do ativo fica em `$XDG_STATE_HOME/halo/active-profile`.
+
+### Extensão do GNOME
+
+A extensão (`extension/`, UUID `halo@leoodaviid.github.io`, GNOME Shell 50) é um cliente do `halod`: ela só fala com o D-Bus da sessão e não abre hidraw nem lê o sysfs. Esta versão faz o mínimo:
+
+- Na barra, o ícone do halo e a temperatura do líquido em graus inteiros (`38°`). Com a temperatura inválida (`CoolantValid` falso), aparece `--`, e sem leitura (`Available` falso) aparece só o ícone.
+- Com o `halod` fora do D-Bus, o ícone fica esmaecido.
+- Ao clicar, o painel mostra o estado do daemon e quantos aparelhos estão presentes. Com o daemon fora do ar, mostra o aviso e as ações "Iniciar halod" e "Ver registro" (as últimas linhas do `journalctl --user -u halod.service`), desabilitadas se a unidade não estiver instalada.
+
+A extensão não sobe o daemon sozinha: ela só observa o nome no D-Bus, e iniciar é sempre um gesto seu. Um `systemctl --user stop halod.service` fica respeitado. O painel completo (carrossel, controles de LED, perfis, preferências) vem nas próximas changes (ver [docs/roadmap.md](docs/roadmap.md)).
+
+Os erros da extensão aparecem no registro do Shell, que no Ubuntu fica no journal do usuário. Este comando devolve as linhas do `gnome-shell` (testado aqui, no GNOME Shell 50 com Wayland):
+
+```sh
+journalctl --user -b /usr/bin/gnome-shell --no-pager | grep -iE 'halo|JS ERROR'
+```
+
+O filtro `-u org.gnome.Shell@wayland.service` não serve: ele devolve `-- No entries --`, porque o Shell da sessão não roda nessa unidade. Um erro em `enable()` desativa só a extensão.
+
+### Desenvolvimento da extensão
+
+```sh
+sh extension/tests/run.sh                 # lógica pura (barra e painel), com o gjs, sem o Shell
+sh scripts/dev/headless-smoke.sh          # precisa de: cargo build -p halo-daemon
+sh scripts/dev/nested-shell.sh [--daemon] # precisa do mutter-dev-bin
+```
+
+- `run.sh` roda os testes de `extension/lib/` com `gjs -m` e termina com código diferente de 0 se algum falhar.
+- `headless-smoke.sh` carrega a extensão num GNOME Shell headless e confere que ela fica `ACTIVE`, que sobrevive a um ciclo `disable`/`enable` e que não deixa `JS ERROR` no log. Ele usa um `halod` de teste, com um sysfs falso, e confere que a extensão não ativa o `halod`.
+- `nested-shell.sh` abre um Shell aninhado numa janela, com a extensão do repositório, para ver e clicar no painel. Sem `--daemon`, o painel mostra o daemon fora do ar. Com `--daemon`, sobe um `halod` de teste que lê o `/sys` real (só leitura). Um argumento inválido termina com código 2.
+
+Os dois scripts de Shell rodam isolados, com `HOME`, `XDG_*` e `XDG_RUNTIME_DIR` próprios e um D-Bus próprio: um Shell de teste com o runtime real cria `/run/user/<uid>/gnome-shell-disable-extensions`, e a sessão desliga todas as extensões no próximo início. Ao terminar, eles conferem que esse marcador não apareceu.
 
 ### Um processo por aparelho
 
