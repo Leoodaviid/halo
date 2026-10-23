@@ -6,7 +6,7 @@ Barra do GNOME:  [ícone halo]   extensão GNOME Shell (GJS)
                       │ D-Bus (sessão)
                       ▼
                haloD (Rust)      daemon do usuário (systemd --user)
-                      │          um módulo por dispositivo, perfis, reaplica no boot
+                      │          um módulo por dispositivo, perfis; sobe com a sessão
           ┌───────────┼──────────────┬──────────────┐
           ▼           ▼              ▼              ▼
      IT5702 (HID)  Castor3 (HID)  G502 (HID)   RAM (SMBus, depois)
@@ -26,7 +26,7 @@ O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/
 - **Aparelhos:** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
 - **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
 - **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
-- **Daemon parado:** "Iniciar halod" pede `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas até a `systemd-user-service` instalar a unidade.
+- **Daemon parado:** "Iniciar halod" pede `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas quando a unidade não está instalada (`packaging/install.sh`).
 
 Equivalência de cada elemento do protótipo no St (Shell 50):
 
@@ -73,8 +73,28 @@ Pré-requisitos no `halod` para a extensão: o `Devices` com nome e capacidades 
   - **Nomes** sem abrir hidraw: a placa pelo `class/dmi/id/board_name` do sysfs (`Placa-mãe (IT5702)` sem ele), o G502 com o nome fixo `Logitech G502 SE HERO`, e o Waterforce pelo modelo que o worker já leu no `DE 00` de uma operação pedida. Até lá, e depois de cada restart do daemon, ele é `AORUS Waterforce X`. Quando o worker lê um modelo novo da tabela, ele o grava num `KnownModel` compartilhado e pede uma volta dos ticks pelo mesmo canal do resume; o tick monta o nome (`AORUS Waterforce X 240`) e emite o `DevicesChanged` no executor do zbus.
   - **G502** (`046d:c08b`): encontrado pela usage page de fabricante `0xFF00`, a interface do driver Logitech do OpenRGB. O daemon não abre o mouse.
 - **Um worker por aparelho.** Uma thread é dona das chamadas bloqueantes ao core do Waterforce e atende um pedido de cada vez, na ordem de chegada. Os métodos D-Bus esperam a resposta por um canal, então o executor do zbus não bloqueia com as esperas de resposta do Castor3, e lista, perfis e telemetria continuam respondendo.
-- **Ticks.** A cada 2 s, o daemon lê só o sysfs: a presença e o nome dos aparelhos (com `DevicesChanged` quando a presença, o caminho ou o nome muda) e a telemetria do hwmon (com `PropertiesChanged` só nas propriedades que mudaram). No fim de uma suspensão (`PrepareForSleep(false)` do logind, no D-Bus do sistema), roda os ticks na hora. Nenhum tick abre hidraw: o `waterforce-cpu-feed` vai acrescentar um que envia o `E0` pelo worker, e o `systemd-user-service` vai decidir o que reaplicar no login e no resume.
+- **Primeira leitura.** Antes de publicar os objetos e pedir o nome, o daemon lê o sysfs uma vez (presença, nomes e hwmon), para que a chamada que o sobe pela ativação do D-Bus já receba a lista e a telemetria.
+- **Ticks.** A cada 2 s, o daemon lê só o sysfs: a presença e o nome dos aparelhos (com `DevicesChanged` quando a presença, o caminho ou o nome muda) e a telemetria do hwmon (com `PropertiesChanged` só nas propriedades que mudaram). No fim de uma suspensão (`PrepareForSleep(false)` do logind, no D-Bus do sistema), roda os ticks na hora. Nenhum tick abre hidraw: o `waterforce-cpu-feed` vai acrescentar um que envia o `E0` pelo worker. O daemon não reaplica nada no login nem no resume (ver "Instalação e unidade").
 - **Perfis.** TOML em `$XDG_CONFIG_HOME/halo/profiles/`, validados pelos tipos do core e gravados de forma atômica. A ativação da velocidade é um `DesiredState` do core: lê o estado e só escreve (com `B6`) se ele for diferente, com a mesma sequência do `set` e do `curve`.
+
+## Instalação e unidade (change `systemd-user-service`)
+
+`packaging/install.sh` instala tudo no usuário, sem sudo, e `--uninstall` desfaz. O teste dele é `sh packaging/tests/install-test.sh`, com `cargo` e `systemctl` falsos num diretório temporário.
+
+```text
+packaging/systemd/halod.service ---(@BINDIR@)--> $XDG_CONFIG_HOME/systemd/user/halod.service
+packaging/dbus/...Halo1.service ---(@BINDIR@)--> $XDG_DATA_HOME/dbus-1/services/
+target/release/{halo,halod} -------------------> $BINDIR (~/.local/bin)
+packaging/udev/70-halo.rules ----(só cmp)------> /etc/udev/rules.d/  (sudo, à mão)
+
+login do GNOME --> graphical-session.target --> halod.service (Type=dbus)
+cliente D-Bus  --> dbus-daemon (SystemdService=halod.service) --^
+```
+
+- **Unidade:** `Type=dbus` com `BusName=io.github.leoodaviid.Halo1`, então o systemd só a considera pronta quando o nome aparece. `Restart=on-failure` com `RestartSec=2` e o limite padrão de inícios: com o nome tomado por um `halod` iniciado à mão, a unidade tenta algumas vezes e desiste. `PartOf`/`WantedBy=graphical-session.target`: o daemon sobe e desce com a sessão do GNOME, o único cliente.
+- **Ativação pelo D-Bus:** com o daemon parado, uma chamada ao nome faz o `dbus-daemon` pedir a unidade ao systemd, mesmo com ela desabilitada.
+- **Atualização:** o script compila antes de copiar, troca cada arquivo por um temporário e um `mv`, e faz `restart`, que também inicia o daemon na primeira instalação.
+- **Sem reaplicar no login.** O Castor3 guarda a velocidade gravada com `B6` mesmo sem energia (confirmado no aparelho), e no Windows nada reenvia LED nem velocidade no boot: o `AorusLcdService` só manda os dados da tela, e o `ucCooler` só envia quando o usuário aplica. Se o anel perder o LED ao desligar (não testado), a reaplicação vira uma change própria.
 
 ## Acesso exclusivo ao hidraw
 

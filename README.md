@@ -99,9 +99,36 @@ Antes de cada `set`, `curve` ou `restore`, o halo grava o estado atual em `$XDG_
 
 ### Daemon (`halod`)
 
-O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a futura extensão do GNOME. Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Nesta versão ele não reaplica o perfil no login nem depois da suspensão.
+O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a futura extensão do GNOME. Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Ele não reaplica o perfil no login nem depois da suspensão: o Waterforce guarda a velocidade gravada com `B6` mesmo sem energia (ver [docs/hardware.md](docs/hardware.md)), e o GCC também não reenvia nada no boot. Reaplicar a cada login seria um `B6` a mais, sem ganho.
+
+#### Instalação
 
 ```sh
+packaging/install.sh                   # compila, instala e sobe o halod; também atualiza
+packaging/install.sh --uninstall       # remove; perfis e snapshots ficam
+```
+
+Tudo vai para o seu usuário, sem sudo:
+
+| O quê | Onde |
+|---|---|
+| `halo` e `halod` | `~/.local/bin` (ou `$BINDIR`) |
+| Unidade `halod.service` do systemd do usuário | `~/.config/systemd/user/` |
+| Ativação pelo D-Bus de `io.github.leoodaviid.Halo1` | `~/.local/share/dbus-1/services/` |
+
+O script compila com `cargo build --release --locked` antes de tocar no que já está instalado: se a compilação falhar, nada muda. Depois ele habilita a unidade, que sobe com a sessão gráfica, e (re)inicia o daemon, para que uma atualização passe a valer na hora. Com a unidade parada ou desabilitada, qualquer chamada ao nome no D-Bus sobe o daemon de novo. A desinstalação mantém os perfis (`~/.config/halo`) e os snapshots de velocidade (`~/.local/state/halo`), inclusive o `waterforce-speed.original`.
+
+A regra udev não é instalada pelo script, porque precisa de sudo: ele só confere se ela está em `/etc/udev/rules.d/` e igual à do repositório e, se não estiver, mostra os comandos (ver [docs/permissions.md](docs/permissions.md)).
+
+```sh
+systemctl --user status halod.service  # estado do daemon
+journalctl --user -u halod.service     # registro
+```
+
+Para rodar o daemon à mão, a partir do código, pare a unidade antes: com o nome já tomado, um segundo `halod` recusa e sai.
+
+```sh
+systemctl --user stop halod.service
 cargo run -q -p halo-daemon            # fica rodando; uma segunda instância recusa e sai
 ```
 

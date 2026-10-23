@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Ativação pelo D-Bus da sessão: uma chamada ao nome sobe o halod pela unidade
+# do systemd do usuário. O packaging/install.sh troca @BINDIR@ e instala em
+# $XDG_DATA_HOME/dbus-1/services/. O Exec é exigido pelo formato; com
+# SystemdService, o dbus-daemon pede a unidade ao systemd.
+
+[D-BUS Service]
+Name=io.github.leoodaviid.Halo1
+Exec=@BINDIR@/halod
+SystemdService=halod.service

@@ -17,6 +17,8 @@ sudo udevadm control --reload
 sudo udevadm trigger --subsystem-match=hidraw --action=change
 ```
 
+O `packaging/install.sh` (ver o README) não instala a regra, porque precisa de sudo. Ele só compara a regra instalada com a do repositório e, se ela faltar ou estiver diferente, mostra estes mesmos comandos.
+
 ## Verificar
 
 ```sh

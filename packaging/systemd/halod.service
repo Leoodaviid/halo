@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Unidade do systemd do usuário para o halod. O packaging/install.sh troca
+# @BINDIR@ pelo diretório dos binários e instala em
+# $XDG_CONFIG_HOME/systemd/user/.
+
+[Unit]
+Description=halo: daemon de RGB, velocidade e telemetria
+Documentation=https://github.com/Leoodaviid/halo
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Pronto quando o nome aparece no D-Bus da sessão.
+Type=dbus
+BusName=io.github.leoodaviid.Halo1
+ExecStart=@BINDIR@/halod
+# Com o nome tomado por outro halod, falha e desiste pelo limite padrão de
+# inícios do systemd, sem laço.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
