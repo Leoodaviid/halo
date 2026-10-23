@@ -94,12 +94,19 @@ pub struct Harness {
 
 impl Harness {
     pub fn new() -> Self {
+        Self::with_sys(|_| {})
+    }
+
+    /// Como [`Harness::new`], com o sysfs falso montado por `setup` antes de
+    /// os objetos serem publicados, como no início do daemon.
+    pub fn with_sys(setup: impl FnOnce(&Path)) -> Self {
         let bus = TestBus::start();
         let dirs = tempfile::tempdir().unwrap();
         let sys = dirs.path().join("sys");
         let config = dirs.path().join("config/halo");
         let state = dirs.path().join("state/halo");
         std::fs::create_dir_all(&sys).unwrap();
+        setup(&sys);
         let backend = FakeBackend::default();
         let model = KnownModel::default();
         let (refresh, wake) = async_channel::bounded(1);
@@ -109,6 +116,7 @@ impl Harness {
                 connection::Builder::address(bus.address.as_str()).unwrap(),
                 worker,
                 ProfileStore::new(&config, &state),
+                crate::ticks::first_read(&sys),
             )
             .and_then(bus::claim_name)
             .unwrap()

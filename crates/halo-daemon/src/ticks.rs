@@ -109,6 +109,16 @@ pub fn scan_devices(sys_root: &Path, model: Option<Model>) -> Vec<Device> {
         .collect()
 }
 
+/// Primeira leitura do sysfs, feita antes de o daemon pegar o nome: assim a
+/// chamada que sobe o daemon pela ativação do D-Bus já recebe a lista e a
+/// telemetria. Não abre nenhum hidraw.
+pub fn first_read(sys_root: &Path) -> (Vec<Device>, TelemetryState) {
+    (
+        scan_devices(sys_root, None),
+        next_telemetry(TelemetryState::default(), telemetry::read(sys_root)),
+    )
+}
+
 /// Próximo estado da telemetria a partir de uma leitura do hwmon.
 pub fn next_telemetry(
     prev: TelemetryState,

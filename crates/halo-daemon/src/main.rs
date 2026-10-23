@@ -70,7 +70,14 @@ async fn run(cli: Cli) -> Result<(), String> {
         None => connection::Builder::session(),
     };
     let conn = builder
-        .and_then(|b| bus::serve(b, worker, ProfileStore::new(&config_dir, &state_dir)))
+        .and_then(|b| {
+            bus::serve(
+                b,
+                worker,
+                ProfileStore::new(&config_dir, &state_dir),
+                ticks::first_read(&cli.sys_root),
+            )
+        })
         .and_then(bus::claim_name)
         .map_err(|e| format!("não consegui preparar o D-Bus: {e}"))?
         .build()

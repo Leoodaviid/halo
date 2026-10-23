@@ -260,3 +260,67 @@ fn restaurar_sem_snapshot() {
     assert_eq!(name, "io.github.leoodaviid.Halo1.Error.Storage");
     assert!(msg.contains("waterforce-speed.previous"), "{msg}");
 }
+
+/// hwmon `waterforce` falso ligado ao Castor3, com o líquido a 26 °C.
+fn add_hwmon(sys: &Path) {
+    let dir = sys.join("class/hwmon/hwmon4");
+    std::fs::create_dir_all(dir.join("device")).unwrap();
+    std::fs::write(dir.join("name"), "waterforce\n").unwrap();
+    std::fs::write(
+        dir.join("device/uevent"),
+        "DRIVER=gigabyte_waterforce\nHID_ID=0003:00001044:00007A4D\n",
+    )
+    .unwrap();
+    for (attr, value) in [
+        ("fan1_input", "1200"),
+        ("fan2_input", "2600"),
+        ("pwm1", "120"),
+        ("pwm2", "200"),
+        ("temp1_input", "26000"),
+    ] {
+        std::fs::write(dir.join(attr), format!("{value}\n")).unwrap();
+    }
+}
+
+/// A primeira chamada depois de o nome aparecer, como a que sobe o daemon
+/// pela ativação do D-Bus, já recebe a lista e a telemetria lidas do sysfs.
+#[test]
+fn primeira_chamada_ja_tem_aparelhos_e_telemetria() {
+    let bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = sys_with_castor3("hidraw3");
+    add_hwmon(sys.path());
+    let _daemon = start(&bus, home.path(), sys.path(), &[]);
+    let client = bus.client();
+
+    let reply = client
+        .call_method(
+            Some(BUS_NAME),
+            ROOT,
+            Some("io.github.leoodaviid.Halo1.Manager"),
+            "Devices",
+            &(),
+        )
+        .unwrap();
+    let devices: Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> =
+        reply.body().deserialize().unwrap();
+    assert_eq!(devices.len(), 3);
+    let waterforce = &devices[0];
+    assert_eq!(<&str>::try_from(&waterforce["id"]).unwrap(), "waterforce");
+    assert!(bool::try_from(&waterforce["present"]).unwrap());
+
+    let reply = client
+        .call_method(
+            Some(BUS_NAME),
+            WATERFORCE,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(
+                "io.github.leoodaviid.Halo1.Waterforce.Telemetry",
+                "Available",
+            ),
+        )
+        .unwrap();
+    let available: zbus::zvariant::OwnedValue = reply.body().deserialize().unwrap();
+    assert!(bool::try_from(available).unwrap());
+}

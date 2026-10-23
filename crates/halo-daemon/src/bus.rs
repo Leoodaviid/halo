@@ -26,24 +26,20 @@ pub const BUS_NAME: &str = "io.github.leoodaviid.Halo1";
 pub const ROOT_PATH: &str = "/io/github/leoodaviid/Halo1";
 pub const WATERFORCE_PATH: &str = "/io/github/leoodaviid/Halo1/waterforce";
 
-/// Publica todos os objetos do daemon em `builder`. O nome do bus é pedido
-/// depois, por quem chama.
+/// Publica todos os objetos do daemon em `builder`, com a lista de aparelhos
+/// e a telemetria iniciais. O nome do bus é pedido depois, por quem chama.
 pub fn serve(
     builder: connection::Builder<'static>,
     worker: Worker,
     profiles: ProfileStore,
+    (devices, telemetry): (Vec<Device>, TelemetryState),
 ) -> zbus::Result<connection::Builder<'static>> {
     builder
-        .serve_at(
-            ROOT_PATH,
-            Manager {
-                devices: Vec::new(),
-            },
-        )?
+        .serve_at(ROOT_PATH, Manager { devices })?
         .serve_at(ROOT_PATH, Profiles::new(profiles, worker.clone()))?
         .serve_at(WATERFORCE_PATH, Led::new(worker.clone()))?
         .serve_at(WATERFORCE_PATH, Speed::new(worker))?
-        .serve_at(WATERFORCE_PATH, Telemetry::default())
+        .serve_at(WATERFORCE_PATH, Telemetry { state: telemetry })
 }
 
 /// Pede [`BUS_NAME`] sem tomar o nome de outra instância e sem deixar outra
@@ -351,7 +347,6 @@ pub struct TelemetryState {
     pub coolant_valid: bool,
 }
 
-#[derive(Default)]
 pub struct Telemetry {
     pub state: TelemetryState,
 }
@@ -653,6 +648,36 @@ mod tests {
             .try_into()
             .unwrap();
         assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn estado_inicial_antes_do_primeiro_tick() {
+        let h = Harness::with_sys(|sys| {
+            add_hidraw(sys, "hidraw3", 0x1044, 0x7A4D, 0x0000);
+            add_hwmon(sys, 1200, 26_000);
+        });
+        // Nenhum tick rodou: a lista e a telemetria vêm da primeira leitura.
+        assert_eq!(
+            summary(&listed(&h))[0],
+            (
+                "waterforce".into(),
+                "AORUS Waterforce X".into(),
+                true,
+                "/dev/hidraw3".into()
+            )
+        );
+        let available: bool = h.property(WATERFORCE_PATH, TELEMETRY, "Available");
+        assert!(available);
+        let fan: u32 = h.property(WATERFORCE_PATH, TELEMETRY, "FanRpm");
+        assert_eq!(fan, 1200);
+
+        // O primeiro tick lê o mesmo: nenhum sinal.
+        let mut devices = h.signals(MANAGER, "DevicesChanged");
+        let mut props = h.signals(PROPS, "PropertiesChanged");
+        tick(&h);
+        assert!(next_devices(&mut devices).is_none());
+        assert!(all_changes(&mut props, TELEMETRY).is_empty());
+        assert!(h.backend.calls().is_empty());
     }
 
     #[test]

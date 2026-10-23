@@ -13,12 +13,12 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 
 ## Fase 2: daemon e interface
 
-1. ~~Daemon com D-Bus e perfis salvos.~~ Feito em 2026-10-21: `halod` (change `halo-daemon`), com LED, velocidade e telemetria do Waterforce pelo D-Bus da sessão, perfis em TOML que só gravam a velocidade quando ela muda, ticks que só leem o sysfs e acesso exclusivo ao hidraw (`flock`) para a CLI e o daemon. Próximos: o `systemd-user-service` (reaplicar no login) e o `waterforce-cpu-feed` (`E0`/`E1` pelo worker).
+1. ~~Daemon com D-Bus e perfis salvos.~~ Feito em 2026-10-21: `halod` (change `halo-daemon`), com LED, velocidade e telemetria do Waterforce pelo D-Bus da sessão, perfis em TOML que só gravam a velocidade quando ela muda, ticks que só leem o sysfs e acesso exclusivo ao hidraw (`flock`) para a CLI e o daemon. Próximo: o `waterforce-cpu-feed` (`E0`/`E1` pelo worker).
 2. ~~Protótipo visual do painel para aprovação antes de codar a extensão.~~ Aprovado em 2026-10-22: [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (change `gnome-panel-prototype`, spec `gnome-panel`), no visual do canvas "halo · Apple HIG" com o destaque do GNOME, a temperatura na barra, o carrossel guiado pelo daemon, os 9 efeitos de uma cor e a aplicação só no fim de cada gesto.
 3. Extensão GNOME Shell com o ícone na barra e o painel. Segue o protótipo e a spec `gnome-panel`. Pré-requisitos no `halod`:
    - O `Devices` com o nome e as capacidades de cada aparelho, para o carrossel: change `daemon-device-status`.
    - A temperatura da CPU como propriedade, para a opção CPU na barra. Entra na `waterforce-cpu-feed`.
-4. Serviço `systemd --user` para reaplicar o perfil no login.
+4. ~~Serviço `systemd --user`.~~ Feito em 2026-10-22 (change `systemd-user-service`): `packaging/install.sh` instala no usuário os binários, a unidade `halod.service` (sobe com a sessão gráfica) e a ativação pelo D-Bus, e `--uninstall` remove mantendo perfis e snapshots. Não reaplica o perfil no login: o Waterforce guarda a velocidade gravada com `B6`, e o GCC não reenvia nada no boot. Falta confirmar se o anel guarda o LED ao desligar; se não guardar, a reaplicação vira uma change.
 
 ## Fase 3: Waterforce
 
