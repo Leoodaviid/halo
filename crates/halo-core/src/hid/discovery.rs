@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn encontra_em_qualquer_hidraw() {
         let root = tempfile::tempdir().unwrap();
-        add(root.path(), "hidraw0", "0003:0000046D:0000C08B", PAGE_FF00);
+        add(root.path(), "hidraw96", "0003:0000046D:0000C08B", PAGE_FF00);
         add(root.path(), "hidraw9", "0003:0000048D:00005702", PAGE_FF89);
 
         let found = find_devices(root.path(), IT5702).unwrap();
@@ -124,15 +124,15 @@ mod tests {
     #[test]
     fn ignora_usage_page_diferente() {
         let root = tempfile::tempdir().unwrap();
-        add(root.path(), "hidraw5", "0003:0000048D:00005702", PAGE_FF00);
+        add(root.path(), "hidraw97", "0003:0000048D:00005702", PAGE_FF00);
         assert!(find_devices(root.path(), IT5702).unwrap().is_empty());
     }
 
     #[test]
     fn ignora_entradas_incompletas() {
         let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("hidraw1/device")).unwrap();
-        let dir = root.path().join("hidraw2/device");
+        fs::create_dir_all(root.path().join("hidraw91/device")).unwrap();
+        let dir = root.path().join("hidraw92/device");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("uevent"), "HID_ID=0003:0000048D:00005702\n").unwrap();
         assert!(find_devices(root.path(), IT5702).unwrap().is_empty());

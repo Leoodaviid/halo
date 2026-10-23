@@ -9,7 +9,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 import {journalLines} from './lib/journal.js';
-import {countPresent} from './lib/view.js';
+import {countPresent, devicesFrom, lastAppliedFrom} from './lib/view.js';
 
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
@@ -36,6 +36,15 @@ const TelemetryProxy = Gio.DBusProxy.makeProxyWrapper(`
   </interface>
 </node>`);
 
+// Só a leitura do último LED aplicado: o Apply não está na interface, então
+// não há como chamá-lo por engano daqui.
+const LedProxy = Gio.DBusProxy.makeProxyWrapper(`
+<node>
+  <interface name="io.github.leoodaviid.Halo1.Waterforce.Led">
+    <property name="LastApplied" type="a{sv}" access="read"/>
+  </interface>
+</node>`);
+
 const NO_START = Gio.DBusProxyFlags.DO_NOT_AUTO_START;
 
 function cancelled(e) {
@@ -43,9 +52,10 @@ function cancelled(e) {
         e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
 }
 
-// Um a{sv} já desempacotado um nível: os valores ainda são GLib.Variant.
-function unpackDevices(devices) {
-    return devices.map(d => ({present: d.present?.unpack?.() ?? false}));
+// Um a{sv} já desempacotado um nível tem os valores ainda em GLib.Variant.
+function unpackDict(dict) {
+    return Object.fromEntries(Object.entries(dict ?? {}).map(
+        ([key, value]) => [key, value instanceof GLib.Variant ? value.recursiveUnpack() : value]));
 }
 
 function newProxy(Wrapper, path, cancellable) {
@@ -70,6 +80,7 @@ export class HaloDaemon {
         this._devicesSignal = null;
         this._manager = null;
         this._telemetry = null;
+        this._led = null;
     }
 
     get state() {
@@ -78,9 +89,10 @@ export class HaloDaemon {
 
     async start() {
         try {
-            [this._manager, this._telemetry] = await Promise.all([
+            [this._manager, this._telemetry, this._led] = await Promise.all([
                 newProxy(ManagerProxy, ROOT_PATH, this._cancellable),
                 newProxy(TelemetryProxy, WATERFORCE_PATH, this._cancellable),
+                newProxy(LedProxy, WATERFORCE_PATH, this._cancellable),
             ]);
         } catch (e) {
             if (!cancelled(e))
@@ -89,9 +101,9 @@ export class HaloDaemon {
         }
         this._connect(this._telemetry, 'notify::g-name-owner', () => this._ownerChanged());
         this._connect(this._telemetry, 'g-properties-changed', () => this._readTelemetry());
+        this._connect(this._led, 'g-properties-changed', () => this._readLed());
         this._devicesSignal = this._manager.connectSignal('DevicesChanged',
-            (_proxy, _sender, [devices]) =>
-                this._set({devicesPresent: countPresent(unpackDevices(devices))}));
+            (_proxy, _sender, [devices]) => this._setDevices(devices));
         this._ownerChanged();
     }
 
@@ -105,6 +117,7 @@ export class HaloDaemon {
         this._devicesSignal = null;
         this._manager = null;
         this._telemetry = null;
+        this._led = null;
         this._onChange = null;
     }
 
@@ -123,8 +136,11 @@ export class HaloDaemon {
         this._set({owner, journal: null});
         if (owner) {
             this._readTelemetry();
+            this._readLed();
             this._readDevices();
         } else {
+            // O cache de um proxy sem dono não vale.
+            this._set({devices: [], devicesPresent: 0, lastApplied: null});
             this.refreshUnit();
         }
     }
@@ -142,10 +158,21 @@ export class HaloDaemon {
         });
     }
 
+    _readLed() {
+        if (!this._led || !this._state.owner)
+            return;
+        this._set({lastApplied: lastAppliedFrom(unpackDict(this._led.LastApplied))});
+    }
+
+    _setDevices(list) {
+        const devices = devicesFrom(list.map(unpackDict));
+        this._set({devices, devicesPresent: countPresent(devices)});
+    }
+
     async _readDevices() {
         try {
             const [devices] = await this._manager.DevicesAsync();
-            this._set({devicesPresent: countPresent(unpackDevices(devices))});
+            this._setDevices(devices);
         } catch (e) {
             if (!cancelled(e))
                 console.warn(`halo: Devices falhou: ${e.message}`);

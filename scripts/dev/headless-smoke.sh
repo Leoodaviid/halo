@@ -42,17 +42,8 @@ DEST=$T/home/.local/share/gnome-shell/extensions/$UUID
 mkdir -p "$DEST"
 (cd "$ROOT/extension" && tar --exclude=./tests -cf - .) | (cd "$DEST" && tar -xf -)
 
-# sysfs falso: o Castor3 em hidraw3 e o hwmon dele com o líquido a 31 °C.
-HID=$T/sys/class/hidraw/hidraw3/device
-mkdir -p "$HID" "$T/sys/class/hwmon/hwmon4/device"
-printf 'HID_ID=0003:00001044:00007A4D\nHID_NAME=ITE Tech. Castor3\n' > "$HID/uevent"
-printf '\005\000\011\002\241\001\300' > "$HID/report_descriptor"
-HW=$T/sys/class/hwmon/hwmon4
-echo waterforce > "$HW/name"
-printf 'DRIVER=gigabyte_waterforce\nHID_ID=0003:00001044:00007A4D\n' > "$HW/device/uevent"
-for kv in fan1_input:1200 fan2_input:2600 pwm1:120 pwm2:200 temp1_input:31000; do
-    echo "${kv#*:}" > "$HW/${kv%%:*}"
-done
+# sysfs falso com o Castor3 num hidraw que não existe em /dev (hidraw99).
+sh "$ROOT/scripts/dev/fake-sysfs.sh" "$T/sys" || exit 1
 
 # Ativação no barramento do teste: só registra que foi usada.
 SERVICES=$T/home/.local/share/dbus-1/services
@@ -148,7 +139,9 @@ env -i PATH=/usr/bin:/bin LANG="${LANG:-C.UTF-8}" \
 status=$?
 set -e
 
-if grep -E 'JS ERROR|Gjs-CRITICAL|halo@leoodaviid' "$T/shell.log" > "$T/errors" 2>/dev/null &&
+# Os console.warn da extensão começam com "halo:" (proxy que não foi criado,
+# Devices que falhou...): também contam como erro.
+if grep -E 'JS ERROR|Gjs-CRITICAL|halo@leoodaviid|halo: ' "$T/shell.log" > "$T/errors" 2>/dev/null &&
     [ -s "$T/errors" ]; then
     echo "FALHA erros no log do Shell:"
     sed 's/^/      /' "$T/errors"

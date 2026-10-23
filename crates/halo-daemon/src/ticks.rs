@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn waterforce_conectado_e_placa_desconectada() {
         let sys = tempfile::tempdir().unwrap();
-        add_hidraw(sys.path(), "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(sys.path(), "hidraw99", 0x1044, 0x7A4D, 0x0000);
         let devices = scan_devices(sys.path(), None);
         let ids: Vec<&str> = devices.iter().map(|d| d.id).collect();
         assert_eq!(ids, ["waterforce", "it5702", "g502"]);
@@ -285,7 +285,7 @@ mod tests {
                 id: "waterforce",
                 name: "AORUS Waterforce X".into(),
                 present: true,
-                devnode: "/dev/hidraw3".into(),
+                devnode: "/dev/hidraw99".into(),
                 capabilities: &["led", "speed", "telemetry"],
             }
         );
@@ -299,8 +299,8 @@ mod tests {
         // O sysfs falso não tem hidraw de verdade por trás: a busca só lê
         // `uevent` e `report_descriptor`.
         let sys = tempfile::tempdir().unwrap();
-        add_hidraw(sys.path(), "hidraw0", 0x046D, 0xC08B, 0x0001);
-        add_hidraw(sys.path(), "hidraw1", 0x046D, 0xC08B, 0xFF00);
+        add_hidraw(sys.path(), "hidraw96", 0x046D, 0xC08B, 0x0001);
+        add_hidraw(sys.path(), "hidraw95", 0x046D, 0xC08B, 0xFF00);
         let mouse = device("g502", &scan_devices(sys.path(), None));
         assert_eq!(
             mouse,
@@ -308,7 +308,7 @@ mod tests {
                 id: "g502",
                 name: "Logitech G502 SE HERO".into(),
                 present: true,
-                devnode: "/dev/hidraw1".into(),
+                devnode: "/dev/hidraw95".into(),
                 capabilities: &[],
             }
         );
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn placa_pelo_nome_dmi() {
         let sys = tempfile::tempdir().unwrap();
-        add_hidraw(sys.path(), "hidraw2", 0x048D, 0x5702, 0xFF89);
+        add_hidraw(sys.path(), "hidraw97", 0x048D, 0x5702, 0xFF89);
         let board = device("it5702", &scan_devices(sys.path(), None));
         assert_eq!(board.name, "Placa-mãe (IT5702)");
 
@@ -344,13 +344,13 @@ mod tests {
     #[test]
     fn devnode_muda() {
         let sys = tempfile::tempdir().unwrap();
-        add_hidraw(sys.path(), "hidraw3", 0x1044, 0x7A4D, 0x0000);
+        add_hidraw(sys.path(), "hidraw99", 0x1044, 0x7A4D, 0x0000);
         let before = scan_devices(sys.path(), None);
-        fs::remove_dir_all(sys.path().join("class/hidraw/hidraw3")).unwrap();
-        add_hidraw(sys.path(), "hidraw5", 0x1044, 0x7A4D, 0x0000);
+        fs::remove_dir_all(sys.path().join("class/hidraw/hidraw99")).unwrap();
+        add_hidraw(sys.path(), "hidraw98", 0x1044, 0x7A4D, 0x0000);
         let after = scan_devices(sys.path(), None);
         assert_ne!(before, after);
-        assert_eq!(after[0].devnode, "/dev/hidraw5");
+        assert_eq!(after[0].devnode, "/dev/hidraw98");
         assert_eq!(scan_devices(sys.path(), None), after);
     }
 

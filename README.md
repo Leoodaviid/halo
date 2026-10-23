@@ -197,9 +197,9 @@ A extensão (`extension/`, UUID `halo@leoodaviid.github.io`, GNOME Shell 50) é 
 
 - Na barra, o ícone do halo e a temperatura do líquido em graus inteiros (`38°`). Com a temperatura inválida (`CoolantValid` falso), aparece `--`, e sem leitura (`Available` falso) aparece só o ícone.
 - Com o `halod` fora do D-Bus, o ícone fica esmaecido.
-- Ao clicar, o painel mostra o estado do daemon e quantos aparelhos estão presentes. Com o daemon fora do ar, mostra o aviso e as ações "Iniciar halod" e "Ver registro" (as últimas linhas do `journalctl --user -u halod.service`), desabilitadas se a unidade não estiver instalada.
+- Ao clicar, o painel mostra um carrossel com os aparelhos que o `halod` encontrou: o desenho, o nome e o status ("Disponível" com controle de LED, "Detectado" sem), com setas, indicador de página, roda do mouse e as teclas Esquerda e Direita. O anel do Waterforce aparece na cor do último LED que o `halod` aplicou (cinza enquanto ele não aplicou nada). Os aparelhos sem controle mostram o aviso de controle em desenvolvimento, e o liga/desliga do cabeçalho fica desabilitado nesta versão. Com o daemon fora do ar, mostra o aviso e as ações "Iniciar halod" e "Ver registro" (as últimas linhas do `journalctl --user -u halod.service`), desabilitadas se a unidade não estiver instalada.
 
-A extensão não sobe o daemon sozinha: ela só observa o nome no D-Bus, e iniciar é sempre um gesto seu. Um `systemctl --user stop halod.service` fica respeitado. O painel completo (carrossel, controles de LED, perfis, preferências) vem nas próximas changes (ver [docs/roadmap.md](docs/roadmap.md)).
+A extensão não sobe o daemon sozinha: ela só observa o nome no D-Bus, e iniciar é sempre um gesto seu. Um `systemctl --user stop halod.service` fica respeitado. O resto do painel (controles de LED, perfis, preferências) vem nas próximas changes (ver [docs/roadmap.md](docs/roadmap.md)).
 
 Os erros da extensão aparecem no registro do Shell, que no Ubuntu fica no journal do usuário. Este comando devolve as linhas do `gnome-shell` (testado aqui, no GNOME Shell 50 com Wayland):
 

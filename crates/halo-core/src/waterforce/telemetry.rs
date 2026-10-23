@@ -181,7 +181,7 @@ mod tests {
 
     fn add_hidraw(sys: &Path) {
         // Coleção de topo com usage page 0x0000, como o descritor do Castor3.
-        let dir = sys.join("class/hidraw/hidraw2/device");
+        let dir = sys.join("class/hidraw/hidraw99/device");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("uevent"), CASTOR3_UEVENT).unwrap();
         fs::write(

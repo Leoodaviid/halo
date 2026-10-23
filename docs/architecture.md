@@ -22,19 +22,20 @@ Se for preciso uma tela de edição maior (desenhar efeitos por LED, por exemplo
 
 O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (ver [docs/ui/README.md](ui/README.md)), que segue o canvas "halo · Apple HIG" com o destaque do GNOME. O painel é só um cliente do `halod`: ele não abre hidraw nem lê o sysfs.
 
-A extensão sai em três changes: `gnome-shell-extension` (barra, estado do daemon e atalhos, em andamento), `gnome-panel-led` (carrossel e controles de LED) e `gnome-panel-extras` (perfis, detalhes, erros, preferências e fonte CPU). O que está abaixo descreve o painel completo; o que já existe está marcado.
+A extensão sai em quatro changes: `gnome-shell-extension` (barra, estado do daemon e atalhos), `gnome-panel-devices` (carrossel e desenhos dos aparelhos, só lendo do daemon), `gnome-panel-led` (controles do LED, liga/desliga, fila de `Apply` e religar) e `gnome-panel-extras` (perfis, detalhes, erros, preferências e fonte CPU). O que está abaixo descreve o painel completo; o que já existe está marcado.
 
 **Estrutura da extensão** (`extension/`, JavaScript puro em ESM, UUID `halo@leoodaviid.github.io`):
 
-- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`).
-- `daemon.js`: o estado único (dono do nome, telemetria, aparelhos presentes, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança.
+- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`, `carousel.js`, `art.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`). `carousel.js` decide as páginas, a seleção quando a lista muda, o status e a roda; `art.js` gera o texto SVG de cada aparelho com a cor do LED já aplicada (`deviceSvg`, `ledPaint`).
+- `daemon.js`: o estado único (dono do nome, telemetria, lista de aparelhos e contagem dos presentes, `LastApplied` do LED, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança.
+- `carousel.js`: o carrossel no St (`HaloCarousel`), com o contêiner público `body` e o sinal `device-changed`.
 - `indicator.js`: só desenha, a partir do estado e das funções de `lib/`.
 - `extension.js`: `enable()` cria o indicador, e `disable()` desfaz tudo (sinais, proxies, subprocessos e cancelables).
 
-**D-Bus sem ativação:** os proxies do `halod` (`Manager` e `Waterforce.Telemetry`) são criados com `DO_NOT_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
+**D-Bus sem ativação:** os proxies do `halod` (`Manager`, `Waterforce.Telemetry` e `Waterforce.Led`, este só com a propriedade `LastApplied`, sem o `Apply`) são criados com `DO_NOT_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
 
 - **Barra (já existe, só com o líquido):** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
-- **Aparelhos:** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
+- **Aparelhos (já existe, sem os controles):** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
 - **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
 - **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
 - **Daemon parado (já existe):** "Iniciar halod" pede `ResetFailedUnit` e depois `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas quando a unidade não está instalada (`packaging/install.sh`): o `LoadUnit` devolve `LoadState` igual a `not-found`. O registro roda `journalctl` num `Gio.Subprocess`, com `Cancellable`.
@@ -46,8 +47,8 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Indicador com ícone e `38°` numa pílula (já existe) | `PanelMenu.Button` com um `St.BoxLayout` (ícone simbólico + `St.Label`) |
 | Painel em material translúcido | O `menu` do `PanelMenu.Button` com CSS próprio e um `Shell.BlurEffect` em modo `BACKGROUND` (sem blur, se pesar: fundo opaco com a mesma cor) |
 | Blocos agrupados | `St.BoxLayout` com fundo e raio no CSS |
-| Carrossel com transição | `St.Widget` e `ease()` do Clutter; roda pelo `scroll-event` |
-| Desenho do aparelho com o anel tingido | `St.DrawingArea` com Cairo, ou camadas de SVG em que só a camada do LED é simbólica e recebe a cor |
+| Carrossel com transição (já existe) | `St.Widget` e `ease()` do Clutter; roda pelo `scroll-event`, Esquerda e Direita com o foco no desenho |
+| Desenho do aparelho com o anel tingido (já existe) | SVG gerado como texto (`lib/art.js`) com a cor do LED já aplicada, num `St.Icon` por `Gio.BytesIcon` |
 | Swatches | `St.Button` redondos com a cor no estilo inline |
 | Barra de matiz | `St.DrawingArea` com gradiente Cairo e um marcador arrastável |
 | Campo hex | `St.Entry` |
@@ -55,7 +56,7 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Popup de efeito e menu de perfis | Um `PopupMenu.PopupMenu` próprio ancorado no botão |
 | Linha de status e itens de menu | `St.Label` e `PopupMenu.PopupMenuItem` |
 | Iniciar halod e ver registro (já existe) | Proxy de `org.freedesktop.systemd1` e `Gio.Subprocess` com `journalctl` |
-| Liga/desliga | O switch do `PopupMenu` |
+| Liga/desliga (já existe, desabilitado até a `gnome-panel-led`) | O switch do `PopupMenu` |
 | Detalhes, Aparelhos e Registro (só o registro existe) | Troca de página dentro do mesmo menu |
 | Copiar comando | `St.Clipboard` |
 | Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |

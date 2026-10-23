@@ -11,7 +11,7 @@ fn halo() -> Command {
 /// Árvore sysfs falsa com um hidraw de outro VID:PID.
 fn sys_with_other_device() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
-    let dir = root.path().join("class/hidraw/hidraw0/device");
+    let dir = root.path().join("class/hidraw/hidraw96/device");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("uevent"), "HID_ID=0003:0000046D:0000C08B\n").unwrap();
     fs::write(
