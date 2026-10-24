@@ -4,7 +4,11 @@
 
 Ver `proposal.md` (Why) e, na spec `gnome-panel`, os requisitos "Controles de iluminação do Waterforce", "Controles com o LED desligado", "Escolha de cor", "Aplicação só ao concluir o gesto", "Estado mostrado vem do daemon", "Liga e desliga", "Efeitos de paleta só para leitura" e a cor do LED em "Tema do sistema". O delta desta change acrescenta dois cenários (falha com mudança pendente e religar com perfil desligado). O que restringe o desenho:
 
-- **Depois da `gnome-panel-devices`** (contrato entre as duas changes): `extension/lib/carousel.js`, `extension/lib/art.js` (`deviceSvg(device, led)`, `ledPaint(lastApplied)`, com `led = { color, off, rainbow }`), `extension/carousel.js` (St, com o contêiner `body` do aparelho atual e o sinal/callback `device-changed`), o `daemon.js` com `state.devices` (lista completa, com `capabilities`) e `state.lastApplied` (`{effect, colors, brightness, speed}` ou `null`, de um proxy de `Waterforce.Led` com `DO_NOT_AUTO_START`), e o liga/desliga desabilitado no cabeçalho. No `body` do Waterforce, um aviso provisório.
+- **Depois da `gnome-panel-devices`** (contrato entre as duas changes): `extension/lib/carousel.js`, `extension/lib/art.js` (`deviceSvg(device, led)`, `ledPaint(lastApplied)`, com `led = { color, off, rainbow }`), `extension/carousel.js` (St, com o contêiner `body` do aparelho atual e o sinal/callback `device-changed`), o `daemon.js` com `state.devices` (lista completa, com `capabilities`) e `state.lastApplied` (`{effect, colors, brightness, speed}` ou `null`, de um proxy de `Waterforce.Led` com `DO_NOT_AUTO_START`), e o liga/desliga desabilitado no cabeçalho. No `body` do Waterforce, um aviso provisório. O que a implementação fixou (arquivada em `openspec/changes/archive/2026-10-23-gnome-panel-devices`):
+  - O painel tem largura fixa: 304 px de conteúdo no `menu.box` (320 px com o padding e a borda do menu do Shell). O `body` fica dentro do `HaloCarousel`, abaixo do bloco do aparelho, com 8 px entre os blocos, e tudo o que entra nele precisa caber nessa largura: um texto com quebra de linha sem largura limitada faz o painel crescer.
+  - Os blocos do protótipo (`.tile`) são `.halo-tile`. As medidas ficam no `extension/stylesheet.css`, e as cores de cada tema em `stylesheet-light.css` e `stylesheet-dark.css`, que fazem `@import` do primeiro; o Shell carrega a variante do estilo atual e a troca sozinho.
+  - O carrossel já tem `setLed(led)`, que recebe `ledPaint(...)`.
+  - O indicador ignora `update()` depois do sinal `destroy`: o Shell o destrói ao sair sem chamar `disable()`.
 - **`Waterforce.Led` do `halod`** (`crates/halo-daemon/src/bus.rs`):
   - `Apply(s effect, as colors, y brightness, y speed)`. Brilho e velocidade 0 valem o padrão do efeito (10 e 5, `Brightness::default` e `Speed::default` em `led.rs`). O `off` exige brilho 0 (`LedSetting::new` recusa brilho no `off`). Cores em `RRGGBB`; um efeito sem cor recusa cores (`ColorNotAccepted`), um de cor única aceita uma, uma paleta curta é completada até 8 repetindo a última.
   - `LastApplied` (`a{sv}`): vazio antes da primeira aplicação do processo; só muda com sucesso, e o `PropertiesChanged` sai **antes** da resposta do `Apply` (`apply_led` emite e só depois devolve). Guarda o `off` com brilho 0, as cores como o daemon as normalizou (minúsculas, paleta com 8) e a velocidade padrão quando foi pedida 0. Fica só em memória.
@@ -12,9 +16,9 @@ Ver `proposal.md` (Why) e, na spec `gnome-panel`, os requisitos "Controles de il
 - **`Profiles`**: `ActiveProfile` (vazio sem perfil ativo) e `Get(name) -> a{sv}`, em que a seção `waterforce.led` é um `a{sv}` com `effect` e, opcionais, `colors`, `brightness` e `speed` (`profiles.rs`, `to_dbus`). Os perfis ficam em `$XDG_CONFIG_HOME/halo/profiles/<nome>.toml` e o ativo em `$XDG_STATE_HOME/halo/active-profile`.
 - **O `halod` não registra os `Apply`**: os únicos `eprintln!` são o início, os erros dos ticks e a mensagem de fim (`main.rs`, `ticks.rs`). O journal não serve para contar escritas.
 - **`Slider` do Shell 50** (`resource:///org/gnome/shell/ui/slider.js`, lido do `libshell-18.so` desta máquina): valor contínuo de 0 a 1; `drag-begin` e `drag-end` vêm do `Clutter.PanGesture`, e um clique sem arraste também emite os dois. A roda do mouse (`vfunc_scroll_event`) e as setas (`vfunc_key_press_event`, passo de 0,1) mudam o valor **sem** `drag-begin`/`drag-end`.
-- **Sysfs falso dos scripts de teste, antes da `gnome-panel-devices`** (conferido nesta máquina; aquela change cria o `scripts/dev/fake-sysfs.sh` em `hidraw99` e passa a fumaça e os testes do Rust a ele, decisão 9 dela):
-  - `scripts/dev/headless-smoke.sh` cria o Castor3 falso como `class/hidraw/hidraw3` com a usage page `0x0000`, que é a do Castor3 (`waterforce::DEVICE`). A busca casa e devolve `/dev/hidraw3`, porque o `devnode` é sempre `/dev/<nome>` (`hid/discovery.rs`). Nesta máquina, o `/dev/hidraw3` real é o **teclado Redragon** (`258a:013b`, Sino Wealth), hoje `0600 root`. Um `Apply` nessa fumaça falharia com `PermissionDenied` ao abrir o teclado, e não com `NotFound`; se o nó ganhasse permissão, o `halod` mandaria `99 DE 00` e pacotes de LED ao teclado.
-  - `scripts/dev/nested-shell.sh --daemon` sobe o `halod` lendo o `/sys` real, em que o Castor3 é o `hidraw2`, com `uaccess` pela regra do halo. Com os controles desta change, um clique no Shell aninhado escreveria no Waterforce.
+- **Sysfs falso dos scripts de teste** (depois da `gnome-panel-devices`, decisão 9 dela):
+  - `scripts/dev/fake-sysfs.sh` monta o Castor3 falso em `class/hidraw/hidraw99` e o hwmon, e recusa rodar se `/dev/hidraw99` existir. O `halod` traduz o nome em `/dev/<nome>` (`hid/discovery.rs`), então qualquer abertura falha com `NotFound`. A fumaça já o usa, e os testes do Rust usam `hidraw97` a `hidraw99`. Antes, a fumaça usava `hidraw3`, que nesta máquina é o teclado Redragon (`258a:013b`).
+  - `scripts/dev/nested-shell.sh --daemon` ainda sobe o `halod` lendo o `/sys` real, em que o Castor3 é o `hidraw2`, com `uaccess` pela regra do halo. Com os controles desta change, um clique no Shell aninhado escreveria no Waterforce; por isso a task 1.3 o passa ao sysfs falso.
 - Monitorar o D-Bus da sessão não exige root: `busctl --user monitor io.github.leoodaviid.Halo1` funcionou nesta máquina como usuário comum. O `dbus-monitor` está instalado.
 
 ## Goals / Non-Goals
@@ -45,10 +49,12 @@ extension/
   ledControls.js         St: efeito, cor, brilho, velocidade, aviso de estado desconhecido, linha de erro mínima
   daemon.js              + apply(setting), activeProfileLed(), lastOn zerado quando o dono muda
   indicator.js           liga/desliga habilitado; troca o aviso provisório do body pelos controles
-  stylesheet.css         + classes .halo-led-*
+  stylesheet.css         + medidas das classes .halo-led-*
+  stylesheet-light.css   + cores das classes .halo-led-* no tema claro
+  stylesheet-dark.css    + cores das classes .halo-led-* no tema escuro
   tests/ledState.test.js
 scripts/dev/
-  fake-sysfs.sh          sysfs falso compartilhado, com nó inexistente (decisão 11)
+  fake-sysfs.sh          já existe (gnome-panel-devices); passa a servir também ao nested (decisão 12)
   watch-led-applies.sh   monitor só de leitura dos Apply (decisão 12)
 ```
 
@@ -141,7 +147,8 @@ Alternativa: aplicar no `notify::value` com um atraso. Descartada: o arraste ger
 
 `controlsView` segue o `renderDevice` e o `shownSetting` do protótipo:
 - Com o LED ligado: o `draft`. Cor só em `HAS_COLOR`; velocidade habilitada em `usesSpeed`, senão "não se aplica"; paleta com o nome e as cores, sem edição, e o popup de efeito só com os nove de uma cor.
-- Com o LED desligado: cor, brilho e velocidade com os valores de `lastOn` (ou os padrões, sem `lastOn`), esmaecidos (classe CSS) e com `reactive` e `can_focus` falsos. O efeito e o switch continuam ativos.
+- Layout, como o protótipo: um bloco (`.halo-tile`, padding de 10 px e 12 px, 280 px úteis) com o efeito e a cor, e outro com o brilho e a velocidade, abaixo do bloco do aparelho. Nada no `body` pode pedir mais que a largura do painel.
+- Com o LED desligado: cor, brilho e velocidade com os valores de `lastOn` (ou os padrões, sem `lastOn`), esmaecidos pela opacidade do ator (0,4, como o switch desabilitado; o CSS do St não tem `opacity`) e com `reactive` e `can_focus` falsos. O efeito e o switch continuam ativos.
 - Estado desconhecido (`draft` nulo): o aviso de que o estado do LED não é conhecido, o botão de efeito como "Escolher efeito", cor, brilho e velocidade travados como no desligado. Nada é enviado até um gesto.
 - O switch fica ligado quando o `draft` existe e não é `off`. Ele fica insensível sem dono, com algo em voo ou durante a leitura do perfil (`powering`), como no protótipo. No estado desconhecido, ele aparece desligado e ativo: clicar é religar (decisão 8), que é um gesto do usuário.
 
@@ -176,6 +183,7 @@ Alternativa: o anel só com o `LastApplied`, como na `gnome-panel-devices`. Desc
 
 - O proxy de `Waterforce.Led` da `gnome-panel-devices` ganha o método `Apply` no XML. `daemon.apply(setting)` chama `ApplyAsync(effect, colors, brightness, speed)` com o `Cancellable` do `HaloDaemon` e devolve `{ok}` ou `{error: {name, message}}`, com o nome tirado por `Gio.DBusError.get_remote_error`. Com `DO_NOT_AUTO_START`, a chamada também não ativa o daemon.
 - Proxy novo de `io.github.leoodaviid.Halo1.Profiles` (`ActiveProfile` e `Get`), criado como os outros, com `DO_NOT_AUTO_START` e o mesmo `Cancellable`.
+- A resposta de um `Apply` que chegue depois do `destroy()` não desenha nada: o `Cancellable` do `HaloDaemon` é cancelado no `disable()`, e o indicador ignora `update()` depois do `destroy` (o Shell o destrói ao sair sem chamar `disable()`).
 - O `ledState` vive no `daemon.js` junto do resto do estado, para que a mudança de dono zere a fila e o `lastOn` no mesmo lugar em que o `lastApplied` já é zerado.
 - Tempo limite do `Apply`: o padrão do D-Bus. O `halod` responde em até ~2 s no pior caso do `DE 00` (`RESPONSE_TIMEOUT`), mais a espera do `flock`.
 
@@ -248,7 +256,7 @@ Já vistos no aparelho: `static`, `pulse`, `cycle`, `rainbow` e `tri-color`. Ain
 - [`disable()` com um `Apply` em voo] → O resultado é ignorado, mas o `halod` termina o pedido: no máximo um `B6` a mais, que o monitor da conferência mostra.
 - [Outro cliente aplicando ao mesmo tempo] → O painel segue o `LastApplied` quando não tem nada em voo nem pendente; com algo em voo, a resposta do próprio pedido vence, e o `LastApplied` seguinte corrige.
 - [Equivalência errada entre pedido e `LastApplied`] → `sameEffective` testada com o que o `halod` devolve de verdade (velocidade 5 no estático pedido com 0, paleta com 8, `off` com brilho 0). Um erro aqui gera um `Apply` a mais, e a conferência o mostraria.
-- [`ledPaint` da `gnome-panel-devices` com outro formato] → O contrato fixa o formato do `LastApplied`; se a implementação de lá divergir, a task 3.2 adapta a chamada aqui sem mudar a outra change.
+- [`ledPaint` da `gnome-panel-devices` com outro formato] → Conferido na implementação de lá: `ledPaint` recebe o formato do `LastApplied`, e o carrossel tem `setLed`. A task 3.2 só chama `setLed(ledPaint(draft))`.
 - [Atualizar a extensão exige sair e entrar] → Conferência visual no Shell aninhado antes de instalar.
 
 ## Migration Plan

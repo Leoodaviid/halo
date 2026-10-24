@@ -15,6 +15,9 @@ export default class HaloExtension extends Extension {
             start: () => this._daemon?.startService(),
             journal: () => this._daemon?.showJournal(),
             back: () => this._daemon?.hideJournal(),
+            ledDraft: s => this._daemon?.ledDraft(s),
+            ledCommit: s => this._daemon?.ledCommit(s),
+            ledPower: () => this._daemon?.ledPower(),
         });
         this._daemon = new HaloDaemon(INITIAL_STATE, state => this._indicator?.update(state));
         // Com o daemon fora do ar, o estado da unidade é conferido de novo a

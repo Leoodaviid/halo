@@ -197,9 +197,9 @@ A extensão (`extension/`, UUID `halo@leoodaviid.github.io`, GNOME Shell 50) é 
 
 - Na barra, o ícone do halo e a temperatura do líquido em graus inteiros (`38°`). Com a temperatura inválida (`CoolantValid` falso), aparece `--`, e sem leitura (`Available` falso) aparece só o ícone.
 - Com o `halod` fora do D-Bus, o ícone fica esmaecido.
-- Ao clicar, o painel mostra um carrossel com os aparelhos que o `halod` encontrou: o desenho, o nome e o status ("Disponível" com controle de LED, "Detectado" sem), com setas, indicador de página, roda do mouse e as teclas Esquerda e Direita. O anel do Waterforce aparece na cor do último LED que o `halod` aplicou (cinza enquanto ele não aplicou nada). Os aparelhos sem controle mostram o aviso de controle em desenvolvimento, e o liga/desliga do cabeçalho fica desabilitado nesta versão. Com o daemon fora do ar, mostra o aviso e as ações "Iniciar halod" e "Ver registro" (as últimas linhas do `journalctl --user -u halod.service`), desabilitadas se a unidade não estiver instalada.
+- Ao clicar, o painel mostra um carrossel com os aparelhos que o `halod` encontrou: o desenho, o nome e o status ("Disponível" com controle de LED, "Detectado" sem), com setas, indicador de página, roda do mouse e as teclas Esquerda e Direita. O anel do Waterforce aparece na cor do último LED que o `halod` aplicou (cinza enquanto ele não aplicou nada). No Waterforce, o painel controla o LED: efeito (os nove de uma cor), cor (cores prontas, matiz e hex), brilho de 1 a 10 e velocidade de 1 a 5, e o liga/desliga do cabeçalho. Cada mudança vira um único `Led.Apply` quando o gesto termina (ao soltar o slider, escolher a cor ou o efeito, ou Enter no hex), nunca durante um arraste, porque cada aplicação grava no aparelho (`99 B6`). A roda do mouse não muda os sliders. Religar volta ao último estado ligado, depois ao LED do perfil ativo e, por fim, ao `cycle`. Os efeitos de paleta aplicados por um perfil aparecem só para leitura. Os aparelhos sem controle mostram o aviso de controle em desenvolvimento. Com o daemon fora do ar, mostra o aviso e as ações "Iniciar halod" e "Ver registro" (as últimas linhas do `journalctl --user -u halod.service`), desabilitadas se a unidade não estiver instalada.
 
-A extensão não sobe o daemon sozinha: ela só observa o nome no D-Bus, e iniciar é sempre um gesto seu. Um `systemctl --user stop halod.service` fica respeitado. O resto do painel (controles de LED, perfis, preferências) vem nas próximas changes (ver [docs/roadmap.md](docs/roadmap.md)).
+A extensão não sobe o daemon sozinha: ela só observa o nome no D-Bus, e iniciar é sempre um gesto seu. Um `systemctl --user stop halod.service` fica respeitado. O resto do painel (perfis, detalhes, mensagens de erro, preferências) vem na próxima change (ver [docs/roadmap.md](docs/roadmap.md)).
 
 Os erros da extensão aparecem no registro do Shell, que no Ubuntu fica no journal do usuário. Este comando devolve as linhas do `gnome-shell` (testado aqui, no GNOME Shell 50 com Wayland):
 
@@ -214,12 +214,15 @@ O filtro `-u org.gnome.Shell@wayland.service` não serve: ele devolve `-- No ent
 ```sh
 sh extension/tests/run.sh                 # lógica pura (barra e painel), com o gjs, sem o Shell
 sh scripts/dev/headless-smoke.sh          # precisa de: cargo build -p halo-daemon
-sh scripts/dev/nested-shell.sh [--daemon] # precisa do mutter-dev-bin
+sh scripts/dev/nested-shell.sh [--daemon] [--profile]  # precisa do mutter-dev-bin
+sh scripts/dev/watch-led-applies.sh [--address <endereço>]  # conta os Led.Apply e os B6
 ```
 
 - `run.sh` roda os testes de `extension/lib/` com `gjs -m` e termina com código diferente de 0 se algum falhar.
 - `headless-smoke.sh` carrega a extensão num GNOME Shell headless e confere que ela fica `ACTIVE`, que sobrevive a um ciclo `disable`/`enable` e que não deixa `JS ERROR` no log. Ele usa um `halod` de teste, com um sysfs falso, e confere que a extensão não ativa o `halod`.
-- `nested-shell.sh` abre um Shell aninhado numa janela, com a extensão do repositório, para ver e clicar no painel. Sem `--daemon`, o painel mostra o daemon fora do ar. Com `--daemon`, sobe um `halod` de teste que lê o `/sys` real (só leitura). Um argumento inválido termina com código 2.
+- `nested-shell.sh` abre um Shell aninhado numa janela, com a extensão do repositório, para ver e clicar no painel. Sem `--daemon`, o painel mostra o daemon fora do ar. Com `--daemon`, sobe um `halod` de teste com o sysfs falso de `scripts/dev/fake-sysfs.sh`: o carrossel mostra só o Waterforce, e todo `Led.Apply` falha com `NotFound`, porque o nó (`hidraw99`) não existe. Nenhum modo de teste lê o `/sys` real. `--profile` grava um perfil `teste` com o LED tri-color e o marca como ativo, para testar o religar sem estado conhecido. Ao fechar a janela, o script mostra os `Led.Apply` que passaram pelo barramento do teste, com os argumentos. Um argumento inválido termina com código 2.
+
+- `watch-led-applies.sh` só observa o D-Bus (com o `dbus-monitor`, sem root e sem chamar nenhum método do `halod`): mostra cada `Led.Apply` com os argumentos, cada sucesso e cada erro, e no Ctrl+C os totais. Cada `Apply` que dá certo muda o `LastApplied` e manda ao Waterforce um único `99 B6`, que grava no aparelho; um erro não manda nenhum, salvo um `Device` no meio da sequência, marcado como incerto. Sem `--address`, observa o D-Bus da sessão; o `nested-shell.sh` mostra o comando com o endereço do barramento do teste.
 
 Os dois scripts de Shell rodam isolados, com `HOME`, `XDG_*` e `XDG_RUNTIME_DIR` próprios e um D-Bus próprio: um Shell de teste com o runtime real cria `/run/user/<uid>/gnome-shell-disable-extensions`, e a sessão desliga todas as extensões no próximo início. Ao terminar, eles conferem que esse marcador não apareceu.
 

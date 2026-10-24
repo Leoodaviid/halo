@@ -26,18 +26,24 @@ A extensão sai em quatro changes: `gnome-shell-extension` (barra, estado do dae
 
 **Estrutura da extensão** (`extension/`, JavaScript puro em ESM, UUID `halo@leoodaviid.github.io`):
 
-- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`, `carousel.js`, `art.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`). `carousel.js` decide as páginas, a seleção quando a lista muda, o status e a roda; `art.js` gera o texto SVG de cada aparelho com a cor do LED já aplicada (`deviceSvg`, `ledPaint`).
-- `daemon.js`: o estado único (dono do nome, telemetria, lista de aparelhos e contagem dos presentes, `LastApplied` do LED, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança.
+- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`, `carousel.js`, `art.js`, `ledState.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`). `carousel.js` decide as páginas, a seleção quando a lista muda, o status e a roda; `art.js` gera o texto SVG de cada aparelho com a cor do LED já aplicada (`deviceSvg`, `ledPaint`); `ledState.js` decide tudo o que leva a um `Led.Apply`: os controles visíveis (`controlsView`), o pedido (`request`), a igualdade com o aplicado (`sameEffective`), a fila (`commit`, `finished`) e o religar (`powerTarget`, `profileLed`).
+- `daemon.js`: o estado único (dono do nome, telemetria, lista de aparelhos e contagem dos presentes, `LastApplied` e o estado do LED de `ledState.js`, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança. O estado do LED (fila, `lastOn`, pedido em voo) zera quando o dono do nome muda, porque um `halod` novo nasce com o `LastApplied` vazio.
 - `carousel.js`: o carrossel no St (`HaloCarousel`), com o contêiner público `body` e o sinal `device-changed`.
+- `ledControls.js`: os controles do LED do Waterforce no `body` (efeito, cor, brilho e velocidade), que só mostram o `controlsView` e chamam o rascunho durante o gesto e o `commit` no fim dele.
 - `indicator.js`: só desenha, a partir do estado e das funções de `lib/`.
 - `extension.js`: `enable()` cria o indicador, e `disable()` desfaz tudo (sinais, proxies, subprocessos e cancelables).
 
-**D-Bus sem ativação:** os proxies do `halod` (`Manager`, `Waterforce.Telemetry` e `Waterforce.Led`, este só com a propriedade `LastApplied`, sem o `Apply`) são criados com `DO_NOT_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
+**D-Bus sem ativação:** os proxies do `halod` (`Manager`, `Waterforce.Telemetry`, `Waterforce.Led` e `Profiles`, este só com o `ActiveProfile` e o `Get`) são criados com `DO_NOT_AUTO_START`, e o `Led.Apply` sai com `NO_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
 
 - **Barra (já existe, só com o líquido):** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
-- **Aparelhos (já existe, sem os controles):** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
-- **Aplicação:** um `Led.Apply` por gesto concluído (soltar o slider, escolher cor ou efeito, Enter no hex), no máximo um em voo, e só o último valor pendente é enviado. Cada aplicação termina com `B6`, então nada é enviado durante um arraste.
-- **Religar:** o último estado ligado desta instância do daemon, depois o LED do perfil ativo e, por fim, `cycle`. O `LastApplied` só existe em memória.
+- **Aparelhos (já existe):** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
+- **Aplicação (já existe):** um `Led.Apply` por gesto concluído, no máximo um em voo, e só o último valor pendente é enviado; nenhum pedido igual ao aplicado, e uma falha descarta o pendente e volta os controles ao aplicado. Cada aplicação termina com `B6`, então nada é enviado durante um gesto, e o desenho do anel segue o rascunho. O fim do gesto em cada controle:
+  - brilho e velocidade: o `drag-end` do `Slider` (arraste ou clique); as setas andam um inteiro e aplicam 300 ms depois da última tecla; a roda do mouse fica desligada, porque no Shell ela muda o valor sem `drag-end`;
+  - matiz: o fim do `Clutter.PanGesture`; as setas andam 10° e aplicam 300 ms depois;
+  - cores prontas: 300 ms depois do último clique;
+  - hex: Enter, ou a perda do foco se o texto foi editado; inválido não envia;
+  - efeito: escolher um item diferente do atual.
+- **Liga e desliga (já existe):** desligar pede o `off`. Religar pede o último estado ligado desta instância do daemon, depois o LED do perfil ativo (lido com `Profiles.Get`, sem `Activate`, e ignorado se for o `off`) e, por fim, `cycle`. O `LastApplied` só existe em memória.
 - **Daemon parado (já existe):** "Iniciar halod" pede `ResetFailedUnit` e depois `StartUnit("halod.service", "replace")` ao systemd do usuário (`org.freedesktop.systemd1`, D-Bus da sessão), e "Ver registro" mostra as últimas 20 linhas de `journalctl --user -u halod.service`. As duas ficam desabilitadas quando a unidade não está instalada (`packaging/install.sh`): o `LoadUnit` devolve `LoadState` igual a `not-found`. O registro roda `journalctl` num `Gio.Subprocess`, com `Cancellable`.
 
 Equivalência de cada elemento do protótipo no St (Shell 50):
@@ -49,19 +55,21 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Blocos agrupados | `St.BoxLayout` com fundo e raio no CSS |
 | Carrossel com transição (já existe) | `St.Widget` e `ease()` do Clutter; roda pelo `scroll-event`, Esquerda e Direita com o foco no desenho |
 | Desenho do aparelho com o anel tingido (já existe) | SVG gerado como texto (`lib/art.js`) com a cor do LED já aplicada, num `St.Icon` por `Gio.BytesIcon` |
-| Swatches | `St.Button` redondos com a cor no estilo inline |
-| Barra de matiz | `St.DrawingArea` com gradiente Cairo e um marcador arrastável |
-| Campo hex | `St.Entry` |
-| Brilho e velocidade no estilo da Central de Controle | Subclasse do `Slider` de `resource:///org/gnome/shell/ui/slider.js` com o `vfunc_repaint` próprio, aplicando no `drag-end` |
-| Popup de efeito e menu de perfis | Um `PopupMenu.PopupMenu` próprio ancorado no botão |
+| Swatches (já existe) | `St.Button` redondos com a cor no estilo inline |
+| Barra de matiz (já existe) | `St.DrawingArea` com gradiente Cairo e um `Clutter.PanGesture` |
+| Campo hex (já existe) | `St.Entry` |
+| Brilho e velocidade no estilo da Central de Controle (já existe) | Subclasse do `Slider` de `resource:///org/gnome/shell/ui/slider.js` com o `vfunc_repaint` próprio (as cores em `-halo-slider-*` no CSS de cada tema), aplicando no `drag-end` |
+| Popup de efeito (já existe) e menu de perfis | Um `PopupMenu.PopupMenu` próprio ancorado no botão, com um `PopupMenuManager` próprio |
 | Linha de status e itens de menu | `St.Label` e `PopupMenu.PopupMenuItem` |
 | Iniciar halod e ver registro (já existe) | Proxy de `org.freedesktop.systemd1` e `Gio.Subprocess` com `journalctl` |
-| Liga/desliga (já existe, desabilitado até a `gnome-panel-led`) | O switch do `PopupMenu` |
+| Liga/desliga (já existe) | O `PopupMenu.Switch` dentro de um `St.Button` |
 | Detalhes, Aparelhos e Registro (só o registro existe) | Troca de página dentro do mesmo menu |
 | Copiar comando | `St.Clipboard` |
 | Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |
 
 Pré-requisitos no `halod` para a extensão: o `Devices` com nome e capacidades (change `daemon-device-status`) e a temperatura da CPU (`waterforce-cpu-feed`).
+
+**Testes sem o aparelho.** Nenhum script de teste sobe o `halod` com o `/sys` real: a fumaça e o `nested-shell.sh --daemon` usam o sysfs falso de `scripts/dev/fake-sysfs.sh`, com o Castor3 em `hidraw99`, que não existe nesta máquina, e o script recusa rodar se `/dev/hidraw99` existir. O `halod` acha o Waterforce, mas qualquer `Led.Apply` falha com `NotFound` ao abrir o nó, antes de qualquer byte. A fumaça confere isso com um `Apply` antes de subir o Shell e exige zero `Apply` da extensão sem gesto; o `nested-shell.sh` mostra os `Apply` do barramento do teste ao fechar; e o `scripts/dev/watch-led-applies.sh` conta os `Apply` e os `B6` de qualquer barramento, inclusive o da sessão, sem chamar nenhum método.
 
 ## Daemon (`halod`, change `halo-daemon`)
 

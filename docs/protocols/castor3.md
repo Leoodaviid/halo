@@ -248,7 +248,9 @@ Firmware 1.6, Waterforce X 240, com o `halo led waterforce` (`DE 00` antes de ca
 | `tri-color ff0000 00ff00 0000ff` | `C9 0B 64 0A 02 01`, `B0 0B FF0000 00FF00`, `B1`–`B3 0B 0000FF 0000FF`, `B6` | vermelho, verde e azul |
 | `pulse --speed 2` | `C9 02 64 04 02 01`, `CD FF 66 00`, `B6` | laranja pulsando devagar |
 
-Isso confirma o layout do GCC: o byte 3 do `C9` (`04`) mudou o ritmo, e o byte 2 (`64`) ficou como brilho. Os efeitos 04 a 08 e 0C a 0F e o desligado ainda não foram vistos no aparelho.
+Isso confirma o layout do GCC: o byte 3 do `C9` (`04`) mudou o ritmo, e o byte 2 (`64`) ficou como brilho.
+
+Em 2026-10-23, pelo painel do GNOME (`Led.Apply` do `halod`, mesmos pacotes), o `flash` (`04`), o `gradient` (`06`) e o desligado (estático com brilho 0 e `CD 00 00 00`) foram vistos no aparelho pela primeira vez e responderam como esperado, com um único `B6` cada (ver [hardware.md](../hardware.md), "LED pelo painel do GNOME"). Ainda não vistos: `05`, `07`, `08` e `0C` a `0F`.
 
 ### Não analisado
 

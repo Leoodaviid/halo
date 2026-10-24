@@ -13,7 +13,9 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {HaloCarousel} from './carousel.js';
+import {HaloLedControls} from './ledControls.js';
 import {ledPaint} from './lib/art.js';
+import {EMPTY as LED_EMPTY, controlsView} from './lib/ledState.js';
 import {lockedText} from './lib/carousel.js';
 import {journalText} from './lib/journal.js';
 import {barText} from './lib/temperature.js';
@@ -21,8 +23,17 @@ import {indicatorDimmed, panelView} from './lib/view.js';
 
 // Opacidade do indicador com o daemon fora do ar.
 const DIMMED_OPACITY = 128;
-// Liga/desliga desabilitado, como o .switch:disabled do protótipo (.4).
+// Liga/desliga insensível, como o .switch:disabled do protótipo (.4).
 const DISABLED_OPACITY = 102;
+
+// Medidas do corpo do menu e dos nossos itens, inline: eles também têm as
+// classes do tema do Shell (.popup-menu-content, .popup-menu-item), e um tema
+// de usuário (User Themes) vence o stylesheet.css da extensão. Painel de
+// 320 px, como o .material: 304 px de conteúdo e 8 px de padding, que
+// substituem o padding do tema.
+const PANEL_STYLE = 'width: 304px; padding: 8px; spacing: 8px; font-size: 13px;';
+const ITEM_STYLE = 'padding: 0; spacing: 0;';
+const HEADER_STYLE = 'padding: 4px 4px 2px 6px; spacing: 0;';
 
 // Estado antes de qualquer resposta do D-Bus.
 export const INITIAL_STATE = Object.freeze({
@@ -31,9 +42,14 @@ export const INITIAL_STATE = Object.freeze({
     devicesPresent: 0,
     devices: [],
     lastApplied: null,
+    led: LED_EMPTY,
     unit: 'unknown',
     journal: null,
 });
+
+function hasLed(device) {
+    return device?.id === 'waterforce' && device.capabilities.includes('led');
+}
 
 function button(label, onClick) {
     const b = new St.Button({
@@ -48,11 +64,14 @@ function button(label, onClick) {
 
 export const HaloIndicator = GObject.registerClass(
 class HaloIndicator extends PanelMenu.Button {
-    // handlers: { start(), journal(), back() }, chamados pelos botões do
-    // painel. Sem eles, os botões não fazem nada.
+    // handlers: { start(), journal(), back(), ledDraft(s), ledCommit(s),
+    // ledPower() }, chamados pelos botões e controles do painel. Sem eles,
+    // nada acontece.
     _init(extension, handlers = {}) {
         super._init(0.5, 'halo');
         this._handlers = handlers;
+        this._state = INITIAL_STATE;
+        this._ledControls = null;
 
         const box = new St.BoxLayout({style_class: 'panel-status-indicators-box halo-indicator'});
         const gicon = Gio.FileIcon.new(
@@ -67,6 +86,7 @@ class HaloIndicator extends PanelMenu.Button {
         this._box = box;
 
         this.menu.box.add_style_class_name('halo-panel');
+        this.menu.box.style = PANEL_STYLE;
         this._buildMenu();
         // O Shell destrói o indicador ao sair sem chamar disable(), e o daemon
         // ainda pode mandar um estado: depois do destroy, update() não desenha.
@@ -78,11 +98,13 @@ class HaloIndicator extends PanelMenu.Button {
     }
 
     _buildMenu() {
-        // Cabeçalho: o título e o liga/desliga. Nesta versão o liga/desliga
-        // fica desabilitado em todos os aparelhos.
+        // Cabeçalho: o título e o liga/desliga do LED do aparelho atual,
+        // insensível nos aparelhos sem LED, sem o halod, com um pedido em voo
+        // e durante a leitura do perfil.
         const header = new PopupMenu.PopupBaseMenuItem({
             reactive: false, can_focus: false, style_class: 'halo-item halo-header',
         });
+        header.style = HEADER_STYLE;
         header.add_child(new St.Label({
             text: 'halo',
             style_class: 'halo-title',
@@ -91,18 +113,22 @@ class HaloIndicator extends PanelMenu.Button {
         }));
         this._power = new PopupMenu.Switch(false);
         this._power.reactive = false;
-        this._power.can_focus = false;
-        this._power.add_style_pseudo_class('insensitive');
-        this._power.opacity = DISABLED_OPACITY;
-        this._power.y_align = Clutter.ActorAlign.CENTER;
-        this._power.accessible_name = 'Liga e desliga o LED';
-        header.add_child(this._power);
+        this._powerButton = new St.Button({
+            style_class: 'halo-power',
+            child: this._power,
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: 'Liga e desliga o LED',
+        });
+        this._powerButton.connect('clicked', () => this._handlers.ledPower?.());
+        header.add_child(this._powerButton);
         this.menu.addMenuItem(header);
 
         // Com o daemon no ar: o carrossel e, abaixo, o corpo do aparelho.
         this._carouselItem = new PopupMenu.PopupBaseMenuItem({
             reactive: false, can_focus: false, style_class: 'halo-item',
         });
+        this._carouselItem.style = ITEM_STYLE;
         this._carousel = new HaloCarousel();
         this._carousel.connect('device-changed', (_c, device) => this._fillBody(device));
         this._carouselItem.add_child(this._carousel);
@@ -146,17 +172,18 @@ class HaloIndicator extends PanelMenu.Button {
     _fillBody(device) {
         const body = this._carousel.body;
         body.destroy_all_children();
+        this._ledControls = null;
+        this._renderPower();
         if (!device)
             return;
-        if (device.capabilities.includes('led')) {
-            const note = new St.BoxLayout({
-                orientation: Clutter.Orientation.VERTICAL,
-                style_class: 'halo-tile halo-note',
-                x_expand: true,
+        // O único LED no D-Bus do halod é o do Waterforce.
+        if (hasLed(device)) {
+            this._ledControls = new HaloLedControls({
+                draft: s => this._handlers.ledDraft?.(s),
+                commit: s => this._handlers.ledCommit?.(s),
             });
-            note.add_child(this._wrapped('Os controles do LED chegam na próxima versão do painel.',
-                'halo-note-text'));
-            body.add_child(note);
+            this._ledControls.update(this._state.led, this._state.owner);
+            body.add_child(this._ledControls);
             return;
         }
         const locked = new St.BoxLayout({
@@ -182,9 +209,25 @@ class HaloIndicator extends PanelMenu.Button {
         return label;
     }
 
+    // O liga/desliga segue o LED do aparelho atual.
+    _renderPower() {
+        const device = this._carousel.device;
+        const view = controlsView(this._state.led, this._state.owner);
+        const sensitive = hasLed(device) && view.power.sensitive;
+        this._power.state = hasLed(device) && view.power.on;
+        this._powerButton.reactive = sensitive;
+        this._powerButton.can_focus = sensitive;
+        this._powerButton.opacity = sensitive ? 255 : DISABLED_OPACITY;
+        if (sensitive)
+            this._power.remove_style_pseudo_class('insensitive');
+        else
+            this._power.add_style_pseudo_class('insensitive');
+    }
+
     update(state) {
         if (this._destroyed)
             return;
+        this._state = state;
         const text = state.owner ? barText(state.telemetry) : '';
         this._temp.text = text;
         this._temp.visible = text !== '';
@@ -204,8 +247,11 @@ class HaloIndicator extends PanelMenu.Button {
         this._message.visible = down;
         if (!down) {
             this._carousel.setDevices(state.devices);
-            this._carousel.setLed(ledPaint(state.lastApplied));
+            // O anel segue o rascunho: durante o gesto ele já mostra a cor.
+            this._carousel.setLed(ledPaint(state.led.draft));
+            this._ledControls?.update(state.led, state.owner);
         }
+        this._renderPower();
         this._reason.visible = down && view.reason !== null;
         this._reason.label.text = down && view.reason ? view.reason : '';
         this._actions.visible = down;
