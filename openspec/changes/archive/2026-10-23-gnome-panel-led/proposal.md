@@ -28,8 +28,8 @@ Nenhuma.
 
 ## Impact
 
-- Novos: `extension/lib/ledState.js`, `extension/ledControls.js`, `extension/tests/ledState.test.js`, um sysfs falso compartilhado pelos scripts de `scripts/dev/` e um monitor dos `Apply` só de leitura para a conferência.
-- Alterados: `extension/daemon.js` (`apply(setting)` pelo proxy de `Waterforce.Led`, com `Cancellable`, e a leitura do LED do perfil ativo por um proxy de `Profiles` com `DO_NOT_AUTO_START`), `extension/indicator.js` e `extension/carousel.js` (controles no `body` e o liga/desliga), `extension/stylesheet.css`, `scripts/dev/headless-smoke.sh` e `scripts/dev/nested-shell.sh`.
+- Novos: `extension/lib/ledState.js`, `extension/ledControls.js`, `extension/tests/ledState.test.js` e um monitor dos `Apply` só de leitura para a conferência (`scripts/dev/watch-led-applies.sh`).
+- Alterados: `extension/daemon.js` (`apply(setting)` pelo proxy de `Waterforce.Led`, com `Cancellable`, e a leitura do LED do perfil ativo por um proxy de `Profiles` com `DO_NOT_AUTO_START`), `extension/indicator.js` (controles no `body` e o liga/desliga), `extension/carousel.js` (o anel com o rascunho, por `setLed`), `extension/stylesheet.css` (medidas), `extension/stylesheet-light.css` e `extension/stylesheet-dark.css` (cores de cada tema), `scripts/dev/headless-smoke.sh` e `scripts/dev/nested-shell.sh` (este passa ao `scripts/dev/fake-sysfs.sh` que a `gnome-panel-devices` criou).
 - Documentação: `docs/architecture.md`, `docs/roadmap.md`, `README.md` e `docs/hardware.md` (o que a conferência observar, como a contagem de `B6` por gesto e os efeitos vistos pela primeira vez).
 - Hardware: nenhum comando novo. O painel só chama `Led.Apply`, e o `halod` manda os pacotes já documentados em `docs/protocols/castor3.md` ("Anel e RGB das fans"): `99 DE 00`, `99 C9`, `99 CD`, `99 B0`–`B3` e um `99 B6` no fim. A diferença é a frequência: um `B6` por gesto concluído.
 - `crates/`: nada muda. Depende da `gnome-panel-devices`, que precisa estar implementada antes desta começar.

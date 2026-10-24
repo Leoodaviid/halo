@@ -165,6 +165,10 @@ Cada escrita no LED grava no aparelho. Por isso, o painel SHALL pedir uma aplica
 - **WHEN** o usuário solta o slider no mesmo valor que já está aplicado
 - **THEN** nenhum pedido é enviado
 
+#### Scenario: Pedido em andamento falha com uma mudança esperando
+- **WHEN** o usuário muda a cor enquanto um pedido de aplicação está em andamento, e esse pedido falha
+- **THEN** o painel descarta a mudança que esperava, não envia mais nenhum pedido, e os controles voltam ao último estado aplicado
+
 ### Requirement: Estado mostrado vem do daemon
 Ao abrir, o painel SHALL mostrar o último estado de LED que o daemon informa como aplicado. Sem esse dado, o painel SHALL mostrar os controles sem seleção de efeito e indicar que o estado atual do aparelho não é conhecido. Depois de um erro, os controles SHALL voltar ao último estado aplicado.
 
@@ -190,6 +194,10 @@ O liga/desliga do cabeçalho SHALL desligar o LED do aparelho selecionado com o 
 #### Scenario: Religar sem estado conhecido
 - **WHEN** o usuário religa depois de o daemon reiniciar, sem perfil ativo com LED
 - **THEN** o painel pede o efeito ciclo
+
+#### Scenario: Religar com o perfil ativo desligado
+- **WHEN** o usuário religa sem estado ligado conhecido, e o LED do perfil ativo é o efeito desligado
+- **THEN** o painel pede o efeito ciclo, e não o desligado do perfil
 
 ### Requirement: Efeitos de paleta só para leitura
 Os efeitos de paleta (color-shift, tri-color, spin, switch, lego e aurora) MUST NOT ser oferecidos para escolha. Se o estado aplicado for um deles, o painel SHALL mostrar o nome e as cores da paleta sem permitir editá-los. Brilho e velocidade SHALL continuar editáveis, com a mesma paleta, e escolher outro efeito SHALL continuar possível.
