@@ -3,15 +3,20 @@
 // Cliente do halod e do systemd do usuário. Junta tudo num estado único e
 // avisa a cada mudança; quem desenha é o indicador. Nenhum proxy ativa o
 // halod: o painel só observa o nome, e iniciar o daemon é sempre um gesto do
-// usuário (spec gnome-panel, "Painel não inicia o daemon sozinho").
+// usuário (spec gnome-panel, "Painel não inicia o daemon sozinho"). O LED só
+// recebe um Led.Apply no fim de um gesto, pela fila de lib/ledState.js.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 import {journalLines} from './lib/journal.js';
+import {
+    EMPTY as LED_EMPTY, commit, finished, lastAppliedChanged, powerTarget, profileLed,
+} from './lib/ledState.js';
 import {countPresent, devicesFrom, lastAppliedFrom} from './lib/view.js';
 
 Gio._promisify(Gio.DBusConnection.prototype, 'call');
+Gio._promisify(Gio.DBusProxy.prototype, 'call');
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_utf8_async');
 
 const BUS_NAME = 'io.github.leoodaviid.Halo1';
@@ -36,12 +41,24 @@ const TelemetryProxy = Gio.DBusProxy.makeProxyWrapper(`
   </interface>
 </node>`);
 
-// Só a leitura do último LED aplicado: o Apply não está na interface, então
-// não há como chamá-lo por engano daqui.
+// O Apply só é chamado por _send(), com um pedido que saiu da fila.
 const LedProxy = Gio.DBusProxy.makeProxyWrapper(`
 <node>
   <interface name="io.github.leoodaviid.Halo1.Waterforce.Led">
+    <method name="Apply">
+      <arg type="s" direction="in"/><arg type="as" direction="in"/>
+      <arg type="y" direction="in"/><arg type="y" direction="in"/>
+    </method>
     <property name="LastApplied" type="a{sv}" access="read"/>
+  </interface>
+</node>`);
+
+// Só leitura: o perfil ativo e o LED dele, para religar. Activate não é usado.
+const ProfilesProxy = Gio.DBusProxy.makeProxyWrapper(`
+<node>
+  <interface name="io.github.leoodaviid.Halo1.Profiles">
+    <method name="Get"><arg type="s" direction="in"/><arg type="a{sv}" direction="out"/></method>
+    <property name="ActiveProfile" type="s" access="read"/>
   </interface>
 </node>`);
 
@@ -81,6 +98,9 @@ export class HaloDaemon {
         this._manager = null;
         this._telemetry = null;
         this._led = null;
+        this._profiles = null;
+        // O dono atual do nome: a fila e o lastOn só valem para ele.
+        this._ownerName = null;
     }
 
     get state() {
@@ -89,10 +109,11 @@ export class HaloDaemon {
 
     async start() {
         try {
-            [this._manager, this._telemetry, this._led] = await Promise.all([
+            [this._manager, this._telemetry, this._led, this._profiles] = await Promise.all([
                 newProxy(ManagerProxy, ROOT_PATH, this._cancellable),
                 newProxy(TelemetryProxy, WATERFORCE_PATH, this._cancellable),
                 newProxy(LedProxy, WATERFORCE_PATH, this._cancellable),
+                newProxy(ProfilesProxy, ROOT_PATH, this._cancellable),
             ]);
         } catch (e) {
             if (!cancelled(e))
@@ -118,6 +139,7 @@ export class HaloDaemon {
         this._manager = null;
         this._telemetry = null;
         this._led = null;
+        this._profiles = null;
         this._onChange = null;
     }
 
@@ -131,8 +153,14 @@ export class HaloDaemon {
     }
 
     _ownerChanged() {
-        const owner = this._telemetry?.g_name_owner !== null &&
-            this._telemetry?.g_name_owner !== undefined;
+        const name = this._telemetry?.g_name_owner ?? null;
+        const owner = name !== null;
+        // Um halod novo nasce com o LastApplied vazio: a fila, o lastOn e o
+        // pedido em voo do anterior não valem mais.
+        if (name !== this._ownerName) {
+            this._ownerName = name;
+            this._set({led: LED_EMPTY});
+        }
         this._set({owner, journal: null});
         if (owner) {
             this._readTelemetry();
@@ -161,7 +189,92 @@ export class HaloDaemon {
     _readLed() {
         if (!this._led || !this._state.owner)
             return;
-        this._set({lastApplied: lastAppliedFrom(unpackDict(this._led.LastApplied))});
+        const lastApplied = lastAppliedFrom(unpackDict(this._led.LastApplied));
+        this._set({lastApplied, led: lastAppliedChanged(this._state.led, lastApplied)});
+    }
+
+    // O rascunho durante um gesto (arraste, matiz): só a interface muda.
+    ledDraft(setting) {
+        this._set({led: {...this._state.led, draft: setting}});
+    }
+
+    // Fim de um gesto: a fila decide se sai um Apply.
+    ledCommit(setting) {
+        const {led, send} = commit(this._state.led, setting);
+        this._set({led});
+        if (send)
+            this._send(send);
+    }
+
+    // O liga/desliga: desliga com o off; religa com o último ligado, o LED do
+    // perfil ativo (sem o off) ou o ciclo.
+    async ledPower() {
+        const led = this._state.led;
+        if (!this._state.owner || led.inFlight !== null || led.powering)
+            return;
+        if (led.draft && led.draft.effect !== 'off') {
+            this.ledCommit({...led.draft, effect: 'off', colors: []});
+            return;
+        }
+        if (led.lastOn) {
+            this.ledCommit(led.lastOn);
+            return;
+        }
+        const owner = this._ownerName;
+        this._set({led: {...led, powering: true}});
+        const profile = await this.activeProfileLed();
+        // O dono mudou durante a leitura: o estado já foi zerado, e o gesto se perde.
+        if (owner !== this._ownerName || this._onChange === null)
+            return;
+        this._set({led: {...this._state.led, powering: false}});
+        this.ledCommit(powerTarget(null, profile));
+    }
+
+    async _send(request) {
+        const result = await this.apply(request);
+        if (result === null)
+            return;
+        const {led, send} = finished(this._state.led, result.ok,
+            result.ok ? null : result.error.message);
+        this._set({led});
+        if (send)
+            this._send(send);
+    }
+
+    // Um Led.Apply. Devolve {ok: true}, {ok: false, error: {name, message}} ou
+    // null se foi cancelado (disable()).
+    async apply({effect, colors, brightness, speed}) {
+        try {
+            await this._led.call('Apply',
+                new GLib.Variant('(sasyy)', [effect, colors, brightness, speed]),
+                Gio.DBusCallFlags.NO_AUTO_START, -1, this._cancellable);
+            return {ok: true};
+        } catch (e) {
+            if (cancelled(e))
+                return null;
+            const name = Gio.DBusError.get_remote_error(e) ?? 'desconhecido';
+            Gio.DBusError.strip_remote_error(e);
+            console.warn(`halo: Led.Apply falhou (${name}): ${e.message}`);
+            return {ok: false, error: {name, message: e.message}};
+        }
+    }
+
+    // O LED do perfil ativo ({effect, colors, brightness, speed}) ou null.
+    // Um erro (perfil apagado, por exemplo) conta como sem perfil.
+    async activeProfileLed() {
+        const name = this._profiles?.ActiveProfile ?? '';
+        if (name === '')
+            return null;
+        try {
+            const reply = await this._profiles.call('Get', new GLib.Variant('(s)', [name]),
+                Gio.DBusCallFlags.NO_AUTO_START, -1, this._cancellable);
+            const [dict] = reply.deepUnpack();
+            return profileLed(unpackDict(dict));
+        } catch (e) {
+            if (!cancelled(e))
+                console.warn(`halo: Profiles.Get falhou: ${e.message}`);
+            return null;
+        }
     }
 
     _setDevices(list) {

@@ -9,7 +9,8 @@
 # Confere também que a extensão não ativa o halod: o barramento do teste tem
 # um arquivo de ativação que só registra se foi usado. Nada da sessão do
 # usuário é tocado: nem o dconf, nem as extensões, nem o /run/user dele, nem
-# os aparelhos (o sysfs é falso).
+# os aparelhos (o sysfs é falso). Antes do Shell, um Led.Apply ao halod de
+# teste precisa voltar NotFound: o sysfs falso não leva a nenhum nó real.
 #
 # Uso: sh scripts/dev/headless-smoke.sh   (HALOD= troca o binário do halod)
 
@@ -61,14 +62,41 @@ T=$3
 HALOD=$4
 gsettings set org.gnome.shell disable-user-extensions false
 gsettings set org.gnome.shell enabled-extensions "['$UUID']"
-gnome-shell --headless --wayland --no-x11 --virtual-monitor 1280x800 > "$LOG" 2>&1 &
-SHELL_PID=$!
 
 has_owner() {
     gdbus call --session -d org.freedesktop.DBus -o /org/freedesktop/DBus \
         -m org.freedesktop.DBus.NameHasOwner io.github.leoodaviid.Halo1 2>/dev/null |
         grep -q true
 }
+
+# Antes do Shell: um Led.Apply ao halod de teste precisa voltar NotFound. Prova
+# que o sysfs falso não leva a nenhum nó real: o halod falha ao abrir
+# /dev/hidraw99, antes do 99 DE 00, e nada chega a um aparelho.
+status=0
+"$HALOD" --address "$DBUS_SESSION_BUS_ADDRESS" --sys-root "$T/sys" > "$T/halod-probe.log" 2>&1 &
+PROBE_PID=$!
+i=0
+while ! has_owner && [ "$i" -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
+reply=$(gdbus call --session -d io.github.leoodaviid.Halo1 -o /io/github/leoodaviid/Halo1/waterforce \
+    -m io.github.leoodaviid.Halo1.Waterforce.Led.Apply cycle '@as []' 0 0 2>&1)
+case "$reply" in
+    *io.github.leoodaviid.Halo1.Error.NotFound*) echo "ok    Apply de teste volta NotFound (nenhum nó real)" ;;
+    *) echo "FALHA Apply de teste não voltou NotFound: $reply"; status=1 ;;
+esac
+kill "$PROBE_PID" 2>/dev/null
+wait "$PROBE_PID" 2>/dev/null
+i=0
+while has_owner && [ "$i" -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
+
+# Daqui em diante, qualquer Led.Apply no barramento vem da extensão, e sem
+# gesto nenhum ela não pode mandar nenhum.
+dbus-monitor --address "$DBUS_SESSION_BUS_ADDRESS" \
+    "type='method_call',interface='io.github.leoodaviid.Halo1.Waterforce.Led',member='Apply'" \
+    > "$T/applies.log" 2>/dev/null &
+MONITOR_PID=$!
+
+gnome-shell --headless --wayland --no-x11 --virtual-monitor 1280x800 > "$LOG" 2>&1 &
+SHELL_PID=$!
 
 state() {
     gnome-extensions info "$UUID" 2>/dev/null | sed -n 's/^ *State: *//p'
@@ -84,7 +112,6 @@ wait_state() {
     return 1
 }
 
-status=0
 if wait_state ACTIVE 30; then echo "ok    extensão ACTIVE ao iniciar"
 else echo "FALHA extensão não ficou ACTIVE ao iniciar (estado: $(state))"; status=1; fi
 
@@ -124,6 +151,10 @@ else echo "FALHA depois de o halod sair (estado: $(state))"; status=1; fi
 sleep 1
 kill "$SHELL_PID" 2>/dev/null
 wait "$SHELL_PID" 2>/dev/null
+kill "$MONITOR_PID" 2>/dev/null
+applies=$(grep -c 'member=Apply' "$T/applies.log" 2>/dev/null || true)
+if [ "${applies:-0}" -eq 0 ]; then echo "ok    a extensão não mandou nenhum Led.Apply sem gesto"
+else echo "FALHA a extensão mandou $applies Led.Apply sem gesto"; status=1; fi
 exit "$status"
 INNER
 

@@ -137,7 +137,8 @@ test('o desenho não distorce no quadrado do St.Icon', () => {
         const kept = load(true);
         const stretched = load(false);
         equal(kept.get_height(), 300, d.id);
-        ok(kept.get_pixels().toString() === stretched.get_pixels().toString(),
+        const a = kept.get_pixels(), b = stretched.get_pixels();
+        ok(a.length === b.length && a.every((v, i) => v === b[i]),
             `${d.id}: a imagem muda sem preservar a proporção`);
     }
 });

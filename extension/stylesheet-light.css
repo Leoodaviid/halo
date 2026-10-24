@@ -18,7 +18,8 @@
 .halo-chip-text,
 .halo-locked-text,
 .halo-locked-icon,
-.halo-note-text,
+.halo-led-small,
+.halo-led-note-text,
 .halo-empty,
 .halo-reason { color: rgba(0, 0, 0, 0.6); }
 
@@ -28,3 +29,17 @@
 
 .halo-page-dot { background-color: rgba(0, 0, 0, 0.32); }
 .halo-page-dot:checked { background-color: rgba(0, 0, 0, 0.86); }
+
+/* Controles do LED. */
+.halo-led-popup {
+  background-color: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.halo-led-split { border-top: 1px solid rgba(0, 0, 0, 0.1); }
+.halo-led-hex { background-color: rgba(0, 0, 0, 0.05); }
+.halo-led-slider {
+  -halo-slider-track: rgba(0, 0, 0, 0.08);
+  -halo-slider-fill: #ffffff;
+}
+.halo-led-slider-icon { color: rgba(0, 0, 0, 0.55); }
+.halo-led-error { color: #d70015; }

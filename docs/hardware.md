@@ -203,6 +203,32 @@ Conclusões:
 - O layout do GCC vale neste firmware: o byte 3 do `C9` é a velocidade (o `04` deixou o pulso lento), e não o brilho, como no OpenRGB.
 - Nenhum erro de escrita. Foram 6 `B6` no total nesta sessão.
 
+### LED pelo painel do GNOME (2026-10-23)
+
+Change `gnome-panel-led`, com o aval do usuário, na sessão real depois do `packaging/install.sh`. O painel só chama `Led.Apply` do `halod`, que manda `99 DE 00`, a sequência do efeito e um único `99 B6`, os mesmos pacotes da CLI ([protocols/castor3.md](protocols/castor3.md), "Anel e RGB das fans"). Os pedidos foram contados com `scripts/dev/watch-led-applies.sh` (só leitura, `dbus-monitor` no D-Bus da sessão): uma linha por `Apply`, com os argumentos, e uma por `PropertiesChanged` do `LastApplied`, que só sai com sucesso.
+
+| Hora | Gesto no painel | `Apply` (efeito, cores, brilho, velocidade) | `B6` |
+|---|---|---|---|
+| 19:33:31 | ligar pelo switch, com o `halod` recém-iniciado e sem perfil com LED | `cycle`, `[]`, 10, 5 | 1 |
+| 19:33:59 | efeito Estático | `static`, `[ff6600]`, 10, 0 | 1 |
+| 19:34:56 | clique no começo do brilho | `static`, `[ff6600]`, 1, 0 | 1 |
+| 19:35:00 / 19:35:04 | dois arrastes do brilho, soltos em 9 e em 10 | `static`, brilho 9 e 10 | 1 cada |
+| 19:35:16 / 19:35:23 | duas mudanças de cor | `static`, `[ff000c]` e `[ff0000]` | 1 cada |
+| 19:35:33 | efeito Pulso | `pulse`, `[ff0000]`, 10, 5 | 1 |
+| 19:35:48 | efeito Flash | `flash`, `[ff0000]`, 10, 5 | 1 |
+| 19:35:58 | efeito Gradiente | `gradient`, `[ff0000]`, 10, 5 | 1 |
+| 19:36:05 | desligar pelo switch | `off`, `[]`, 0, 0 | 1 |
+| 19:36:12 | efeito Estático com o LED desligado (herda a cor e o brilho do último ligado) | `static`, `[ff0000]`, 10, 0 | 1 |
+| 19:40:58 | efeito Ciclo | `cycle`, `[]`, 10, 5 | 1 |
+| 19:41:48–19:42:08 | brilho 2, 8, 1 e 10, velocidade 2 e 5 | `cycle`, um pedido por gesto | 1 cada |
+
+Conclusões:
+- **Um `Apply` e um `B6` por gesto concluído**, nenhum durante os arrastes, nenhum ao abrir o painel e nenhum erro. Foram 19 `B6` na sessão inteira.
+- **Vistos pela primeira vez no aparelho:** `flash` (efeito `04`), `gradient` (`06`) e o desligado (`off`, enviado como estático com brilho 0 e `CD 00 00 00`). O usuário conferiu o cooler e todos responderam como esperado; os pacotes são os de `LedSetting::packets()`.
+- **Ainda não vistos:** `double-flash` (`05`), `wave` (`08`) e os de paleta que o painel não oferece (`07`, `0C` a `0F`).
+- Não testados no aparelho, só no Shell headless: soltar o brilho no valor já aplicado (nenhum `Apply`) e religar pelo switch com um estado ligado conhecido (pede o último ligado).
+- Estado final: `cycle`, brilho 10, velocidade 5 (o modo de fábrica).
+
 ### Velocidade com `halo speed waterforce` (2026-10-20)
 
 Change `waterforce-speed-mode`, com o aval do usuário a cada escrita. Todos os `set` e `restore` mandaram antes `99 DE 00`, `99 DD`, `99 D9 01` e `99 D9 02` e gravaram o snapshot em `~/.local/state/halo/`. Comandos de escrita enviados: só `99 E5 01 <modo> 00`, `99 E5 02 <modo> 00` e `99 B6` (`DeviceApi.SetSpeedMode` e `Save`). Nenhum `E6`. O RPM e o duty vêm do hwmon (`halo telemetry waterforce --watch 3`), observados por ~30 s depois de cada envio. O líquido ficou em 25 °C o tempo todo.

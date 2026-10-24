@@ -10,23 +10,9 @@
   font-feature-settings: "tnum";
 }
 
-/* Painel com 320 px, como o .material: 304 px de conteúdo, mais 1 px de
-   padding, os 6 px do .popup-menu-content e a borda de 1 px do Shell. */
-.halo-panel {
-  width: 304px;
-  padding: 1px;
-  spacing: 8px;
-  font-size: 13px;
-}
-
-.halo-panel .halo-item {
-  padding: 0;
-  spacing: 0;
-}
-
-.halo-panel .halo-header {
-  padding: 4px 4px 2px 6px;
-}
+/* A largura do painel (320 px, como o .material), o padding e o espaço do
+   corpo do menu e dos itens do halo ficam inline em indicator.js: esses
+   widgets também têm as classes do tema do Shell, que vence este arquivo. */
 
 .halo-title {
   font-size: 15px;
@@ -162,12 +148,172 @@
   color: rgba(127, 127, 127, 1);
 }
 
-.halo-note {
-  padding: 10px 12px;
+/* Liga/desliga do cabeçalho: o switch do Shell num botão. */
+.halo-power {
+  padding: 0;
+  border-radius: 999px;
 }
 
-.halo-note-text {
+.halo-power:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+/* Controles do LED: os dois .tile do protótipo (280 px úteis). */
+.halo-led-controls {
+  spacing: 8px;
+}
+
+.halo-led-tile {
+  padding: 10px 12px;
+  spacing: 10px;
+}
+
+.halo-led-sliders {
+  padding: 10px 12px 12px 12px;
+}
+
+.halo-led-row {
+  spacing: 8px;
+}
+
+.halo-led-label {
+  font-weight: 600;
+}
+
+.halo-led-small {
+  font-size: 11px;
   color: rgba(127, 127, 127, 1);
+}
+
+.halo-led-popup {
+  min-width: 132px;
+  height: 24px;
+  padding: 0 6px 0 10px;
+  border-radius: 7px;
+  background-color: rgba(127, 127, 127, 0.2);
+}
+
+.halo-led-popup:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-led-popup-icon {
+  icon-size: 12px;
+}
+
+.halo-led-split {
+  spacing: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+/* Largura, altura, padding e raio ficam inline (ledControls.js): o StEntry
+   do tema do Shell também os define. */
+.halo-led-hex {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.halo-led-hex:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-led-hex-bad,
+.halo-led-hex-bad:focus {
+  box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.6);
+}
+
+/* Seis cores de 26 px em 280 px: (280 - 6 x 26) / 5 de espaço. */
+.halo-led-swatches {
+  spacing: 24px;
+}
+
+/* Largura e altura no St são do conteúdo: 20 px + 3 px de padding = 26 px. */
+.halo-led-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 3px;
+  border-radius: 999px;
+}
+
+.halo-led-swatch:checked {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-led-swatch:focus {
+  box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.8);
+}
+
+.halo-led-swatch:checked:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-led-swatch-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+}
+
+.halo-led-hue {
+  height: 20px;
+  border-radius: 10px;
+}
+
+.halo-led-hue:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+}
+
+.halo-led-palette {
+  spacing: 6px;
+  margin-right: 4px;
+}
+
+.halo-led-palette-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.halo-led-slider-box {
+  spacing: 6px;
+}
+
+/* A pílula da Central de Controle. A altura de 28 px e o handle de 14 px de
+   raio (o valor segue o ponteiro como no protótipo, (x - 14) / (largura - 28))
+   ficam inline em ledControls.js, porque o .slider do tema também os define. */
+.halo-led-slider {
+  -halo-slider-track: rgba(127, 127, 127, 0.2);
+  -halo-slider-fill: #ffffff;
+}
+
+.halo-led-slider:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
+  border-radius: 14px;
+}
+
+.halo-led-slider-icon {
+  icon-size: 14px;
+  margin-left: 8px;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.halo-led-note {
+  padding: 10px 12px;
+  spacing: 4px;
+}
+
+.halo-led-note-title {
+  font-weight: 600;
+}
+
+.halo-led-note-text,
+.halo-led-error {
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-led-error {
+  padding: 0 4px;
+  font-size: 11px;
 }
 
 .halo-empty {

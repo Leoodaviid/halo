@@ -9,10 +9,16 @@
 # imagem do Shell aninhado por ele, então PIPEWIRE_RUNTIME_DIR aponta para o
 # socket da sessão real. Ao fechar a janela, o script confere a sessão real.
 #
-# Uso: sh scripts/dev/nested-shell.sh [--daemon]
-#   --daemon  sobe um target/debug/halod no barramento do teste, lendo o /sys
-#             real (só leitura: o painel desta versão não envia nada).
-#             Sem ele, o painel mostra o daemon fora do ar.
+# Uso: sh scripts/dev/nested-shell.sh [--daemon] [--profile]
+#   --daemon   sobe um target/debug/halod no barramento do teste, com o sysfs
+#              falso de scripts/dev/fake-sysfs.sh (o Castor3 em hidraw99, que
+#              não existe): o carrossel mostra o Waterforce, e todo Led.Apply
+#              falha com NotFound antes de chegar a um aparelho. Nenhum modo
+#              lê o /sys real. Sem --daemon, o painel mostra o daemon fora do ar.
+#   --profile  grava no XDG temporário um perfil "teste" com o LED tri-color e
+#              o marca como ativo (para religar sem estado conhecido).
+# Os Led.Apply do barramento do teste são registrados com o dbus-monitor e
+# mostrados ao fechar a janela.
 
 set -eu
 
@@ -21,11 +27,14 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 HALOD=${HALOD:-$ROOT/target/debug/halod}
 
 daemon=no
-case "${1:-}" in
-    '') ;;
-    --daemon) daemon=yes ;;
-    *) echo "uso: sh scripts/dev/nested-shell.sh [--daemon]" >&2; exit 2 ;;
-esac
+profile=no
+for arg in "$@"; do
+    case "$arg" in
+        --daemon) daemon=yes ;;
+        --profile) profile=yes ;;
+        *) echo "uso: sh scripts/dev/nested-shell.sh [--daemon] [--profile]" >&2; exit 2 ;;
+    esac
+done
 
 [ -x /usr/libexec/mutter-devkit ] ||
     { echo "halo: falta o mutter-dev-bin (sudo apt install mutter-dev-bin)" >&2; exit 1; }
@@ -58,15 +67,33 @@ DEST=$T/home/.local/share/gnome-shell/extensions/$UUID
 mkdir -p "$DEST"
 (cd "$ROOT/extension" && tar --exclude=./tests -cf - .) | (cd "$DEST" && tar -xf -)
 
+# sysfs falso com o Castor3 num hidraw que não existe em /dev (hidraw99).
+if [ "$daemon" = yes ]; then
+    sh "$ROOT/scripts/dev/fake-sysfs.sh" "$T/sys" || exit 1
+fi
+if [ "$profile" = yes ]; then
+    mkdir -p "$T/home/.config/halo/profiles" "$T/home/.local/state/halo"
+    printf '[waterforce.led]\neffect = "tri-color"\ncolors = ["ff0000", "00ff00", "0000ff"]\nbrightness = 6\nspeed = 3\n' \
+        > "$T/home/.config/halo/profiles/teste.toml"
+    echo teste > "$T/home/.local/state/halo/active-profile"
+fi
+
 cat > "$T/inner.sh" <<'INNER'
 set -u
 UUID=$1
 DAEMON=$2
 HALOD=$3
+T=$4
+echo "$DBUS_SESSION_BUS_ADDRESS" > "$T/bus-address"
 gsettings set org.gnome.shell disable-user-extensions false
 gsettings set org.gnome.shell enabled-extensions "['$UUID']"
+# Só observa: registra os Led.Apply deste barramento (o do dbus-run-session).
+dbus-monitor --address "$DBUS_SESSION_BUS_ADDRESS" \
+    "type='method_call',interface='io.github.leoodaviid.Halo1.Waterforce.Led',member='Apply'" \
+    > "$T/applies.log" 2>/dev/null &
+MONITOR_PID=$!
 if [ "$DAEMON" = yes ]; then
-    "$HALOD" --address "$DBUS_SESSION_BUS_ADDRESS" &
+    "$HALOD" --address "$DBUS_SESSION_BUS_ADDRESS" --sys-root "$T/sys" &
     HALOD_PID=$!
 fi
 gnome-shell --devkit --wayland --no-x11 &
@@ -85,6 +112,7 @@ done
 kill "$SHELL_PID" 2>/dev/null
 wait "$SHELL_PID" 2>/dev/null
 [ "$DAEMON" = yes ] && kill "$HALOD_PID" 2>/dev/null
+kill "$MONITOR_PID" 2>/dev/null
 exit 0
 INNER
 
@@ -98,13 +126,31 @@ env -i PATH=/usr/bin:/bin LANG="${LANG:-C.UTF-8}" \
     XDG_RUNTIME_DIR="$RUNTIME" \
     WAYLAND_DISPLAY="$HOST_DISPLAY" \
     PIPEWIRE_RUNTIME_DIR="$REAL_RUNTIME" \
-    dbus-run-session -- sh "$T/inner.sh" "$UUID" "$daemon" "$HALOD" > "$T/shell.log" 2>&1 &
+    dbus-run-session -- sh "$T/inner.sh" "$UUID" "$daemon" "$HALOD" "$T" > "$T/shell.log" 2>&1 &
 RUN_PID=$!
+i=0
+while [ ! -s "$T/bus-address" ] && [ "$i" -lt 20 ]; do sleep 0.5; i=$((i + 1)); done
+if [ -s "$T/bus-address" ]; then
+    echo "halo: para contar os Led.Apply em outro terminal:"
+    echo "  sh scripts/dev/watch-led-applies.sh --address '$(cat "$T/bus-address")'"
+fi
 # Ctrl+C encerra o Shell aninhado, mas a conferência abaixo roda mesmo assim.
 trap 'kill "$RUN_PID" 2>/dev/null' INT TERM
 wait "$RUN_PID" 2>/dev/null || true
 wait "$RUN_PID" 2>/dev/null || true
 trap - INT TERM
+
+# Cada Apply: a linha do method call e os argumentos (efeito, cores, brilho,
+# velocidade) numa linha só.
+applies=$(awk '/^method call/ { if (line) print line; line = "Apply:"; next }
+    line && /^ *(string|byte|array|\])/ { gsub(/^ +/, ""); line = line " " $0 }
+    END { if (line) print line }' "$T/applies.log" 2>/dev/null || true)
+if [ -n "$applies" ]; then
+    echo "halo: Led.Apply no barramento do teste ($(printf '%s\n' "$applies" | wc -l)):"
+    printf '%s\n' "$applies" | sed 's/^/  /'
+else
+    echo "halo: nenhum Led.Apply no barramento do teste"
+fi
 
 if grep -q 'Failed to connect pipewire' "$T/shell.log"; then
     echo "halo: a janela do devkit não conseguiu falar com o PipeWire ($REAL_RUNTIME/pipewire-0)"
