@@ -10,7 +10,7 @@ O `LastApplied` do `Waterforce.Led` existe só na memória do `halod`. Ao sair e
 - Nenhum comando novo vai ao aparelho: ler o arquivo não reaplica nada, e a decisão de não reaplicar no login (`systemd-user-service`) continua valendo.
 - O dado continua sendo "o último LED que o halo aplicou", não uma leitura do aparelho. Um arquivo ausente ou inválido deixa o `LastApplied` vazio, como hoje.
 - No painel, nada muda no código: ele já abre com o `LastApplied` e religa com o último estado ligado. O que muda é o cenário: depois de um login, o painel abre com o estado aplicado antes e o switch ligado, e religar volta a esse estado.
-- Fora do escopo: a CLI (`halo led`) não grava nem lê o arquivo, porque ela fala direto com o hidraw e não passa pelo daemon; o estado do LED do aparelho depois de um corte de energia (ainda não testado, `docs/roadmap.md`) também não é tratado aqui.
+- Fora do escopo: a CLI (`halo led`) não grava nem lê o arquivo, porque ela fala direto com o hidraw e não passa pelo daemon; reaplicar no login continua fora do escopo. Em 2026-10-25, o estático branco aplicado pelo painel (com `B6`, sem `halo led` no histórico e sem perfil ativo) sobreviveu ao desligamento com corte de energia: no boot às 16:52, o anel continuava branco, mas o painel abriu desconhecido e com o switch desligado.
 
 ## Capabilities
 
@@ -29,4 +29,4 @@ Nenhuma.
 - Arquivo novo no estado do usuário: `$XDG_STATE_HOME/halo/waterforce-led.last` (padrão `~/.local/state/halo/`). O `packaging/install.sh --uninstall` já mantém `~/.local/state/halo`.
 - Documentação: `README.md` (a propriedade `LastApplied`), `docs/architecture.md` (estado do daemon e o painel) e `docs/roadmap.md`.
 - Extensão: nenhum código muda. A spec `gnome-panel` só ajusta cenários.
-- Hardware: nenhum comando. `docs/hardware.md` não muda.
+- Hardware: nenhum comando novo. `docs/hardware.md` registra a persistência do LED com `B6` observada em 2026-10-25.

@@ -175,7 +175,7 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 /// Escreve num temporário no mesmo diretório e troca com `rename`.
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let name = path.file_name().unwrap().to_string_lossy();
     let tmp = path.with_file_name(format!(".{name}.tmp"));
     let result = (|| {

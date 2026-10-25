@@ -324,3 +324,107 @@ fn primeira_chamada_ja_tem_aparelhos_e_telemetria() {
     let available: zbus::zvariant::OwnedValue = reply.body().deserialize().unwrap();
     assert!(bool::try_from(available).unwrap());
 }
+
+/// O arquivo é lido antes de publicar o nome; nem um Get inicial abre hidraw.
+#[test]
+fn primeiro_get_ja_tem_led_guardado_sem_abrir_hidraw() {
+    use std::collections::HashMap;
+    use zbus::zvariant::OwnedValue;
+
+    let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (text, valid) in [
+        (
+            "effect = \"static\"\ncolors = [\"ff0000\"]\nbrightness = 10\nspeed = 5\n",
+            true,
+        ),
+        ("effect = \"static\"\ncolors = [\"zzzzzz\"]\n", false),
+    ] {
+        let bus = Bus::start();
+        let home = tempfile::tempdir().unwrap();
+        let state = home.path().join(".local/state/halo");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("waterforce-led.last"), text).unwrap();
+        let sys = tempfile::tempdir().unwrap();
+        let fake = Command::new("sh")
+            .arg(project.join("scripts/dev/fake-sysfs.sh"))
+            .arg(sys.path())
+            .env_remove("HALO_FAKE_HIDRAW")
+            .output()
+            .unwrap();
+        assert!(
+            fake.status.success(),
+            "{}",
+            String::from_utf8_lossy(&fake.stderr)
+        );
+
+        // strace dá evidência de syscalls, inclusive tentativas de abrir hidraw.
+        let trace = home.path().join("opens.log");
+        let command = halod(&bus, home.path(), sys.path(), &[]);
+        let mut traced = Command::new("strace");
+        traced
+            .args([
+                "--kill-on-exit",
+                "-f",
+                "-e",
+                "trace=open,openat,openat2",
+                "-o",
+            ])
+            .arg(&trace)
+            .arg(command.get_program())
+            .args(command.get_args());
+        for (key, value) in command.get_envs() {
+            if let Some(value) = value {
+                traced.env(key, value);
+            } else {
+                traced.env_remove(key);
+            }
+        }
+        let daemon = Daemon {
+            child: Some(
+                traced
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ),
+        };
+        let client = bus.client();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !has_owner(&client) {
+            assert!(
+                Instant::now() < deadline,
+                "halod sob strace não pegou o nome"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let reply = client
+            .call_method(
+                Some(BUS_NAME),
+                WATERFORCE,
+                Some("org.freedesktop.DBus.Properties"),
+                "Get",
+                &("io.github.leoodaviid.Halo1.Waterforce.Led", "LastApplied"),
+            )
+            .unwrap();
+        let value: OwnedValue = reply.body().deserialize().unwrap();
+        let last: HashMap<String, OwnedValue> = value.try_into().unwrap();
+        if valid {
+            assert_eq!(<&str>::try_from(&last["effect"]).unwrap(), "static");
+            let colors: Vec<String> = last["colors"].try_clone().unwrap().try_into().unwrap();
+            assert_eq!(colors, ["ff0000"]);
+            assert_eq!(u8::try_from(&last["brightness"]).unwrap(), 10);
+            assert_eq!(u8::try_from(&last["speed"]).unwrap(), 5);
+        } else {
+            assert!(last.is_empty());
+        }
+        let out = daemon.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.contains("não consegui ler"), !valid, "{stderr}");
+        if valid {
+            assert!(!stderr.contains("não consegui"), "{stderr}");
+        }
+        let opens = std::fs::read_to_string(&trace).unwrap();
+        assert!(opens.contains("waterforce-led.last"), "{opens}");
+        assert!(!opens.contains("\"/dev/hidraw"), "{opens}");
+    }
+}

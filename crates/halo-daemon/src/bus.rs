@@ -19,6 +19,7 @@ use zbus::object_server::{ObjectServer, SignalEmitter};
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::error::Error;
+use crate::led_state::LedState;
 use crate::profiles::{self, ProfileStore};
 use crate::worker::Worker;
 
@@ -32,12 +33,13 @@ pub fn serve(
     builder: connection::Builder<'static>,
     worker: Worker,
     profiles: ProfileStore,
+    led_state: Option<LedState>,
     (devices, telemetry): (Vec<Device>, TelemetryState),
 ) -> zbus::Result<connection::Builder<'static>> {
     builder
         .serve_at(ROOT_PATH, Manager { devices })?
         .serve_at(ROOT_PATH, Profiles::new(profiles, worker.clone()))?
-        .serve_at(WATERFORCE_PATH, Led::new(worker.clone()))?
+        .serve_at(WATERFORCE_PATH, Led::new(worker.clone(), led_state))?
         .serve_at(WATERFORCE_PATH, Speed::new(worker))?
         .serve_at(WATERFORCE_PATH, Telemetry { state: telemetry })
 }
@@ -152,18 +154,31 @@ impl From<&LedSetting> for LedRecord {
 pub struct Led {
     worker: Worker,
     last: Mutex<Option<LedRecord>>,
+    store: Option<LedState>,
 }
 
 impl Led {
-    pub fn new(worker: Worker) -> Self {
+    pub fn new(worker: Worker, store: Option<LedState>) -> Self {
+        let last = store
+            .as_ref()
+            .and_then(LedState::load)
+            .as_ref()
+            .map(LedRecord::from);
         Self {
             worker,
-            last: Mutex::new(None),
+            last: Mutex::new(last),
+            store,
         }
     }
 
     fn record(&self, setting: &LedSetting) {
-        *self.last.lock().unwrap() = Some(LedRecord::from(setting));
+        let mut last = self.last.lock().unwrap();
+        *last = Some(LedRecord::from(setting));
+        if let Some(store) = &self.store
+            && let Err(e) = store.save(setting)
+        {
+            eprintln!("halod: não consegui guardar waterforce-led.last: {e}");
+        }
     }
 }
 
@@ -200,7 +215,7 @@ impl Led {
         apply_led(server, &self.worker, setting).await
     }
 
-    /// Vazio antes da primeira aplicação deste processo. Não é o estado do
+    /// Vazio quando não há último LED guardado válido. Não é o estado do
     /// aparelho, que não tem leitura do LED.
     #[zbus(property)]
     fn last_applied(&self) -> HashMap<String, OwnedValue> {
@@ -891,6 +906,82 @@ mod tests {
         assert_eq!(<&str>::try_from(&last["effect"]).unwrap(), "cycle");
     }
 
+    #[test]
+    fn led_persistido_apos_apply_e_falha() {
+        let h = Harness::new();
+        let store = crate::led_state::LedState::new(&h.state);
+        apply(&h, "cycle", &[], 3, 2).unwrap();
+        let cycle = LedSetting::new(Effect::Cycle, &[], Some(3), Some(2)).unwrap();
+        assert_eq!(store.load(), Some(cycle.clone()));
+        h.backend
+            .fail_next([Some(Error::Device("modelo desconhecido".into()))]);
+        assert!(apply(&h, "static", &["ff0000"], 10, 0).is_err());
+        assert_eq!(store.load(), Some(cycle));
+    }
+
+    #[test]
+    fn led_reiniciado_carrega_sem_backend() {
+        let h = Harness::new();
+        apply(&h, "static", &["ff0000"], 10, 0).unwrap();
+        let (refresh, _wake) = async_channel::bounded(1);
+        let backend = crate::worker::fake::FakeBackend::default();
+        let worker = Worker::spawn(backend.clone(), Default::default(), refresh);
+        let led = Led::new(worker, Some(crate::led_state::LedState::new(&h.state)));
+        let last = led.last_applied();
+        assert_eq!(<&str>::try_from(&last["effect"]).unwrap(), "static");
+        let colors: Vec<String> = last["colors"].try_clone().unwrap().try_into().unwrap();
+        assert_eq!(colors, ["ff0000"]);
+        assert_eq!(u8::try_from(&last["brightness"]).unwrap(), 10);
+        assert!(backend.calls().is_empty());
+    }
+
+    #[test]
+    fn led_sem_store_ou_valor_valido() {
+        let h = Harness::new();
+        let make = |store| {
+            let (refresh, _wake) = async_channel::bounded(1);
+            Led::new(
+                Worker::spawn(h.backend.clone(), Default::default(), refresh),
+                store,
+            )
+        };
+        assert!(make(None).last_applied().is_empty());
+        assert!(
+            make(Some(crate::led_state::LedState::new(&h.state)))
+                .last_applied()
+                .is_empty()
+        );
+        std::fs::create_dir_all(&h.state).unwrap();
+        std::fs::write(h.state.join("waterforce-led.last"), "effect = 42").unwrap();
+        assert!(
+            make(Some(crate::led_state::LedState::new(&h.state)))
+                .last_applied()
+                .is_empty()
+        );
+        assert!(h.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn led_falha_ao_guardar_nao_falha_apply() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let h = Harness::new();
+        if std::fs::metadata("/proc/self").unwrap().uid() == 0 {
+            return;
+        }
+        apply(&h, "static", &["ff0000"], 10, 0).unwrap();
+        let before = std::fs::read(h.state.join("waterforce-led.last")).unwrap();
+        std::fs::set_permissions(&h.state, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = apply(&h, "cycle", &[], 3, 2);
+        std::fs::set_permissions(&h.state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        result.unwrap();
+        let last: HashMap<String, OwnedValue> = h.property(WATERFORCE_PATH, LED, "LastApplied");
+        assert_eq!(<&str>::try_from(&last["effect"]).unwrap(), "cycle");
+        assert_eq!(
+            std::fs::read(h.state.join("waterforce-led.last")).unwrap(),
+            before
+        );
+    }
+
     // 5.3
 
     #[test]
@@ -1103,6 +1194,13 @@ mod tests {
             .unwrap();
         let applied: Vec<String> = h.call(ROOT_PATH, PROFILES, "Activate", &("led",)).unwrap();
         assert_eq!(applied, ["waterforce.led"]);
+        assert_eq!(
+            crate::led_state::LedState::new(&h.state)
+                .load()
+                .unwrap()
+                .effect(),
+            Effect::Cycle
+        );
         let last: HashMap<String, OwnedValue> = h.property(WATERFORCE_PATH, LED, "LastApplied");
         assert_eq!(<&str>::try_from(&last["effect"]).unwrap(), "cycle");
 

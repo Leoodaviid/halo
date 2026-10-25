@@ -39,3 +39,7 @@ O liga/desliga do cabeçalho SHALL desligar o LED do aparelho selecionado com o 
 #### Scenario: Religar com o perfil ativo desligado
 - **WHEN** o usuário religa sem estado ligado conhecido, e o LED do perfil ativo é o efeito desligado
 - **THEN** o painel pede o efeito ciclo, e não o desligado do perfil
+
+#### Scenario: Reboot com corte de energia
+- **WHEN** o usuário aplicou o estático branco pelo painel, desligou o PC com corte de energia e ligou de novo
+- **THEN** o painel abre com estático, `#FFFFFF` e o switch ligado, sem Apply no login nem ao abrir o painel; desligar e religar pedem off e o mesmo estático branco

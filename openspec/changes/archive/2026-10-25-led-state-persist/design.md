@@ -8,10 +8,12 @@
 - A extensão (`gnome-panel-led`) já faz o necessário com um `LastApplied` presente ao iniciar: `lastAppliedChanged` põe o valor em `applied`, `draft` e, se não for o desligado, em `lastOn`. Então o painel abre com o estado e o switch ligado, e religar usa o `lastOn`.
 - O `packaging/install.sh --uninstall` mantém `~/.local/state/halo`.
 
+O LED aplicado com `B6` também persiste sem energia: em 2026-10-25, o estático branco aplicado pelo painel permaneceu branco após corte de energia (boot às 16:52), sem `halo led` no histórico e sem perfil ativo. O painel abriu desconhecido porque o daemon perdeu o registro em memória, conforme `docs/hardware.md`.
+
 ## Goals / Non-Goals
 
 **Goals:**
-- O `LastApplied` sobrevive a reinícios do `halod` (logout, `systemctl --user restart`, atualização).
+- O `LastApplied` sobrevive a reinícios do `halod` (logout, `systemctl --user restart`, atualização, reboot com corte de energia).
 - Nenhum comando novo ao aparelho, nem indireto: carregar o arquivo não chama o worker.
 - Um arquivo ruim nunca impede o daemon de subir.
 
@@ -54,11 +56,11 @@ Alternativa: gravar no worker, depois do `apply_led` do backend. Descartada: o w
 
 ### 3. Carregar não toca no aparelho
 
-O `LedState::load()` roda em `main.rs`, antes de publicar os objetos, junto da primeira leitura do sysfs: assim o primeiro `Get` do `LastApplied`, inclusive o que ativa o daemon pelo D-Bus, já vê o valor. Nada chama o worker no carregamento, e o teste do daemon confirma que um `halod` iniciado com o arquivo não abre o hidraw.
+O `main.rs` passa o `LedState` à publicação dos objetos; `Led::new` chama `load()` antes de publicar a interface, junto da primeira leitura do sysfs: assim o primeiro `Get` do `LastApplied`, inclusive o que ativa o daemon pelo D-Bus, já vê o valor. Nada chama o worker no carregamento, e o teste do daemon confirma que um `halod` iniciado com o arquivo não abre o hidraw.
 
 ## Risks / Trade-offs
 
-- [O valor guardado diferir do aparelho] → Depois de um `halo led`, do GCC no Windows ou de um corte de energia que apague o LED (não testado), o painel mostra o último LED do daemon, e não o do anel. Já é o significado do `LastApplied` ("não é o estado do aparelho"); a diferença é que agora ele dura entre sessões. O README passa a dizer isso.
+- [O valor guardado diferir do aparelho] → Depois de um `halo led`, do GCC no Windows ou de outra alteração externa, o painel mostra o último LED do daemon, e não o do anel. Já é o significado do `LastApplied` ("não é o estado do aparelho"); a diferença é que agora ele dura entre sessões. O README passa a dizer isso.
 - [Arquivo corrompido ou editado à mão] → Validado com as regras dos perfis; inválido vira "sem estado", com aviso.
 - [Gravação a cada aplicação] → Uma escrita pequena com `sync_all` por aplicação bem-sucedida; as aplicações já são limitadas a uma por gesto.
 - [Dois `halod`] → Não acontece: a segunda instância recusa o nome no D-Bus e sai.
