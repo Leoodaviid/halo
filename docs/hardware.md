@@ -229,6 +229,12 @@ Conclusões:
 - Não testados no aparelho, só no Shell headless: soltar o brilho no valor já aplicado (nenhum `Apply`) e religar pelo switch com um estado ligado conhecido (pede o último ligado).
 - Estado final: `cycle`, brilho 10, velocidade 5 (o modo de fábrica).
 
+### LED preservado após corte de energia (2026-10-25)
+
+O usuário desligou o PC com o Waterforce em **estático branco**, aplicado pelo painel do halo, que usa `Led.Apply` e grava com `99 B6`. Não havia `halo led` no histórico nem `active-profile`. Houve corte de energia; no boot às **16:52**, o anel continuava branco. Assim como o modo de velocidade, o LED aplicado com `B6` sobrevive ao corte de energia.
+
+O painel abriu com "estado desconhecido" e o switch desligado: o `LastApplied` existia só na memória do `halod`. Ligar o switch nesse estado pediria `cycle`. A change `led-state-persist` guarda o último aplicado pelo daemon para recuperar a apresentação, sem reaplicar no login. Esta observação confirma o estático branco com `B6`; não testa a persistência sem `B6` nem todos os efeitos.
+
 ### Velocidade com `halo speed waterforce` (2026-10-20)
 
 Change `waterforce-speed-mode`, com o aval do usuário a cada escrita. Todos os `set` e `restore` mandaram antes `99 DE 00`, `99 DD`, `99 D9 01` e `99 D9 02` e gravaram o snapshot em `~/.local/state/halo/`. Comandos de escrita enviados: só `99 E5 01 <modo> 00`, `99 E5 02 <modo> 00` e `99 B6` (`DeviceApi.SetSpeedMode` e `Save`). Nenhum `E6`. O RPM e o duty vêm do hwmon (`halo telemetry waterforce --watch 3`), observados por ~30 s depois de cada envio. O líquido ficou em 25 °C o tempo todo.

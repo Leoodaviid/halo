@@ -177,8 +177,12 @@ Ao abrir, o painel SHALL mostrar o último estado de LED que o daemon informa co
 - **THEN** o painel abre com pulso, `#FF6600`, brilho 8 de 10 e velocidade 2 de 5
 
 #### Scenario: Daemon sem estado aplicado
-- **WHEN** o daemon acabou de iniciar e ainda não aplicou nada ao LED
+- **WHEN** o daemon não tem nenhum LED aplicado registrado
 - **THEN** o painel indica que o estado atual do LED não é conhecido e não envia nada até o usuário escolher um efeito
+
+#### Scenario: Depois de sair e entrar na sessão
+- **WHEN** o usuário aplicou o estático vermelho, saiu da sessão e entrou de novo
+- **THEN** o painel abre com estático, `#FF0000` e o switch ligado, sem enviar nada ao aparelho
 
 ### Requirement: Liga e desliga
 O liga/desliga do cabeçalho SHALL desligar o LED do aparelho selecionado com o efeito desligado. Religar SHALL reaplicar o último estado ligado que o daemon conhece. Sem esse dado, SHALL reaplicar o LED do perfil ativo e, sem perfil com LED, o efeito ciclo, o mais próximo do modo de fábrica.
@@ -191,13 +195,21 @@ O liga/desliga do cabeçalho SHALL desligar o LED do aparelho selecionado com o 
 - **WHEN** o usuário religa depois de desligar o pulso laranja na mesma sessão do daemon
 - **THEN** o painel pede de novo o pulso laranja com o mesmo brilho e a mesma velocidade
 
+#### Scenario: Religar depois de entrar na sessão
+- **WHEN** o usuário desliga o LED pelo switch depois de entrar na sessão, com o estático vermelho registrado pelo daemon, e religa
+- **THEN** o painel pede de novo o estático vermelho
+
 #### Scenario: Religar sem estado conhecido
-- **WHEN** o usuário religa depois de o daemon reiniciar, sem perfil ativo com LED
+- **WHEN** o usuário religa sem estado ligado conhecido (o daemon não tem LED registrado, ou o último registrado é o desligado), sem perfil ativo com LED
 - **THEN** o painel pede o efeito ciclo
 
 #### Scenario: Religar com o perfil ativo desligado
 - **WHEN** o usuário religa sem estado ligado conhecido, e o LED do perfil ativo é o efeito desligado
 - **THEN** o painel pede o efeito ciclo, e não o desligado do perfil
+
+#### Scenario: Reboot com corte de energia
+- **WHEN** o usuário aplicou o estático branco pelo painel, desligou o PC com corte de energia e ligou de novo
+- **THEN** o painel abre com estático, `#FFFFFF` e o switch ligado, sem Apply no login nem ao abrir o painel; desligar e religar pedem off e o mesmo estático branco
 
 ### Requirement: Efeitos de paleta só para leitura
 Os efeitos de paleta (color-shift, tri-color, spin, switch, lego e aurora) MUST NOT ser oferecidos para escolha. Se o estado aplicado for um deles, o painel SHALL mostrar o nome e as cores da paleta sem permitir editá-los. Brilho e velocidade SHALL continuar editáveis, com a mesma paleta, e escolher outro efeito SHALL continuar possível.

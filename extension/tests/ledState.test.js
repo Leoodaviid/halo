@@ -345,4 +345,44 @@ test('profileLed com e sem brilho, velocidade e cores', () => {
     equal(profileLed(null), null);
 });
 
+for (const [scenario, color] of [
+    ['Depois de sair e entrar na sessão', 'ff0000'],
+    ['Reboot com corte de energia', 'ffffff'],
+]) {
+    test(`${scenario}: abre com o último estático, switch ligado e nenhum envio`, () => {
+        const saved = {effect: 'static', colors: [color], brightness: 10, speed: 5};
+        const led = lastAppliedChanged({...EMPTY}, fromLastApplied(saved));
+        const v = controlsView(led);
+        equal(v.effectLabel, 'Estático');
+        equal(v.color, color);
+        ok(v.power.on);
+        ok(!v.unknown);
+        equal(led.inFlight, null);
+        equal(led.pending, null);
+        deepEqual(play(led, []).sent, []);
+        deepEqual(led.applied, saved);
+    });
+
+    test(`${scenario}: desligar e religar pedem off e a mesma cor`, () => {
+        const saved = {effect: 'static', colors: [color], brightness: 10, speed: 5};
+        let led = lastAppliedChanged({...EMPTY}, fromLastApplied(saved));
+        const off = commit(led, {...led.draft, effect: 'off', colors: []});
+        deepEqual(off.send, {effect: 'off', colors: [], brightness: 0, speed: 0});
+        led = lastAppliedChanged(off.led, {effect: 'off', colors: [], brightness: 0, speed: 5});
+        led = finished(led, true).led;
+        const on = commit(led, powerTarget(led.lastOn, null));
+        deepEqual(on.send, {effect: 'static', colors: [color], brightness: 10, speed: 0});
+    });
+}
+
+test('Religar após login com off guardado e sem perfil: pede cycle', () => {
+    const led = lastAppliedChanged({...EMPTY}, fromLastApplied({
+        effect: 'off', colors: [], brightness: 0, speed: 5,
+    }));
+    equal(led.lastOn, null);
+    ok(!controlsView(led).power.on);
+    deepEqual(commit(led, powerTarget(led.lastOn, null)).send,
+        {effect: 'cycle', colors: [], brightness: 10, speed: 5});
+});
+
 run();

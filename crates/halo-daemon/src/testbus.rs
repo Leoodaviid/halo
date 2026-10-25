@@ -116,6 +116,7 @@ impl Harness {
                 connection::Builder::address(bus.address.as_str()).unwrap(),
                 worker,
                 ProfileStore::new(&config, &state),
+                Some(crate::led_state::LedState::new(&state)),
                 crate::ticks::first_read(&sys),
             )
             .and_then(bus::claim_name)

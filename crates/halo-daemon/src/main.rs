@@ -6,6 +6,7 @@
 
 mod bus;
 mod error;
+mod led_state;
 mod profiles;
 #[cfg(test)]
 mod testbus;
@@ -75,6 +76,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 b,
                 worker,
                 ProfileStore::new(&config_dir, &state_dir),
+                Some(led_state::LedState::new(&state_dir)),
                 ticks::first_read(&cli.sys_root),
             )
         })

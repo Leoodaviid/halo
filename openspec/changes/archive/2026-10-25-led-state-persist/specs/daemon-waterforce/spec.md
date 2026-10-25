@@ -28,3 +28,7 @@ Como o protocolo não tem leitura do LED, a interface `Led` SHALL expor como pro
 #### Scenario: Falha ao guardar
 - **WHEN** uma aplicação dá certo, mas o valor não pode ser gravado no diretório de estado
 - **THEN** a aplicação continua sendo respondida com sucesso, a propriedade muda, e o daemon registra um aviso no log
+
+#### Scenario: Reboot com corte de energia
+- **WHEN** o daemon aplicou o estático branco pelo painel e o PC reinicia depois de desligar com corte de energia
+- **THEN** o primeiro Get do LastApplied informa o estático branco guardado, sem abrir hidraw nem enviar comandos ao aparelho
