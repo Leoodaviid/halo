@@ -28,7 +28,10 @@ check() {
 }
 
 # cargo falso: cria halo e halod com o conteúdo de FAKE_VERSION, ou falha
-# com FAKE_CARGO_FAIL=1. systemctl falso: só registra os argumentos.
+# com FAKE_CARGO_FAIL=1. O halod falso responde ao --help com o
+# --waterforce-cpu-safe, salvo com FAKE_NO_SAFE=1. systemctl falso: registra
+# os argumentos e, num stop, qual halod estava instalado (o ExecStopPost
+# precisa dele).
 mkdir -p "$T/stubs"
 cat > "$T/stubs/cargo" <<'EOF'
 #!/bin/sh
@@ -39,10 +42,22 @@ for b in halo halod; do
     printf '#!/bin/sh\n# %s %s\n' "$b" "$FAKE_VERSION" > "$CARGO_TARGET_DIR/release/$b"
     chmod 755 "$CARGO_TARGET_DIR/release/$b"
 done
+if [ "${FAKE_NO_SAFE:-0}" != 1 ]; then
+    echo 'echo "      --waterforce-cpu-safe"' >> "$CARGO_TARGET_DIR/release/halod"
+fi
 EOF
 cat > "$T/stubs/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >> "$FAKE_LOG"
+case "$*" in
+    *stop* | *--now*)
+        if [ -x "$BINDIR/halod" ]; then
+            echo "helper: $(sed -n 2p "$BINDIR/halod")" >> "$FAKE_LOG"
+        else
+            echo "helper: ausente" >> "$FAKE_LOG"
+        fi
+        ;;
+esac
 EOF
 # gsettings falso: guarda enabled-extensions e disable-user-extensions em
 # arquivos de $FAKE_GSETTINGS_DIR (padrões '@as []' e false) e falha com
@@ -147,9 +162,13 @@ check "@BINDIR@ trocado na unidade" grep -qxF "ExecStart=$BINDIR/halod" "$UNIT_F
 check "@BINDIR@ trocado na ativação" grep -qxF "Exec=$BINDIR/halod" "$DBUS_FILE"
 check "nenhum @BINDIR@ sobrando" sh -c "! grep -q @BINDIR@ '$UNIT_FILE' '$DBUS_FILE'"
 check "compila com --release --locked" grep -q -- '--release --locked' "$FAKE_LOG"
-check "daemon-reload, enable e restart, nessa ordem" calls_are "systemctl --user daemon-reload
+check "primeira instalação: daemon-reload, enable e start, sem stop" calls_are "systemctl --user daemon-reload
 systemctl --user enable halod.service
-systemctl --user restart halod.service"
+systemctl --user start halod.service"
+check "unidade com o helper no ExecStopPost" \
+    grep -qxF "ExecStopPost=$BINDIR/halod --waterforce-cpu-safe" "$UNIT_FILE"
+check "unidade com o watchdog e o limite de inícios" \
+    sh -c "grep -qxF 'WatchdogSec=20s' '$UNIT_FILE' && grep -qxF 'WatchdogSignal=SIGKILL' '$UNIT_FILE' && grep -qxF 'StartLimitIntervalSec=180s' '$UNIT_FILE'"
 check "regra ausente: avisa e mostra os comandos" \
     out_has_all "a regra udev não está instalada" "sudo udevadm control --reload"
 check "avisa que o BINDIR não está no PATH" out_has "não está no PATH"
@@ -166,7 +185,12 @@ export FAKE_VERSION=2
 PATH="$PATH:$BINDIR" run
 check "reinstalação termina com sucesso" [ "$status" = 0 ]
 check "reinstalação troca os binários" grep -q 'halod 2' "$BINDIR/halod"
-check "reinstalação reinicia o daemon" grep -qxF 'systemctl --user restart halod.service' "$FAKE_LOG"
+check "reinstalação para antes de trocar e inicia depois" calls_are "systemctl --user stop halod.service
+systemctl --user daemon-reload
+systemctl --user enable halod.service
+systemctl --user start halod.service"
+check "o stop roda com o halod antigo ainda instalado" grep -qxF 'helper: # halod 1' "$FAKE_LOG"
+check "o halod instalado tem o modo de proteção" sh -c "'$BINDIR/halod' --help | grep -q -- --waterforce-cpu-safe"
 check "regra em dia: nenhum comando com sudo" sh -c "! grep -q sudo '$T/out'"
 check "BINDIR no PATH: sem aviso" sh -c "! grep -q 'não está no PATH' '$T/out'"
 check "extensão igual: não pede para sair e entrar na sessão" sh -c "! grep -qF '$RELOGIN' '$T/out'"
@@ -218,6 +242,13 @@ run
 check "regra diferente: avisa que está desatualizada" \
     out_has_all "está desatualizada" "sudo install -m 644"
 
+# halod sem o modo de proteção: nada instalado muda, nem o daemon para.
+FAKE_VERSION=4 FAKE_NO_SAFE=1 run
+check "halod sem o helper: código diferente de zero" [ "$status" != 0 ]
+check "halod sem o helper: avisa" out_has "não tem --waterforce-cpu-safe"
+check "halod sem o helper: binário anterior mantido" grep -q 'halod 2' "$BINDIR/halod"
+check "halod sem o helper: systemctl não chamado" calls_are ""
+
 # Compilação falha: nada instalado muda e o systemd não é chamado.
 FAKE_VERSION=3 FAKE_CARGO_FAIL=1 run
 check "compilação falha: código diferente de zero" [ "$status" != 0 ]
@@ -242,6 +273,7 @@ run --uninstall
 check "desinstalação termina com sucesso" [ "$status" = 0 ]
 check "desinstalação para, desabilita e recarrega" calls_are "systemctl --user disable --now halod.service
 systemctl --user daemon-reload"
+check "desinstalação para com o halod ainda instalado" grep -qxF 'helper: # halod 2' "$FAKE_LOG"
 check "binários, unidade e ativação removidos" \
     missing_all "$BINDIR/halo" "$BINDIR/halod" "$UNIT_FILE" "$DBUS_FILE"
 check "perfis e snapshots mantidos, inclusive o original" \

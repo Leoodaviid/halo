@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-//! Tarefas periódicas e resume. Nesta versão, os ticks só leem o sysfs: a
-//! presença dos aparelhos e a telemetria do hwmon. Nenhum abre hidraw.
+//! Tarefas periódicas e resume. Os ticks leem o sysfs (presença, telemetria
+//! do hwmon e Tctl) e, com o feed supervisionado, marcam um envio da CPU na
+//! fila do Waterforce; nenhum tick abre hidraw por conta própria. Também
+//! renovam o watchdog quando houve progresso e percebem uma suspensão pelo
+//! salto do `CLOCK_BOOTTIME`, caso o sinal do logind se perca.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use futures_util::StreamExt;
@@ -16,12 +20,20 @@ use halo_core::{g502, it5702, waterforce};
 use zbus::Connection;
 
 use crate::bus::{
-    Device, Manager, ROOT_PATH, Telemetry, TelemetryState, WATERFORCE_PATH, devices_to_dbus,
+    CpuState, Device, Manager, ROOT_PATH, Telemetry, TelemetryState, WATERFORCE_PATH,
+    devices_to_dbus,
 };
-use crate::worker::{KnownModel, Model};
+use crate::feed::Feed;
+use crate::watchdog::Notifier;
+use crate::worker::{FeedSlot, KnownModel, Model, Worker};
 
-/// O intervalo mínimo do status no driver do kernel.
-pub const INTERVAL: Duration = Duration::from_secs(2);
+/// Diferença entre `CLOCK_BOOTTIME` e o monotônico, num intervalo de ticks,
+/// a partir da qual o daemon conclui que houve suspensão.
+pub const SUSPEND_JUMP: Duration = Duration::from_secs(5);
+
+/// O intervalo mínimo do status no driver do kernel, que também é o
+/// período do feed da CPU.
+pub const INTERVAL: Duration = crate::feed::PERIOD;
 
 /// Nome do Waterforce antes de o daemon conhecer o modelo.
 pub const WATERFORCE_NAME: &str = "AORUS Waterforce X";
@@ -141,14 +153,70 @@ pub fn next_telemetry(
     }
 }
 
+/// Próximo estado da CPU a partir de uma leitura do Tctl.
+pub fn next_cpu(prev: CpuState, read: Result<i32, String>, feed_active: bool) -> CpuState {
+    match read {
+        Ok(mc) => CpuState {
+            millicelsius: mc,
+            valid: true,
+            feed_active,
+        },
+        Err(_) => CpuState {
+            valid: false,
+            feed_active,
+            ..prev
+        },
+    }
+}
+
 pub struct Ticks {
     sys_root: PathBuf,
     model: KnownModel,
+    feed: Feed,
+    worker: Option<Worker>,
+    watchdog: Option<Arc<dyn Notifier>>,
+    /// Monotônico e `CLOCK_BOOTTIME` do tick anterior.
+    clocks: Mutex<Option<(Instant, Duration)>>,
 }
 
 impl Ticks {
+    /// Sem feed nem watchdog: só leituras do sysfs.
     pub fn new(sys_root: PathBuf, model: KnownModel) -> Self {
-        Self { sys_root, model }
+        Self {
+            feed: Feed::unsupervised(sys_root.clone()),
+            sys_root,
+            model,
+            worker: None,
+            watchdog: None,
+            clocks: Mutex::new(None),
+        }
+    }
+
+    /// Com o feed do `worker` e, sob supervisão, o watchdog.
+    pub fn with_worker(
+        sys_root: PathBuf,
+        model: KnownModel,
+        worker: Worker,
+        watchdog: Option<Arc<dyn Notifier>>,
+    ) -> Self {
+        Self {
+            feed: worker.feed().clone(),
+            worker: Some(worker),
+            watchdog,
+            ..Self::new(sys_root, model)
+        }
+    }
+
+    /// `true` se o `CLOCK_BOOTTIME` andou [`SUSPEND_JUMP`] além do
+    /// monotônico desde o tick anterior.
+    fn suspended(&self) -> bool {
+        let clock = self.feed.clock();
+        let now = (clock.now(), clock.boottime());
+        let prev = self.clocks.lock().unwrap().replace(now);
+        prev.is_some_and(|(mono, boot)| {
+            let mono = now.0.saturating_duration_since(mono);
+            now.1.saturating_sub(boot) > mono + SUSPEND_JUMP
+        })
     }
 
     /// Lê presença, nomes e telemetria e emite os sinais só do que mudou.
@@ -197,6 +265,41 @@ impl Ticks {
         if old.coolant_valid != new.coolant_valid {
             t.coolant_valid_changed(e).await?;
         }
+        drop(t);
+
+        // Suspensão percebida: sessão nova; o envio é o pedido deste tick.
+        if self.worker.is_some() && self.suspended() {
+            eprintln!("halod: suspensão percebida pelo relógio; reiniciando o feed da CPU");
+            self.feed.resume();
+        }
+        let (old, new) = {
+            let mut t = iface.get_mut().await;
+            let old = t.cpu;
+            t.cpu = next_cpu(old, self.feed.read_cpu(), self.feed.active());
+            (old, t.cpu)
+        };
+        let t = iface.get().await;
+        if old.millicelsius != new.millicelsius {
+            t.cpu_milli_celsius_changed(e).await?;
+        }
+        if old.valid != new.valid {
+            t.cpu_valid_changed(e).await?;
+        }
+        if old.feed_active != new.feed_active {
+            t.cpu_feed_active_changed(e).await?;
+        }
+
+        if let Some(worker) = &self.worker {
+            worker.request_feed(FeedSlot::Tick);
+        }
+        if let Some(watchdog) = &self.watchdog {
+            let present = devices.iter().any(|d| d.id == "waterforce" && d.present);
+            if self.feed.progressed(present)
+                && let Err(e) = watchdog.notify("WATCHDOG=1")
+            {
+                eprintln!("halod: aviso: watchdog não notificado: {e}");
+            }
+        }
         Ok(())
     }
 
@@ -227,11 +330,21 @@ trait Login1Manager {
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
 }
 
-/// `PrepareForSleep(false)` é o fim da suspensão: pede uma atualização.
-pub fn on_prepare_for_sleep(start: bool, refresh: &Sender<()>) {
-    if !start {
-        let _ = refresh.try_send(());
+/// `PrepareForSleep(true)` para o feed e tenta a proteção; `false` é o fim
+/// da suspensão: sessão nova do feed e uma volta dos ticks na hora, que faz
+/// o único pedido de envio (sem rajada).
+pub fn on_prepare_for_sleep(start: bool, refresh: &Sender<()>, worker: Option<&Worker>) {
+    if start {
+        if let Some(worker) = worker {
+            worker.feed().begin_sleep();
+            worker.request_feed(FeedSlot::SleepProtect);
+        }
+        return;
     }
+    if let Some(worker) = worker {
+        worker.feed().resume();
+    }
+    let _ = refresh.try_send(());
 }
 
 async fn connect_system(address: Option<&str>) -> zbus::Result<Connection> {
@@ -242,14 +355,18 @@ async fn connect_system(address: Option<&str>) -> zbus::Result<Connection> {
 }
 
 /// Acompanha o resume pelo logind. Sem D-Bus do sistema, só avisa.
-pub async fn watch_resume(system_address: Option<String>, refresh: Sender<()>) {
+pub async fn watch_resume(
+    system_address: Option<String>,
+    refresh: Sender<()>,
+    worker: Option<Worker>,
+) {
     let result = async {
         let conn = connect_system(system_address.as_deref()).await?;
         let proxy = Login1ManagerProxy::new(&conn).await?;
         let mut signals = proxy.receive_prepare_for_sleep().await?;
         while let Some(signal) = signals.next().await {
             if let Ok(args) = signal.args() {
-                on_prepare_for_sleep(*args.start(), &refresh);
+                on_prepare_for_sleep(*args.start(), &refresh, worker.as_ref());
             }
         }
         zbus::Result::Ok(())
@@ -385,9 +502,9 @@ mod tests {
     #[test]
     fn fim_da_suspensao_pede_atualizacao() {
         let (tx, rx) = async_channel::bounded(1);
-        on_prepare_for_sleep(true, &tx);
+        on_prepare_for_sleep(true, &tx, None);
         assert!(rx.try_recv().is_err());
-        on_prepare_for_sleep(false, &tx);
+        on_prepare_for_sleep(false, &tx, None);
         assert!(rx.try_recv().is_ok());
     }
 }

@@ -1,0 +1,150 @@
+{"event": "opened", "elapsed": 0.0014, "utc": "2026-10-25T21:42:57Z", "node": "/dev/hidraw2", "tctl_path": "/sys/class/hwmon/hwmon4/temp1_input", "tctl": 40.5}
+{"event": "send", "elapsed": 0.0021, "utc": "2026-10-25T21:42:57Z", "payload": "99 de 00", "reason": "status"}
+{"event": "sensor", "elapsed": 0.0165, "utc": "2026-10-25T21:42:57Z", "tctl": 40.5, "coolant_raw": "30000"}
+{"event": "response", "elapsed": 0.0166, "utc": "2026-10-25T21:42:57Z", "raw": "99 de 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"}
+{"event": "send", "elapsed": 0.0167, "utc": "2026-10-25T21:42:57Z", "payload": "99 dd", "reason": "status"}
+{"event": "response", "elapsed": 0.0321, "utc": "2026-10-25T21:42:57Z", "raw": "99 dd 05 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"}
+{"event": "send", "elapsed": 0.0322, "utc": "2026-10-25T21:42:57Z", "payload": "99 d9 01", "reason": "status"}
+{"event": "response", "elapsed": 0.0511, "utc": "2026-10-25T21:42:57Z", "raw": "99 d9 01 01 00 05 dc 1e 05 dc 32 05 dc 50 05 dc 00 00 00 00"}
+{"event": "send", "elapsed": 0.0512, "utc": "2026-10-25T21:42:57Z", "payload": "99 d9 02", "reason": "status"}
+{"event": "response", "elapsed": 0.0701, "utc": "2026-10-25T21:42:57Z", "raw": "99 d9 02 02 00 0a 28 1e 0a 28 32 0a 28 50 0a 28 00 00 00 00"}
+{"event": "phase", "elapsed": 0.0702, "utc": "2026-10-25T21:42:57Z", "name": "baseline", "seconds": 10}
+{"event": "DA", "elapsed": 1.8282, "utc": "2026-10-25T21:42:59Z", "raw": "99 da fb 08 00 96 0c 00 58 64 97 15 01 1e", "tctl": 40.375, "sent_celsius": null, "fan_rpm": 2299, "pump_rpm": 3222, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 2.6299, "utc": "2026-10-25T21:42:59Z", "tctl": 40.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 3.8491, "utc": "2026-10-25T21:43:01Z", "raw": "99 da cc 09 00 30 0c 00 58 64 4c 38 01 1e", "tctl": 40.0, "sent_celsius": null, "fan_rpm": 2508, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 5.2518, "utc": "2026-10-25T21:43:02Z", "tctl": 39.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 5.869, "utc": "2026-10-25T21:43:03Z", "raw": "99 da cc 09 00 30 0c 00 58 64 4c 38 01 1e", "tctl": 39.75, "sent_celsius": null, "fan_rpm": 2508, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 7.889, "utc": "2026-10-25T21:43:05Z", "tctl": 39.625, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 7.8892, "utc": "2026-10-25T21:43:05Z", "raw": "99 da cc 09 00 30 0c 00 58 64 4c 38 01 1e", "tctl": 39.625, "sent_celsius": null, "fan_rpm": 2508, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "DA", "elapsed": 9.91, "utc": "2026-10-25T21:43:07Z", "raw": "99 da f6 08 00 30 0c 00 58 64 95 38 01 1e", "tctl": 39.25, "sent_celsius": null, "fan_rpm": 2294, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "send", "elapsed": 10.1104, "utc": "2026-10-25T21:43:07Z", "payload": "99 e1 0d 52 79 7a 65 6e 20 35 20 35 36 30 30 47", "reason": "CPU name"}
+{"event": "send", "elapsed": 10.125, "utc": "2026-10-25T21:43:07Z", "payload": "99 e0 00 50 0c 00 00 06 00 00 00 00 00", "reason": "initial high"}
+{"event": "send", "elapsed": 10.139, "utc": "2026-10-25T21:43:07Z", "payload": "99 e5 01 01 00", "reason": "fan Customized"}
+{"event": "send", "elapsed": 10.153, "utc": "2026-10-25T21:43:07Z", "payload": "99 e6 00 01 00 08 98 1e 08 98 32 09 2e 50 09 c4", "reason": "temporary stepped fan curve"}
+{"event": "send", "elapsed": 10.168, "utc": "2026-10-25T21:43:07Z", "payload": "99 e0 00 50 0c 00 00 06 00 00 00 00 00", "reason": "temperature step"}
+{"event": "phase", "elapsed": 10.182, "utc": "2026-10-25T21:43:07Z", "name": "E0 80", "seconds": 12}
+{"event": "sensor", "elapsed": 10.3827, "utc": "2026-10-25T21:43:07Z", "tctl": 39.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 11.929, "utc": "2026-10-25T21:43:09Z", "raw": "99 da f6 08 00 d3 0c 00 58 64 95 d0 00 1e", "tctl": 39.25, "sent_celsius": 80, "fan_rpm": 2294, "pump_rpm": 3283, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 12.9311, "utc": "2026-10-25T21:43:10Z", "tctl": 39.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 13.948, "utc": "2026-10-25T21:43:11Z", "raw": "99 da ea 09 00 30 0c 00 64 64 d9 38 01 1e", "tctl": 39.0, "sent_celsius": 80, "fan_rpm": 2538, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 15.5512, "utc": "2026-10-25T21:43:12Z", "tctl": 38.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 15.9679, "utc": "2026-10-25T21:43:13Z", "raw": "99 da ea 09 00 30 0c 00 64 64 d9 38 01 1e", "tctl": 38.75, "sent_celsius": 80, "fan_rpm": 2538, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 17.9869, "utc": "2026-10-25T21:43:15Z", "raw": "99 da ea 09 00 30 0c 00 64 64 d9 38 01 1e", "tctl": 38.75, "sent_celsius": 80, "fan_rpm": 2538, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 18.1875, "utc": "2026-10-25T21:43:15Z", "tctl": 39.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 20.0068, "utc": "2026-10-25T21:43:17Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 39.125, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 20.8089, "utc": "2026-10-25T21:43:18Z", "tctl": 39.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 22.0268, "utc": "2026-10-25T21:43:19Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 39.0, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "send", "elapsed": 22.2272, "utc": "2026-10-25T21:43:19Z", "payload": "99 e0 00 32 0c 00 00 06 00 00 00 00 00", "reason": "temperature step"}
+{"event": "phase", "elapsed": 22.2418, "utc": "2026-10-25T21:43:19Z", "name": "E0 50", "seconds": 12}
+{"event": "sensor", "elapsed": 23.4442, "utc": "2026-10-25T21:43:20Z", "tctl": 39.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 24.0457, "utc": "2026-10-25T21:43:21Z", "raw": "99 da 0e 0a 00 d6 0b 00 5e 64 4e 2f 01 1e", "tctl": 39.125, "sent_celsius": 50, "fan_rpm": 2574, "pump_rpm": 3030, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 26.0657, "utc": "2026-10-25T21:43:23Z", "tctl": 38.875, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 26.0659, "utc": "2026-10-25T21:43:23Z", "raw": "99 da 0e 0a 00 30 0c 00 5e 64 4e 38 01 1e", "tctl": 38.875, "sent_celsius": 50, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 94, "pump_duty": 100}
+{"event": "DA", "elapsed": 28.0859, "utc": "2026-10-25T21:43:25Z", "raw": "99 da 0e 0a 00 d6 0b 00 5e 64 4e 2f 01 1e", "tctl": 38.75, "sent_celsius": 50, "fan_rpm": 2574, "pump_rpm": 3030, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 28.6874, "utc": "2026-10-25T21:43:26Z", "tctl": 38.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 30.1057, "utc": "2026-10-25T21:43:27Z", "raw": "99 da ed 09 00 84 0c 00 5e 64 4d d0 00 1e", "tctl": 38.5, "sent_celsius": 50, "fan_rpm": 2541, "pump_rpm": 3204, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 31.3085, "utc": "2026-10-25T21:43:28Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 32.1246, "utc": "2026-10-25T21:43:29Z", "raw": "99 da ed 09 00 30 0c 00 5e 64 4d 38 01 1e", "tctl": 38.5, "sent_celsius": 50, "fan_rpm": 2541, "pump_rpm": 3120, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 33.9279, "utc": "2026-10-25T21:43:31Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 34.1449, "utc": "2026-10-25T21:43:31Z", "raw": "99 da 92 0a 00 30 0c 00 5e 64 52 38 01 1e", "tctl": 38.375, "sent_celsius": 50, "fan_rpm": 2706, "pump_rpm": 3120, "fan_duty": 94, "pump_duty": 100}
+{"event": "send", "elapsed": 34.3454, "utc": "2026-10-25T21:43:31Z", "payload": "99 e0 00 1e 0c 00 00 06 00 00 00 00 00", "reason": "temperature step"}
+{"event": "phase", "elapsed": 34.3606, "utc": "2026-10-25T21:43:31Z", "name": "E0 30", "seconds": 12}
+{"event": "DA", "elapsed": 36.1645, "utc": "2026-10-25T21:43:33Z", "raw": "99 da 92 0a 00 30 0c 00 5e 64 52 38 01 1e", "tctl": 38.125, "sent_celsius": 30, "fan_rpm": 2706, "pump_rpm": 3120, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 36.5654, "utc": "2026-10-25T21:43:33Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 38.1825, "utc": "2026-10-25T21:43:35Z", "raw": "99 da 92 0a 00 d6 0b 00 5e 64 52 2f 01 1e", "tctl": 38.25, "sent_celsius": 30, "fan_rpm": 2706, "pump_rpm": 3030, "fan_duty": 94, "pump_duty": 100}
+{"event": "sensor", "elapsed": 39.1845, "utc": "2026-10-25T21:43:36Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 40.1985, "utc": "2026-10-25T21:43:37Z", "raw": "99 da ab 09 00 30 0c 00 58 64 4b 38 01 1e", "tctl": 38.0, "sent_celsius": 30, "fan_rpm": 2475, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 41.8015, "utc": "2026-10-25T21:43:39Z", "tctl": 38.625, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 42.2185, "utc": "2026-10-25T21:43:39Z", "raw": "99 da ab 09 00 94 0c 00 58 64 4b fa 00 1e", "tctl": 38.625, "sent_celsius": 30, "fan_rpm": 2475, "pump_rpm": 3220, "fan_duty": 88, "pump_duty": 100}
+{"event": "DA", "elapsed": 44.2385, "utc": "2026-10-25T21:43:41Z", "raw": "99 da c3 08 00 30 0c 00 58 64 68 38 01 1e", "tctl": 38.375, "sent_celsius": 30, "fan_rpm": 2243, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 44.4391, "utc": "2026-10-25T21:43:41Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 46.2567, "utc": "2026-10-25T21:43:43Z", "raw": "99 da c3 08 00 30 0c 00 58 64 68 38 01 1e", "tctl": 38.125, "sent_celsius": 30, "fan_rpm": 2243, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "send", "elapsed": 46.457, "utc": "2026-10-25T21:43:43Z", "payload": "99 e0 00 50 0c 00 00 06 00 00 00 00 00", "reason": "temperature step"}
+{"event": "phase", "elapsed": 46.4704, "utc": "2026-10-25T21:43:43Z", "name": "E0 80", "seconds": 12}
+{"event": "sensor", "elapsed": 47.0716, "utc": "2026-10-25T21:43:44Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 48.2764, "utc": "2026-10-25T21:43:45Z", "raw": "99 da c3 08 00 30 0c 00 58 64 68 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2243, "pump_rpm": 3120, "fan_duty": 88, "pump_duty": 100}
+{"event": "sensor", "elapsed": 49.6794, "utc": "2026-10-25T21:43:46Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 50.2924, "utc": "2026-10-25T21:43:47Z", "raw": "99 da 03 0a 00 30 0c 00 64 64 99 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2563, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 52.3123, "utc": "2026-10-25T21:43:49Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 52.3124, "utc": "2026-10-25T21:43:49Z", "raw": "99 da 03 0a 00 30 0c 00 64 64 99 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2563, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 54.3323, "utc": "2026-10-25T21:43:51Z", "raw": "99 da 0e 0a 00 d7 0c 00 64 64 4e fa 00 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3287, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 54.9336, "utc": "2026-10-25T21:43:52Z", "tctl": 38.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 56.3523, "utc": "2026-10-25T21:43:53Z", "raw": "99 da 0e 0a 00 da 0c 00 64 64 4e 15 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3290, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 57.5547, "utc": "2026-10-25T21:43:54Z", "tctl": 38.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 58.3732, "utc": "2026-10-25T21:43:55Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "phase", "elapsed": 58.5736, "utc": "2026-10-25T21:43:55Z", "name": "no E0 after 80 C", "seconds": 60}
+{"event": "sensor", "elapsed": 60.1765, "utc": "2026-10-25T21:43:57Z", "tctl": 37.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 60.3933, "utc": "2026-10-25T21:43:57Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 37.75, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 62.4102, "utc": "2026-10-25T21:43:59Z", "raw": "99 da 0e 0a 00 aa 0c 00 64 64 4e 26 01 1e", "tctl": 38.5, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3242, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 62.8112, "utc": "2026-10-25T21:44:00Z", "tctl": 38.5, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 64.4302, "utc": "2026-10-25T21:44:01Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 65.4322, "utc": "2026-10-25T21:44:02Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 66.4511, "utc": "2026-10-25T21:44:03Z", "raw": "99 da 0e 0a 00 d6 0b 00 64 64 4e 2f 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3030, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 68.0542, "utc": "2026-10-25T21:44:05Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 68.4724, "utc": "2026-10-25T21:44:05Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 70.4923, "utc": "2026-10-25T21:44:07Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 70.6928, "utc": "2026-10-25T21:44:08Z", "tctl": 38.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 72.511, "utc": "2026-10-25T21:44:09Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 73.3128, "utc": "2026-10-25T21:44:10Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 74.5292, "utc": "2026-10-25T21:44:11Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 75.9321, "utc": "2026-10-25T21:44:13Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 76.5449, "utc": "2026-10-25T21:44:13Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 78.5638, "utc": "2026-10-25T21:44:15Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 78.564, "utc": "2026-10-25T21:44:15Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 80.5791, "utc": "2026-10-25T21:44:17Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.625, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 81.1803, "utc": "2026-10-25T21:44:18Z", "tctl": 38.625, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 82.5948, "utc": "2026-10-25T21:44:19Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.625, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 83.7972, "utc": "2026-10-25T21:44:21Z", "tctl": 38.5, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 84.6118, "utc": "2026-10-25T21:44:21Z", "raw": "99 da 0e 0a 00 a5 0c 00 64 64 4e 00 00 1e", "tctl": 38.5, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3237, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 86.4157, "utc": "2026-10-25T21:44:23Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 86.6278, "utc": "2026-10-25T21:44:23Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.375, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 88.6437, "utc": "2026-10-25T21:44:25Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 89.0448, "utc": "2026-10-25T21:44:26Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 90.6597, "utc": "2026-10-25T21:44:27Z", "raw": "99 da 16 0b 00 30 0c 00 64 64 56 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2838, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 91.6615, "utc": "2026-10-25T21:44:28Z", "tctl": 38.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 92.6759, "utc": "2026-10-25T21:44:29Z", "raw": "99 da 16 0b 00 30 0c 00 64 64 56 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2838, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 94.2792, "utc": "2026-10-25T21:44:31Z", "tctl": 37.875, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 94.6916, "utc": "2026-10-25T21:44:32Z", "raw": "99 da 50 0a 00 30 0c 00 64 64 50 38 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2640, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 96.7136, "utc": "2026-10-25T21:44:34Z", "raw": "99 da 50 0a 00 30 0c 00 64 64 50 38 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2640, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 96.9142, "utc": "2026-10-25T21:44:34Z", "tctl": 37.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 98.7368, "utc": "2026-10-25T21:44:36Z", "raw": "99 da 50 0a 00 30 0c 00 64 64 50 38 01 1e", "tctl": 37.75, "sent_celsius": 80, "fan_rpm": 2640, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 99.5386, "utc": "2026-10-25T21:44:36Z", "tctl": 37.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 100.7695, "utc": "2026-10-25T21:44:38Z", "raw": "99 da ed 09 00 30 0c 00 64 64 34 38 01 1e", "tctl": 37.625, "sent_celsius": 80, "fan_rpm": 2541, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 102.1722, "utc": "2026-10-25T21:44:39Z", "tctl": 38.375, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 102.7925, "utc": "2026-10-25T21:44:40Z", "raw": "99 da ed 09 00 30 0c 00 64 64 34 38 01 1e", "tctl": 38.375, "sent_celsius": 80, "fan_rpm": 2541, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 104.8124, "utc": "2026-10-25T21:44:42Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 104.8126, "utc": "2026-10-25T21:44:42Z", "raw": "99 da 2f 0a 00 30 0c 00 64 64 4f 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2607, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 106.8315, "utc": "2026-10-25T21:44:44Z", "raw": "99 da 2f 0a 00 30 0c 00 64 64 4f 38 01 1e", "tctl": 38.5, "sent_celsius": 80, "fan_rpm": 2607, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 107.4328, "utc": "2026-10-25T21:44:44Z", "tctl": 38.5, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 108.8564, "utc": "2026-10-25T21:44:46Z", "raw": "99 da 0e 0a 00 be 0c 00 64 64 4e fa 00 1e", "tctl": 38.375, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3262, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 110.0588, "utc": "2026-10-25T21:44:47Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 110.8767, "utc": "2026-10-25T21:44:48Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 112.6801, "utc": "2026-10-25T21:44:49Z", "tctl": 38.25, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 112.8964, "utc": "2026-10-25T21:44:50Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 114.9166, "utc": "2026-10-25T21:44:52Z", "raw": "99 da e3 09 00 30 0c 00 64 64 6c 38 01 1e", "tctl": 38.0, "sent_celsius": 80, "fan_rpm": 2531, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 115.3178, "utc": "2026-10-25T21:44:52Z", "tctl": 38.0, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 116.9344, "utc": "2026-10-25T21:44:54Z", "raw": "99 da e3 09 00 d6 0b 00 64 64 6c 2f 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2531, "pump_rpm": 3030, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 117.9364, "utc": "2026-10-25T21:44:55Z", "tctl": 37.875, "coolant_raw": "30000"}
+{"event": "send", "elapsed": 118.738, "utc": "2026-10-25T21:44:56Z", "payload": "99 e5 01 04 00", "reason": "restore: safe fan mode"}
+{"event": "send", "elapsed": 118.7523, "utc": "2026-10-25T21:44:56Z", "payload": "99 e6 00 01 00 05 dc 1e 05 dc 32 05 dc 50 05 dc", "reason": "restore: original inactive fan slot"}
+{"event": "send", "elapsed": 118.7663, "utc": "2026-10-25T21:44:56Z", "payload": "99 e5 01 05 00", "reason": "restore: original fan mode"}
+{"event": "send", "elapsed": 118.7812, "utc": "2026-10-25T21:44:56Z", "payload": "99 de 00", "reason": "status"}
+{"event": "response", "elapsed": 118.7972, "utc": "2026-10-25T21:44:56Z", "raw": "99 de 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"}
+{"event": "send", "elapsed": 118.7973, "utc": "2026-10-25T21:44:56Z", "payload": "99 dd", "reason": "status"}
+{"event": "response", "elapsed": 118.8162, "utc": "2026-10-25T21:44:56Z", "raw": "99 dd 05 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"}
+{"event": "send", "elapsed": 118.8162, "utc": "2026-10-25T21:44:56Z", "payload": "99 d9 01", "reason": "status"}
+{"event": "response", "elapsed": 118.8352, "utc": "2026-10-25T21:44:56Z", "raw": "99 d9 01 01 00 05 dc 1e 05 dc 32 05 dc 50 05 dc 00 00 00 00"}
+{"event": "send", "elapsed": 118.8353, "utc": "2026-10-25T21:44:56Z", "payload": "99 d9 02", "reason": "status"}
+{"event": "response", "elapsed": 118.8542, "utc": "2026-10-25T21:44:56Z", "raw": "99 d9 02 02 00 0a 28 1e 0a 28 32 0a 28 50 0a 28 00 00 00 00"}
+{"event": "phase", "elapsed": 118.8543, "utc": "2026-10-25T21:44:56Z", "name": "restored", "seconds": 10}
+{"event": "DA", "elapsed": 118.9523, "utc": "2026-10-25T21:44:56Z", "raw": "99 da 0e 0a 00 d6 0b 00 64 64 4e 2f 01 1e", "tctl": 37.875, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3030, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 120.5555, "utc": "2026-10-25T21:44:57Z", "tctl": 37.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 120.9724, "utc": "2026-10-25T21:44:58Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 37.75, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "DA", "elapsed": 122.9922, "utc": "2026-10-25T21:45:00Z", "raw": "99 da 0e 0a 00 30 0c 00 64 64 4e 38 01 1e", "tctl": 37.625, "sent_celsius": 80, "fan_rpm": 2574, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 123.1927, "utc": "2026-10-25T21:45:00Z", "tctl": 37.75, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 125.0071, "utc": "2026-10-25T21:45:02Z", "raw": "99 da c5 09 00 83 0c 00 64 64 7e d0 00 1e", "tctl": 38.25, "sent_celsius": 80, "fan_rpm": 2501, "pump_rpm": 3203, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 125.8087, "utc": "2026-10-25T21:45:03Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "DA", "elapsed": 127.0261, "utc": "2026-10-25T21:45:04Z", "raw": "99 da c5 09 00 30 0c 00 64 64 7e 38 01 1e", "tctl": 38.125, "sent_celsius": 80, "fan_rpm": 2501, "pump_rpm": 3120, "fan_duty": 100, "pump_duty": 100}
+{"event": "sensor", "elapsed": 128.4287, "utc": "2026-10-25T21:45:05Z", "tctl": 38.125, "coolant_raw": "30000"}
+{"event": "complete", "elapsed": 129.0298, "utc": "2026-10-25T21:45:06Z", "restored": true, "last_e0_celsius": 80, "B6_sent": false}
+{"event": "guard_disarmed", "elapsed": 129.0299, "utc": "2026-10-25T21:45:06Z"}

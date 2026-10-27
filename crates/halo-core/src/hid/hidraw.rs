@@ -83,7 +83,9 @@ impl Hidraw {
         Self::open_with_timeout(path, LOCK_TIMEOUT)
     }
 
-    fn open_with_timeout(path: &Path, timeout: Duration) -> Result<Self, OpenError> {
+    /// Como [`Hidraw::open`], mas espera o `flock` só até `timeout`, para
+    /// quem tem um prazo total menor que [`LOCK_TIMEOUT`].
+    pub fn open_with_timeout(path: &Path, timeout: Duration) -> Result<Self, OpenError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)

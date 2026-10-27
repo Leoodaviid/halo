@@ -285,6 +285,395 @@ Resultados **confirmados no aparelho**:
 
 Ainda não observado: o comportamento acima do último ponto e o efeito de uma carga na CPU, porque a fan já estava no máximo.
 
+### Pré-condições da proposta `waterforce-cpu-feed` (2026-10-25)
+
+Estado: investigação estática; **nenhum experimento novo executado**. A proposta
+depende das verificações abaixo antes do design. Não interpretar a hipótese de
+50 °C como comportamento confirmado ou como garantia de segurança.
+
+Fontes conferidas no decompilado
+`/mnt/workspace/tools/samples/gigabyte-control-center/extracted/ilspy-aoruslcdservice/`:
+`AorusLcdService.API.Cooler/CoolerDataApi.cs`, `GetCoolerData` (linhas 230–257),
+`SendCpuName` e `SendCoolerData`; e
+`AorusLcdService.API.CPU/CpuDataApi.cs`, `MakeCpuData`.
+O ramo do 7A4D espera 20 s, prepara nome/fabricante/threads/núcleos, envia E1 e
+repete aquisição e envio de E0 sem `Sleep` explícito. Isso não mede o período
+efetivo: a aquisição também consome tempo. O `Sleep(1000)` de outros ramos não
+justifica adotar 1 s para este aparelho. Layout dos pacotes em
+[Dados de sistema](protocols/castor3.md#dados-de-sistema-aoruslcdservice).
+
+| Questão obrigatória | Evidência existente | Verificação ainda pendente |
+|---|---|---|
+| A curva usa a temperatura enviada em E0? | A curva reage ao E6; o ensaio anterior excluiu o líquido como referência, mas não demonstrou E0. | Com curva de degraus documentada e aprovada, comparar poucos E0 de 30, 50 e 80 °C com duty e RPM do DA, mantendo os demais campos controlados. Se a hipótese falhar, parar esta change e reportar. |
+| O que acontece quando E0 para, e em quanto tempo? | Não medido. | Observar a interrupção após valor alto, com registro temporal; retenção ou ausência de mudança durante uma janela finita não prova ausência de timeout. O resultado precisa orientar o failsafe para saída normal, travamento e morte do processo. |
+| E0 grava flash? E1 é necessário? | O serviço separa nome e dados; o laço observado não envia B6. Isso não prova a implementação interna do firmware nem a necessidade de E1. | Conferir transporte e chamadas; comparar E0 com/sem E1 em condições iniciais conhecidas e registrar o limite da conclusão sobre persistência. |
+
+Cada execução que escrever no aparelho depende de aval específico do usuário,
+com sequência completa de comandos, duração, curva inicial, monitoramento e
+restauração apresentados previamente. Não há aval registrado para novos envios
+E0/E1 nesta investigação. O slot Customized registrado acima é plano; não serve
+para discriminar temperaturas. Restaurar apenas o preset não restaura o slot
+Customized sobrescrito, conforme o ensaio anterior.
+
+O observador existente `scripts/diag/waterforce_da_sniff.py` abre hidraw somente
+para leitura e registra Tctl e bytes 2–13 do DA; a leitura de hwmon provoca o
+pedido DA pelo kernel. Não foi executado nesta investigação. Para o ensaio,
+preservar saída bruta e horários de cada envio; duty da fan é `data[8]`, RPM da
+fan é `data[2..4]` little-endian, conforme a seção do driver acima. O script
+atual assume `temp1_input` do k10temp: conferir `temp*_label = Tctl` antes de
+usar esse valor como referência.
+
+Pontos de integração observados, ainda sem decisão de design:
+`crates/halo-daemon/src/ticks.rs` faz leituras de sysfs a cada 2 s e não abre
+hidraw; `worker.rs` concentra operações de backend; `bus.rs` publica telemetria.
+`crates/halo-core/src/hid/hidraw.rs`, `Hidraw::open`, toma `flock` exclusivo
+com prazo. O envio periódico terá de conviver com esse lock e com operações da
+CLI; o período de telemetria existente não determina o período seguro de E0.
+
+Complemento recebido: o aceite exige reação real à carga, curvas com degraus,
+testes de ritmo/proteção com backend falso, log de temperatura enviada versus
+DA, ensaio final de carga e `/cross-review` antes de implementar. Continuam
+pendentes a definição exata da propriedade D-Bus e detalhes truncados; o painel
+fica fora do escopo. O design permanece condicionado às medições acima.
+
+Leitura local em 2026-10-25: `/proc/cpuinfo` identifica AMD Ryzen 5 5600G,
+12 threads e 6 núcleos; o hwmon de nome `k10temp` tem `temp1_label = Tctl`.
+Esses índices são apenas o estado observado, não caminhos fixos para o design.
+O serviço `halod.service` está ativo. `stress-ng` não foi encontrado; a tentativa
+autorizada de `sudo apt install stress-ng` não instalou o pacote porque o sudo
+exigiu autenticação em terminal. Não foi iniciada carga na CPU.
+
+Precisão adicional do decompilado: `SendCoolerData` chama o campo do byte 8 de
+`VRAMTemperature`, enquanto a tabela de protocolo o chama de VRM. Não usar essa
+divergência para escolher um sensor: o significado permanece pendente de
+análise. `CoolerApi.Send` apenas completa o output report com zeros e chama
+`HidDriver.WriteByte`; não acrescenta `B6`. Isso confirma a ausência de save
+explícito nesse transporte, mas não prova que o firmware nunca grave E0.
+
+Leitura autorizada do aparelho em 2026-10-25:
+`target/debug/halo speed waterforce status`, executado fora do sandbox após
+o sandbox não expor o hidraw. Resultado: modelo X 240 (`DE = 0`), fan
+Performance (`5`), bomba Turbo (`4`); slot da fan 0/30/50/80 °C em 1500 RPM,
+slot da bomba nas mesmas temperaturas em 2600 RPM. São slots inativos.
+Enviados somente `DE 00`, `DD`, `D9 01` e `D9 02`; nenhuma configuração alterada.
+O protocolo do primeiro ensaio está em
+[`experimentos.md`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experimentos.md).
+
+### E0 como referência da curva: confirmado no aparelho (2026-10-25)
+
+Ensaio autorizado com E1 (`Ryzen 5 5600G`), E0 e curva temporária da fan
+0:2200/30:2200/50:2350/80:2500; bomba sem alterações. Payloads, sequência,
+proteção e limitações no protocolo acima; dados brutos em
+[`experiment1.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experiment1.jsonl).
+Nenhum B6 enviado, nenhuma carga de CPU iniciada.
+
+| E0 (°C) | Duty DA após reação | Primeiro DA com esse duty após envio | RPM no fim dos 12 s |
+|---|---|---|---|
+| 80 | 100 | 3,780 s | 2574 |
+| 50 | 94 | 1,819 s | 2706 |
+| 30 | 88 | 5,853 s | 2243 |
+| 80 | 100 | 3,835 s | 2574 |
+
+O Tctl real ficou em ~37,6–40,5 °C durante o ensaio. Os duties correspondem
+exatamente aos alvos 2500/2350/2200 na escala de 2500 RPM: **E0 altera a
+referência da curva Customized**, com E1 prévio e demais campos controlados.
+O byte 8 bruto do DA está em escala compatível com porcentagem; os valores
+de duty 0–255 das tabelas antigas vêm de pwm1 do hwmon. Os atrasos incluem
+a leitura do DA (~2 s) e não estabelecem uma cadência segura de envio.
+O RPM oscila e teve inércia: o patamar de 50 °C não mostrou redução de RPM
+dentro dos 12 s, embora o duty tenha caído para 94.
+
+O último DA antes de restaurar mostrou duty 100, **70,48 s após o último
+E0 de 80 °C**, sem fallback observado. Não se demonstrou ausência de timeout
+posterior, nem comportamento após último E0 frio. Esse segundo caso é o
+próximo ensaio proposto, ainda sem autorização.
+
+DE/DD/D9 confirmaram a restauração de modos e slots originais (Performance,
+Turbo; 1500 ×4 e 2600 ×4). O duty final permaneceu 100: restaurar modo/slot
+não desfaz a última temperatura enviada, mantida intencionalmente em 80 °C.
+O ensaio confirma a hipótese de referência, mas não encerra as pré-condições
+do design: E1 obrigatório, persistência do E0, proteção e cadência continuam
+pendentes. O byte do líquido em zero não impediu a resposta da curva neste
+ensaio; isso não prova ausência de outros efeitos.
+
+### Interrupção após E0 frio (2026-10-25)
+
+Ensaio 2 autorizado separadamente, com a mesma curva conservadora, sem E1
+novo, B6 ou carga de CPU. Dados em
+[`experiment2.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experiment2.jsonl).
+O E1 do ensaio anterior continuava sendo uma condição inicial conhecida;
+portanto isso não testa sua necessidade após inicialização limpa.
+
+O E0 de 30 °C levou o duty a 88 em 4,06 s até o primeiro DA correspondente.
+O último DA antes do E0 alto, **70,62 s após o envio frio**, ainda mostrava
+duty 88 e fan 2297 RPM, com Tctl de 40,75 °C. Depois da reação inicial,
+todos os DA dessa janela mantiveram duty 88: não houve fallback observado
+para 50 °C nem para velocidade máxima. Não extrapolar para retenção infinita.
+
+O E0 final de 80 °C levou a duty 100 no primeiro DA correspondente após
+2,44 s. DE/DD/D9 conferiram a restauração de Performance/Turbo e dos slots
+1500 ×4/2600 ×4. Tctl no ensaio: 40,125–43 °C; nenhum abort. Último E0
+mantido alto, com duty final 100. A bomba não foi reconfigurada.
+
+Consequência: não há timeout curto de segurança demonstrado. Enviar E0 alto
+apenas no encerramento normal não protege contra morte abrupta antes desse
+envio. É preciso resolver a proteção independente e o ciclo de vida fora da
+sessão, ou restringir curvas por um piso cuja suficiência térmica seja
+validada. O piso de 2200 RPM usado para observar o comportamento não recebeu
+essa validação e não deve ser declarado seguro para qualquer carga.
+
+Decisão posterior do usuário para `waterforce-cpu-feed`: não incluir serviço
+de sistema/root. O design passa a usar proteção no SIGTERM, ExecStopPost com
+comando independente, watchdog de progresso e Restart=on-failure na unidade
+de usuário. Isso cobre falhas do principal enquanto o gerenciador, hardware e
+permissões permitem executar a recuperação; não cobre a morte do gerenciador,
+kernel travado ou garante entrega antes da suspensão. O protetor de sistema
+foi descartado porque acrescentaria só a cobertura da morte do gerenciador,
+não a de kernel travado, e exigiria root, outra unidade e hidraw fora da
+regra udev da sessão. Nenhuma dessas camadas novas foi implementada ou testada
+no aparelho nesta fase de artefatos.
+
+A leitura do DA após corte de energia foi feita em 2026-10-27, depois dos
+ensaios do feed: ver "DA depois de corte de energia, sem halod" abaixo.
+
+Consolidação de 2026-10-27, sem envio novo ao aparelho: a matriz fonte/byte
+do E0 e do E1 (GCC, design do halo e bytes enviados nos ensaios) está em
+[Matriz fonte/byte](protocols/castor3.md#matriz-fontebyte-do-e0-e-do-e1-change-waterforce-cpu-feed).
+Os dois JSONL não têm `B6`, e o transporte do GCC não acrescenta `B6`; isso
+não prova ausência de gravação interna na flash. **E1 obrigatório continua
+não comprovado**: o ensaio 2 funcionou sem E1 novo, mas com o E1 do ensaio 1
+ainda valendo. O GCC encurta o nome para no máximo 30 caracteres em
+`GetCpuShortName`; o ensaio usou `Ryzen 5 5600G` (13 bytes).
+
+### Feed do halod e parada com proteção: ensaio 6.1 (2026-10-27)
+
+Ensaio autorizado com o par novo instalado (`packaging/install.sh`), o
+halod sob `WatchdogSec=20s` e `HALOD_TRACE_FEED=1` (cada envio no journal).
+Observador só de leitura: `scripts/diag/waterforce_da_sniff.py 900 0 --jsonl`,
+com o Tctl achado pelo rótulo. Dados em
+[`ensaio-6.1.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.1.jsonl),
+separados dos ensaios 1 e 2. Sem carga na CPU.
+
+Início do halod (10:21:31): sessão nova com `E0` de 80 °C, mais três de 80 °C
+na janela segura, e o Tctl a partir de 10:21:39 (8,1 s depois), a cada ~2,02 s.
+`CpuFeedActive=true` logo depois.
+
+**Performance com o halo enviando o Tctl:** com a fan em Performance e o Tctl
+em ~34–35 °C, o `DA` mostrou duty 81–82 (~2076–2244 RPM). Sem ninguém enviar
+`E0`, o mesmo preset ficava em 88 (seção "Velocidade com `halo speed waterforce`" acima). O preset
+também segue o `E0`.
+
+Curva gravada pelo `SetFanCurve` (10:22:23,8; um `B6`):
+0:2200/30:2200/50:2350/80:2500. O duty seguiu o Tctl enviado:
+
+| Tctl (°C) | Duty no `DA` | Esperado pela curva |
+|---|---|---|
+| ~34 | 89 (a partir de +2,2 s) | 89 (2230 RPM) |
+| 46–50 (atividade espontânea) | 92 → 94 | 92–94 |
+| 41–42 (descendo) | 91 | 91 |
+
+Parada com `systemctl --user stop halod.service` (10:23:26,467):
+
+| Instante | Evento (journal ou `DA`) |
+|---|---|
+| 10:23:24,578 | último `E0` frio: 40 °C |
+| 26,472 | SIGTERM recebido |
+| 26,519 | `E0` de 80 °C do principal ("antes de sair") |
+| 26,580 | `DE`/`E1`/`E0` de 80 °C do `halod --waterforce-cpu-safe` (ExecStopPost) |
+| +2,6 s | `DA` ainda em 90 |
+| +5,1 s | `DA` em **100** (2574 RPM) |
+| +5,1 a +45,4 s | 100 em todos os `DA`, com Tctl de 35–40,6 °C (a curva daria ~90) |
+| 34,581 | unidade parada (`Result=success`, 8,1 s de parada) |
+
+Resultado: o último `E0` foi de 80 °C e o duty foi ao ponto de 80 °C da curva
+preparada, e não só status 0. A parada normal passa pelas duas camadas
+(SIGTERM e helper), então este ensaio não isola qual delas causou o 100: essa
+distinção é o objetivo do 6.2 (SIGKILL) e do 6.3 (travamento).
+
+Restauração: `halo speed waterforce restore` (snapshot anterior, um `B6`)
+voltou a fan a Performance e a bomba a Turbo (`DD` `05 04`). O slot
+Customized da fan, inativo, ficou com 2200/2200/2350/2500, e não com o
+1500 ×4 anterior: o `restore` não regrava o slot de um lado que estava em
+preset (limitação já registrada acima). O último `E0` ficou em 80 °C, com o
+halod parado.
+
+### SIGKILL no principal: ensaio 6.2 (2026-10-27)
+
+Ensaio autorizado, com a mesma curva do 6.1 gravada pelo `SetFanCurve`
+(10:28:35,6; um `B6`) e o mesmo observador. Dados em
+[`ensaio-6.2.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.2.jsonl).
+Patamar frio: Tctl de 30,4–33,4 °C, `E0` de 31–32 °C, duty 88–89 por mais de
+40 s (ponto 30:2200 da curva). Morte com
+`systemctl --user kill --kill-whom=main -s KILL halod.service`, que atinge só o
+principal; sem `--kill-whom=main`, o SIGKILL vai ao cgroup inteiro e mata
+também o helper recém-iniciado (visto no `packaging/tests/systemd-harness.sh`).
+
+| Instante | Evento (journal ou `DA`) |
+|---|---|
+| 10:29:28,753 | último `E0` frio do principal antigo (PID 165762): 32 °C |
+| 28,875 | SIGKILL no principal; sai com `status=9/KILL`, sem nenhum envio |
+| 28,931 | `DE`/`E1`/`E0` de 80 °C do helper (PID 166269), 56 ms depois da morte |
+| 30,922 (+2,05 s) | `DA` ainda em 88 |
+| **33,439 (+4,57 s)** | `DA` em **100** (2585 RPM) |
+| 35,959 e 38,480 | `DA` em 100 |
+| 36,932 | fim do helper (8 s); unidade `Failed with result 'signal'` |
+| 39,112 | restart (RestartSec=2, contador 1); principal novo PID 166399 |
+| 39,171 | primeiro `E0` do principal novo: sessão nova, 80 °C |
+| 39,2 a 45,2 | janela segura do principal novo; `DA` em 100 |
+| 47,243 | primeiro `E0` de Tctl do principal novo: 32 °C |
+| 49,246 | `DA` volta a 88 |
+
+Resultado: **três `DA` com duty 100 entre o `E0` do helper e o primeiro `E0`
+do principal novo** (10:29:28,931 a 39,171). A proteção depois da morte
+abrupta veio só do helper do ExecStopPost; a janela segura do principal novo
+não entra nessa prova. O atraso até o primeiro `DA` em 100 foi de 4,5 s depois
+do envio, dentro da faixa já observada (1,8–5,9 s).
+
+Restauração com o halod rodando (`halo speed waterforce restore`, um `B6`):
+fan em Performance e bomba em Turbo (`DD` `05 04`); o slot inativo da fan
+continua com 2200/2200/2350/2500. O halod ficou ativo, alimentando o Tctl.
+
+### Principal congelado (SIGSTOP): ensaio 6.3a (2026-10-27)
+
+Ensaio autorizado, com a mesma curva (`SetFanCurve` às 10:32:18,5; um `B6`) e
+o mesmo observador. Dados em
+[`ensaio-6.3a.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.3a.jsonl).
+Patamar frio: Tctl de ~30–32 °C, duty 88 por mais de 40 s. Congelamento com
+`systemctl --user kill --kill-whom=main -s STOP halod.service`.
+
+| Instante | Evento (journal ou `DA`) |
+|---|---|
+| 10:33:09,189 | último `E0` frio do principal (PID 166399): 33 °C |
+| 10,472 | SIGSTOP no principal; nenhum envio nem ping depois |
+| 11,2 a 28,8 | `DA` em 88: o firmware mantém o último `E0` frio |
+| 29,362 | `Watchdog timeout (limit 20s)!`; SIGKILL no principal (~20,2 s depois do último envio, e do ping que o seguiu) |
+| 29,422 | `DE`/`E1`/`E0` de 80 °C do helper (PID 167828), 60 ms depois do kill |
+| **31,417 (+2,0 s)** | `DA` em **100** |
+| 33,939, 36,461 e 38,988 | `DA` em 100 |
+| 37,423 | fim do helper; `Failed with result 'watchdog'` |
+| 39,612 | restart (contador 2); principal novo PID 167865 |
+| 39,673 | primeiro `E0` do principal novo: sessão nova, 80 °C |
+| 47,746 | primeiro `E0` de Tctl (31 °C); `DA` de volta a 88 às 51,773 |
+
+Resultado: o watchdog detectou o principal parado e o matou com SIGKILL, sem
+SIGTERM nem core dump; **quatro `DA` com duty 100 entre o `E0` do helper e o
+primeiro `E0` do principal novo** (10:33:29,422 a 39,673). A janela com o
+`E0` frio retido, do último envio ao primeiro `DA` em 100, foi de 22,2 s:
+20 s de watchdog, 0,06 s até o helper e 2,0 s até o `DA`. É a janela de
+rotação baixa prevista no design, não um limite garantido.
+
+O caso do worker preso com os ticks vivos (6.3b) não foi feito no aparelho: o
+binário instalado não tem como prender só a thread do Waterforce. Ele está
+coberto pelos testes automáticos (`cpu_feed_watchdog_tick_vivo_com_worker_preso`)
+e pelo cenário "sem pings" do `packaging/tests/systemd-harness.sh`.
+
+Restauração com o halod rodando (`restore`, um `B6`): fan em Performance,
+bomba em Turbo. O halod ficou ativo, alimentando o Tctl.
+
+### Feed com a CLI e lock externo: ensaio 6.4 (2026-10-27)
+
+Ensaio autorizado, sem `B6` e sem mudar modo ou curva (fan em Performance).
+DA em [`ensaio-6.4.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.4.jsonl)
+e horários da CLI e do lock em
+[`ensaio-6.4-eventos.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.4-eventos.jsonl).
+O lock externo usou `flock /dev/hidraw2 sleep N`, que toma o mesmo `flock` do
+halo sem enviar nada ao aparelho.
+
+- **CLI em sequência:** cinco `halo speed waterforce status` (DE/DD/D9), de
+  ~80 ms cada, todos completos (rc 0). Nenhum `E0` caiu dentro de uma
+  transação da CLI; os `E0` saíram antes ou depois delas, na cadência de
+  ~2,02 s.
+- **Lock de 3 s** (10:59:33,962 a 36,967): o tick que venceu no meio esperou;
+  um único `E0` (35 °C, Tctl relido) saiu 20 ms depois da liberação, e o
+  seguinte 1,5 s depois. Um período perdido, sem rajada.
+- **Lock de 8 s** (10:59:48,967 a 56,971): o feed desistiu com Busy aos
+  5,0 s do pedido (55,638), tentou a proteção numa transação nova, que pegou o
+  lock na liberação: `E0` de 80 °C aceito às 57,048. Sessão nova às 57,092
+  (outro 80 °C, 44 ms depois; corrigido no código depois do ensaio para não
+  sair colado), janela de 8 s em 80 °C e Tctl atual (34 °C) às 11:00:06,8,
+  sem replay das amostras perdidas. Último `E0` frio antes da espera:
+  10:59:48,612; sem envio por 8,4 s.
+- **DA:** duty 81–82 no Performance com o Tctl de ~34 °C; ficou em 81 durante
+  os locks (o firmware manteve o último `E0`), foi a 100 às 11:00:00,7 (3,6 s
+  depois do `E0` de 80 °C) e voltou a 81 às 11:00:10,8, 4 s depois do primeiro
+  `E0` de Tctl. O `DA` continuou chegando durante os locks: o pedido é do
+  driver do kernel, que não usa o `flock` do halo.
+- **Watchdog:** nenhum restart (`NRestarts` igual antes e depois). A
+  contenção de 8 s não gerou falso positivo.
+
+### Carga real com `stress-ng`: ensaio 6.5 (2026-10-27)
+
+Ensaio autorizado, com o par instalado às 11:06:46 (inclui a correção do
+`E0` colado depois da recuperação) e a mesma curva (`SetFanCurve` às
+11:08:15,2; um `B6`). Carga: `stress-ng --cpu 0 --timeout 60s` (12 threads),
+com aborto automático se o Tctl chegasse a 90 °C (não chegou). DA em
+[`ensaio-6.5.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.5.jsonl),
+fases em
+[`ensaio-6.5-eventos.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.5-eventos.jsonl);
+o `E0` enviado vem do journal (`HALOD_TRACE_FEED=1`). Tempos relativos ao
+início da carga (11:08:51,9).
+
+| Instante | Tctl | `E0` enviado | Duty no `DA` | RPM da fan |
+|---|---|---|---|---|
+| −30 a 0 s (repouso) | 37–41 °C | 37–42 | 89–91 | 2230–2541 |
+| +2,0 s | 54,5 | 41 (ainda o anterior) | 91 | 2541 |
+| +6,0 s | 62,5 | 61 | 91 | 2541 |
+| +8,0 s | 63,2 | 63 | **96** | 2442 |
+| +20 a +60 s | 65–66 | 65–66 | 97 | 2442–2772 |
+| +64,6 s (fim da carga) | 61,5 | 64 | 97 | 2508 |
+| +80,8 s | 50,0 | 52 | 94 | 2475 |
+| +100,9 s | 42,5 | 44 | 91 | 2368 |
+| +121 a +137 s | 38–38,6 | 38–39 | 90 | 2298–2409 |
+
+- **Duty seguiu o Tctl** nos dois sentidos, nos pontos da curva: 66 °C dá
+  2430 RPM pela interpolação entre 50:2350 e 80:2500, ou 97 %; 50 °C dá 94;
+  38–40 °C, 90–91. O primeiro `DA` com o duty novo veio ~2 s depois do `E0`
+  que o causou.
+- **RPM:** média de 2392 no repouso, 2534 sob carga (10–61 s) e 2363 no
+  repouso seguinte (100–140 s). O RPM oscila ±150 entre leituras, então a
+  subida e a descida aparecem na média, não leitura a leitura.
+- **Cadência:** 99 `E0`, intervalos de 2,012 a 2,037 s (mediana 2,020 s),
+  sem rajada nem lacuna. Tctl máximo de 66,0 °C; `E0` máximo de 66.
+- **Watchdog:** nenhum restart.
+
+Com esta curva, o 5600G sob carga total ficou em ~66 °C e a fan não chegou ao
+ponto de 80 °C. Restauração com o halod rodando (`restore`, um `B6`): fan em
+Performance, bomba em Turbo.
+
+### DA depois de corte de energia, sem halod: tarefa 1.2 (2026-10-27)
+
+Leitura autorizada. Antes do corte: `systemctl --user disable --now
+halod.service` às 11:17:58,7, com o último `E0` de 80 °C enviado pelo
+SIGTERM (58,995) e pelo helper (59,058). O PC desligou às 11:21:10, com corte
+de energia pelo usuário, e ligou às 11:24:50. O halod não rodou no boot novo
+(unidade desabilitada, sem entradas no journal, nenhum processo). Às
+11:26:27, o observador só de leitura registrou 16 `DA` em 40 s; depois,
+`halo speed waterforce status` (DE/DD/D9). Dados em
+[`baseline-pos-corte.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/baseline-pos-corte.jsonl).
+
+| Leitura | Resultado |
+|---|---|
+| Modos (`DD`) | fan Performance (5), bomba Turbo (4), os gravados com `B6` |
+| Slot da fan (`D9 01`) | 0:2200/30:2200/50:2350/80:2500, o último gravado com `B6` |
+| Slot da bomba (`D9 02`) | 2600 ×4 |
+| `DA` da fan | duty **88** em todas as leituras, 2217–2272 RPM, com Tctl de 38,8–44,1 °C |
+
+Com o último `E0` em 80 °C, o Performance deu duty 100 nos ensaios. Depois
+do corte deu 88, o mesmo valor do Performance antes de o halo enviar `E0`
+(seção "Velocidade com `halo speed waterforce`"). Conclusão limitada: **o
+`E0` de 80 °C não sobreviveu ao corte de energia**, enquanto modos e slots
+gravados com `B6` sobreviveram. O duty 88 bate com a hipótese da referência
+padrão de ~50 °C no Performance (ponto 50:2200 da tabela do GCC), mas o `DA`
+não lê a referência interna: isso continua hipótese. A leitura também não
+prova ausência de escrita interna na flash (só que o valor usado depois do
+boot não é o último `E0`) nem identifica a origem "Windows" do padrão. A
+ordem prevista (ler antes de instalar o feed) não foi seguida: o feed já
+tinha rodado, e o último `E0` antes do corte era conhecido (80 °C).
+
+Consequência para o halo: depois de um corte de energia, enquanto o halod
+não sobe, a curva usa a referência própria do firmware, não o último `E0`.
+O halod abre cada sessão com `E0` de 80 °C, então nada muda no fluxo.
+
 #### Bomba plana e temperatura errada no `DA` (2026-10-20, ~23:38–23:52)
 
 Task 5.1, com o aval do usuário: `halo speed waterforce curve pump 2600 --no-save` (`99 E5 01 05 00`, `99 E5 02 01 00`, `99 E6 00 02 00 0A 28 1E 0A 28 32 0A 28 50 0A 28`, sem `B6`).

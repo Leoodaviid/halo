@@ -1,0 +1,4 @@
+{"event": "baseline_start", "mono": 11205.17843145, "wall": 1793110101.9080513, "tctl": 37375}
+{"event": "load_start", "mono": 11235.183989452, "wall": 1793110131.9136095, "tctl": 40250}
+{"event": "load_end", "mono": 11296.204599573, "wall": 1793110192.9342198, "tctl": 65000, "rc": 0, "completed": true}
+{"event": "rest_end", "mono": 11386.22245886, "wall": 1793110282.952079, "tctl": 46750}

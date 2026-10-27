@@ -6,8 +6,10 @@
 //! nenhum comando do halo. O probe usa o hidraw só com pedidos de leitura, o
 //! `led` escreve só os comandos de LED da `GcLedLib.dll` do GCC, e o `speed`
 //! escreve só os presets e a curva Customized do `ucCooler.dll` (a curva é
-//! montada e validada no `curve`).
+//! montada e validada no `curve`). O `cpu_feed` escreve só o nome (`E1`) e os
+//! dados da CPU (`E0`) do `AorusLcdService`, para a curva seguir o Tctl.
 
+pub mod cpu_feed;
 pub mod curve;
 pub mod led;
 pub mod probe;

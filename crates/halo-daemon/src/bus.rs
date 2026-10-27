@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use halo_core::waterforce::cpu_feed::{self, Fed};
 use halo_core::waterforce::curve::Curve;
 use halo_core::waterforce::led::{Effect, LedSetting};
 use halo_core::waterforce::probe::{CurvePoint, SpeedMode};
@@ -41,7 +42,13 @@ pub fn serve(
         .serve_at(ROOT_PATH, Profiles::new(profiles, worker.clone()))?
         .serve_at(WATERFORCE_PATH, Led::new(worker.clone(), led_state))?
         .serve_at(WATERFORCE_PATH, Speed::new(worker))?
-        .serve_at(WATERFORCE_PATH, Telemetry { state: telemetry })
+        .serve_at(
+            WATERFORCE_PATH,
+            Telemetry {
+                state: telemetry,
+                cpu: CpuState::default(),
+            },
+        )
 }
 
 /// Pede [`BUS_NAME`] sem tomar o nome de outra instância e sem deixar outra
@@ -319,7 +326,9 @@ impl Speed {
             pump,
             save: true,
         };
-        self.worker.run(move |b| b.set_presets(&request)).await?;
+        self.worker
+            .run_speed(move |b| b.set_presets(&request))
+            .await?;
         Ok(())
     }
 
@@ -327,7 +336,32 @@ impl Speed {
     async fn set_flat_curve(&self, side_name: &str, rpm: u16) -> Result<(), Error> {
         let curve = Curve::flat(side(side_name)?, rpm)?;
         let request = CurveRequest { curve, save: true };
-        self.worker.run(move |b| b.set_curve(&request)).await?;
+        self.worker
+            .run_speed(move |b| b.set_curve(&request))
+            .await?;
+        Ok(())
+    }
+
+    /// Curva da fan com degraus: quatro pares (°C, RPM), terminando em
+    /// 80:2500. Exige o feed da CPU ativo, conferido de novo na fila; antes
+    /// da curva sai um `E0` com o Tctl lido na hora. Sempre com `B6`.
+    async fn set_fan_curve(&self, points: Vec<(u8, u16)>) -> Result<(), Error> {
+        let curve = Curve::fan_steps(&points)?;
+        let feed = self.worker.feed().clone();
+        feed.curve_allowed()?;
+        let request = CurveRequest { curve, save: true };
+        self.worker
+            .run_speed(move |b| {
+                feed.curve_allowed()?;
+                let celsius = cpu_feed::wire_celsius(feed.read_cpu().ok());
+                if b.feed_cpu(celsius)? != Fed::Data {
+                    return Err(Error::Device(
+                        "a sessão do feed da CPU recomeçou; a curva não foi gravada".into(),
+                    ));
+                }
+                b.set_curve(&request)
+            })
+            .await?;
         Ok(())
     }
 
@@ -342,7 +376,7 @@ impl Speed {
                 )));
             }
         };
-        self.worker.run(move |b| b.restore(which)).await?;
+        self.worker.run_speed(move |b| b.restore(which)).await?;
         Ok(())
     }
 }
@@ -362,8 +396,18 @@ pub struct TelemetryState {
     pub coolant_valid: bool,
 }
 
+/// Temperatura da CPU publicada. `millicelsius` começa em 0 e guarda a
+/// última leitura válida; `feed_active` é [`crate::feed::Feed::active`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CpuState {
+    pub millicelsius: i32,
+    pub valid: bool,
+    pub feed_active: bool,
+}
+
 pub struct Telemetry {
     pub state: TelemetryState,
+    pub cpu: CpuState,
 }
 
 #[interface(name = "io.github.leoodaviid.Halo1.Waterforce.Telemetry")]
@@ -401,6 +445,22 @@ impl Telemetry {
     #[zbus(property)]
     fn coolant_valid(&self) -> bool {
         self.state.coolant_valid
+    }
+
+    /// Tctl em m°C, do sysfs. A proteção de 80 °C não muda esse valor.
+    #[zbus(property)]
+    fn cpu_milli_celsius(&self) -> i32 {
+        self.cpu.millicelsius
+    }
+
+    #[zbus(property)]
+    fn cpu_valid(&self) -> bool {
+        self.cpu.valid
+    }
+
+    #[zbus(property)]
+    fn cpu_feed_active(&self) -> bool {
+        self.cpu.feed_active
     }
 }
 
@@ -478,7 +538,10 @@ impl Profiles {
             }
         };
         if let Some(desired) = profile.speed {
-            let result = self.worker.run(move |b| b.apply_state(&desired)).await;
+            let result = self
+                .worker
+                .run_speed(move |b| b.apply_state(&desired))
+                .await;
             outcome("waterforce.speed", result.map(|_| ()));
         }
         if let Some(setting) = profile.led {
@@ -800,7 +863,7 @@ mod tests {
             tick(&h);
         }
         let (tx, rx) = async_channel::bounded(1);
-        ticks::on_prepare_for_sleep(false, &tx);
+        ticks::on_prepare_for_sleep(false, &tx, None);
         assert!(rx.try_recv().is_ok());
         tick(&h);
         assert!(h.backend.calls().is_empty());
@@ -1212,5 +1275,387 @@ mod tests {
         let bad: Result<Vec<String>, String> = h.call(ROOT_PATH, PROFILES, "Activate", &("mao",));
         assert_eq!(bad, Err(err("InvalidArgument")));
         assert_eq!(h.backend.calls().len(), 1);
+    }
+
+    // waterforce-cpu-feed
+
+    use std::sync::Arc;
+
+    use crate::feed::fake::{FakeClock, FakeSensor};
+    use crate::feed::{Feed, PERIOD};
+    use crate::watchdog::fake::FakeNotifier;
+    use crate::worker::FeedSlot;
+
+    struct Fed {
+        h: Harness,
+        clock: Arc<FakeClock>,
+        sensor: Arc<FakeSensor>,
+        notifier: Arc<FakeNotifier>,
+        ticks: Ticks,
+    }
+
+    /// Daemon supervisionado com o Castor3 no sysfs falso.
+    fn fed(tctl: Option<i32>, castor: bool) -> Fed {
+        let clock = FakeClock::new();
+        let sensor = FakeSensor::new(tctl);
+        let feed = Feed::new(true, sensor.clone(), clock.clone());
+        let h = Harness::with_feed(
+            |sys| {
+                if castor {
+                    add_hidraw(sys, "hidraw99", 0x1044, 0x7A4D, 0x0000);
+                }
+            },
+            Some(feed),
+        );
+        let notifier = Arc::new(FakeNotifier::default());
+        let ticks = Ticks::with_worker(
+            h.sys.clone(),
+            h.model.clone(),
+            h.worker.clone(),
+            Some(notifier.clone()),
+        );
+        Fed {
+            h,
+            clock,
+            sensor,
+            notifier,
+            ticks,
+        }
+    }
+
+    impl Fed {
+        /// Espera a fila atender o que já foi pedido (o slot do feed vem
+        /// antes de qualquer pedido novo).
+        fn settle(&self) {
+            zbus::block_on(self.h.worker.run(|_| ()));
+        }
+
+        /// Um tick, a execução do feed pedido e o avanço de um período.
+        fn tick(&self) {
+            zbus::block_on(self.ticks.run_once(&self.h.server)).unwrap();
+            self.settle();
+            self.clock.advance(PERIOD);
+        }
+
+        fn feeds(&self) -> Vec<Call> {
+            self.h
+                .backend
+                .calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::Feed(_) | Call::Protect | Call::ResetCpu))
+                .collect()
+        }
+
+        fn prop<R>(&self, name: &str) -> R
+        where
+            R: TryFrom<OwnedValue>,
+            R::Error: std::fmt::Debug,
+        {
+            self.h.property::<R>(WATERFORCE_PATH, TELEMETRY, name)
+        }
+
+        fn fan_curve(&self, points: &[(u8, u16)]) -> Result<(), String> {
+            self.h
+                .call(WATERFORCE_PATH, SPEED, "SetFanCurve", &(points.to_vec(),))
+        }
+    }
+
+    const STEPS: [(u8, u16); 4] = [(0, 2200), (30, 2200), (50, 2350), (80, 2500)];
+
+    #[test]
+    fn cpu_feed_propriedades_d_bus() {
+        let f = fed(Some(40_500), true);
+        // Valores iniciais e tipos i/b/b.
+        let value: OwnedValue = f.prop("CpuMilliCelsius");
+        assert_eq!(value.value_signature().to_string(), "i");
+        assert_eq!(i32::try_from(value).unwrap(), 0);
+        for name in ["CpuValid", "CpuFeedActive"] {
+            let value: OwnedValue = f.prop(name);
+            assert_eq!(value.value_signature().to_string(), "b");
+            assert!(!bool::try_from(value).unwrap());
+        }
+
+        let mut stream = f.h.signals(PROPS, "PropertiesChanged");
+        f.tick();
+        assert_eq!(
+            all_changes(&mut stream, TELEMETRY),
+            ["CpuMilliCelsius", "CpuValid"]
+        );
+        // Janela segura: 0–6 s sem CpuFeedActive; o envio de 8 s usa Tctl,
+        // e o tick seguinte publica o feed ativo.
+        for _ in 0..4 {
+            f.tick();
+            assert!(!f.prop::<bool>("CpuFeedActive"));
+        }
+        assert!(all_changes(&mut stream, TELEMETRY).is_empty());
+        f.tick();
+        assert!(f.prop::<bool>("CpuFeedActive"));
+        assert_eq!(all_changes(&mut stream, TELEMETRY), ["CpuFeedActive"]);
+        // Nada mudou: nenhum sinal repetido.
+        f.tick();
+        assert!(all_changes(&mut stream, TELEMETRY).is_empty());
+
+        // Falha do sensor: CpuValid falso, o número fica, o fio vai a 80.
+        f.sensor.set(None);
+        f.tick();
+        assert_eq!(all_changes(&mut stream, TELEMETRY), ["CpuValid"]);
+        assert_eq!(f.prop::<i32>("CpuMilliCelsius"), 40_500);
+        assert_eq!(f.feeds().last(), Some(&Call::Feed(80)));
+
+        // Feed atrasado (fila presa) por mais de 4 s: inativo, sem mexer no
+        // CpuValid.
+        f.sensor.set(Some(40_500));
+        f.tick();
+        f.h.backend.hold(true);
+        for _ in 0..3 {
+            zbus::block_on(f.ticks.run_once(&f.h.server)).unwrap();
+            f.clock.advance(PERIOD);
+        }
+        assert!(!f.prop::<bool>("CpuFeedActive"));
+        assert!(f.prop::<bool>("CpuValid"));
+        f.h.backend.hold(false);
+    }
+
+    #[test]
+    fn cpu_feed_cpu_valida_sem_cooler() {
+        let h = Harness::with_sys(|sys| {
+            let dir = sys.join("class/hwmon/hwmon2");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("name"), "k10temp\n").unwrap();
+            std::fs::write(dir.join("temp1_label"), "Tctl\n").unwrap();
+            std::fs::write(dir.join("temp1_input"), "38250\n").unwrap();
+        });
+        tick(&h);
+        let get = |name| h.property::<OwnedValue>(WATERFORCE_PATH, TELEMETRY, name);
+        assert_eq!(i32::try_from(get("CpuMilliCelsius")).unwrap(), 38_250);
+        assert!(bool::try_from(get("CpuValid")).unwrap());
+        assert!(!bool::try_from(get("CpuFeedActive")).unwrap());
+        assert!(!bool::try_from(get("Available")).unwrap());
+        assert!(!bool::try_from(get("CoolantValid")).unwrap());
+        assert!(h.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn cpu_feed_set_fan_curve_argumentos_invalidos() {
+        let f = fed(Some(40_000), true);
+        for points in [
+            &STEPS[..3],
+            &[(0, 2200), (30, 2200), (50, 2350), (70, 2500)][..],
+            &[(0, 2200), (30, 2100), (50, 2350), (80, 2500)][..],
+            &[(0, 800), (30, 2200), (50, 2350), (80, 2500)][..],
+        ] {
+            assert_eq!(
+                f.fan_curve(points),
+                Err(err("InvalidArgument")),
+                "{points:?}"
+            );
+        }
+        assert!(f.h.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn cpu_feed_set_fan_curve_sem_supervisao() {
+        let h = Harness::new();
+        let r: Result<(), String> =
+            h.call(WATERFORCE_PATH, SPEED, "SetFanCurve", &(STEPS.to_vec(),));
+        assert_eq!(r, Err(err("Device")));
+        assert!(h.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn cpu_feed_set_fan_curve_recusada_na_janela_e_no_restart() {
+        // Cliente que chama logo depois do restart, antes do primeiro tick.
+        let f = fed(Some(40_000), true);
+        assert_eq!(f.fan_curve(&STEPS), Err(err("Device")));
+        f.tick();
+        for _ in 0..3 {
+            assert_eq!(f.fan_curve(&STEPS), Err(err("Device")));
+            f.tick();
+        }
+        // Só envios de 80 °C, nenhuma curva.
+        assert!(f.h.backend.calls().iter().all(|c| *c == Call::Feed(80)));
+    }
+
+    #[test]
+    fn cpu_feed_set_fan_curve_com_feed_ativo() {
+        let f = fed(Some(45_200), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        let before = f.h.backend.calls().len();
+        f.sensor.set(Some(47_100));
+        f.fan_curve(&STEPS).unwrap();
+        f.settle();
+        let calls = f.h.backend.calls();
+        // E0 com o Tctl relido na hora, depois a curva (snapshot e E5/E6/B6
+        // no core, com a bomba repetida), depois o próximo E0 atual.
+        assert_eq!(
+            calls[before..],
+            [
+                Call::Feed(48),
+                Call::Curve(CurveRequest {
+                    curve: Curve::fan_steps(&STEPS).unwrap(),
+                    save: true
+                }),
+                Call::Feed(48),
+            ]
+        );
+    }
+
+    #[test]
+    fn cpu_feed_set_fan_curve_condicao_muda_na_fila() {
+        let f = fed(Some(45_200), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        f.h.backend.hold(true);
+        let worker = f.h.worker.clone();
+        let busy =
+            std::thread::spawn(move || zbus::block_on(worker.run(|b| b.restore(Which::Previous))));
+        std::thread::sleep(Duration::from_millis(30));
+        let client = f.h.client.clone();
+        let call = std::thread::spawn(move || {
+            zbus::block_on(client.call_method(
+                Some(BUS_NAME),
+                WATERFORCE_PATH,
+                Some(SPEED),
+                "SetFanCurve",
+                &(STEPS.to_vec(),),
+            ))
+            .map(|_| ())
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        // Enquanto espera na fila, o Tctl some.
+        f.sensor.set(None);
+        f.h.backend.hold(false);
+        busy.join().unwrap().unwrap();
+        let result = call.join().unwrap();
+        assert!(
+            matches!(&result, Err(zbus::Error::MethodError(name, _, _)) if name.as_str() == err("Device")),
+            "{result:?}"
+        );
+        assert!(
+            !f.h.backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::Curve(_)))
+        );
+    }
+
+    #[test]
+    fn cpu_feed_resume_pelo_logind() {
+        let f = fed(Some(40_000), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        let (tx, rx) = async_channel::bounded(1);
+        ticks::on_prepare_for_sleep(true, &tx, Some(&f.h.worker));
+        f.settle();
+        assert_eq!(f.feeds().last(), Some(&Call::Protect));
+        // Durante o sono, ticks atrasados não mandam E0 frio.
+        let before = f.feeds().len();
+        f.tick();
+        assert_eq!(f.feeds().len(), before);
+        assert!(!f.prop::<bool>("CpuFeedActive"));
+
+        // Volta com o Tctl inválido: sessão nova, 80 °C, um envio só.
+        f.sensor.set(None);
+        ticks::on_prepare_for_sleep(false, &tx, Some(&f.h.worker));
+        // O sinal acorda os ticks, que fazem um único pedido.
+        assert!(rx.try_recv().is_ok());
+        f.tick();
+        assert_eq!(f.feeds()[before..], [Call::ResetCpu, Call::Feed(80)]);
+        f.tick();
+        assert_eq!(
+            f.feeds()[before..],
+            [Call::ResetCpu, Call::Feed(80), Call::Feed(80)]
+        );
+        assert!(!f.prop::<bool>("CpuValid"));
+    }
+
+    #[test]
+    fn cpu_feed_resume_sinal_perdido() {
+        let f = fed(Some(40_000), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        assert!(f.prop::<bool>("CpuFeedActive"));
+        // O logind não avisou, mas o CLOCK_BOOTTIME pulou 10 min.
+        f.clock.suspend(Duration::from_secs(600));
+        let before = f.feeds().len();
+        f.tick();
+        assert_eq!(f.feeds()[before..], [Call::ResetCpu, Call::Feed(80)]);
+        assert!(!f.prop::<bool>("CpuFeedActive"));
+        // E a janela segura recomeça: mais três envios de 80 °C.
+        for _ in 0..3 {
+            f.tick();
+            assert_eq!(f.feeds().last(), Some(&Call::Feed(80)));
+        }
+    }
+
+    #[test]
+    fn cpu_feed_watchdog_tick_vivo_com_worker_preso() {
+        let f = fed(Some(40_000), true);
+        f.tick();
+        f.tick();
+        let pings = f.notifier.pings();
+        assert!(pings >= 1, "{pings}");
+        f.h.backend.hold(true);
+        // A fila está presa num pedido; os ticks continuam.
+        let worker = f.h.worker.clone();
+        let _stuck =
+            std::thread::spawn(move || zbus::block_on(worker.run(|b| b.restore(Which::Previous))));
+        std::thread::sleep(Duration::from_millis(30));
+        for _ in 0..5 {
+            zbus::block_on(f.ticks.run_once(&f.h.server)).unwrap();
+            f.clock.advance(PERIOD);
+        }
+        // No máximo o ping do último envio já feito; nenhum depois.
+        assert!(f.notifier.pings() <= pings + 1);
+        let stuck = f.notifier.pings();
+        for _ in 0..3 {
+            zbus::block_on(f.ticks.run_once(&f.h.server)).unwrap();
+        }
+        assert_eq!(f.notifier.pings(), stuck);
+        f.h.backend.hold(false);
+    }
+
+    #[test]
+    fn cpu_feed_watchdog_erro_persistente_e_ausencia() {
+        let f = fed(Some(40_000), true);
+        f.tick();
+        f.tick();
+        let pings = f.notifier.pings();
+        f.h.backend
+            .fail_next((0..20).map(|_| Some(Error::Device("falhou".into()))));
+        for _ in 0..4 {
+            f.tick();
+        }
+        assert!(f.notifier.pings() <= pings + 1);
+
+        // Sem o Castor3: o scan basta, a cada tick.
+        let g = fed(Some(40_000), false);
+        g.h.backend
+            .fail_next((0..20).map(|_| Some(Error::NotFound("ausente".into()))));
+        for _ in 0..3 {
+            g.tick();
+        }
+        assert_eq!(g.notifier.pings(), 3);
+    }
+
+    #[test]
+    fn cpu_feed_watchdog_sem_supervisao_operacoes_legadas() {
+        let h = Harness::new();
+        h.worker.request_feed(FeedSlot::Tick);
+        let () = h
+            .call(WATERFORCE_PATH, SPEED, "SetFlatCurve", &("fan", 1500u16))
+            .unwrap();
+        assert_eq!(
+            h.backend.calls(),
+            [Call::Curve(CurveRequest {
+                curve: Curve::flat(Side::Fan, 1500).unwrap(),
+                save: true
+            })]
+        );
     }
 }

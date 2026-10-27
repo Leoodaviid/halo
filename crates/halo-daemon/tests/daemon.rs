@@ -102,6 +102,9 @@ fn halod(bus: &Bus, home: &Path, sys: &Path, extra: &[&str]) -> Command {
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
+        .env_remove("WATCHDOG_USEC")
+        .env_remove("WATCHDOG_PID")
+        .env_remove("NOTIFY_SOCKET")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     cmd
@@ -427,4 +430,227 @@ fn primeiro_get_ja_tem_led_guardado_sem_abrir_hidraw() {
         assert!(opens.contains("waterforce-led.last"), "{opens}");
         assert!(!opens.contains("\"/dev/hidraw"), "{opens}");
     }
+}
+
+// waterforce-cpu-feed
+
+fn sigterm(daemon: &mut Daemon) -> (std::process::Output, Duration) {
+    let child = daemon.child.take().unwrap();
+    // SAFETY: o PID é de um filho vivo deste teste.
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    let started = Instant::now();
+    let out = child.wait_with_output().unwrap();
+    (out, started.elapsed())
+}
+
+#[test]
+fn cpu_feed_sigterm_processo_sem_supervisao() {
+    let bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = tempfile::tempdir().unwrap();
+    let mut daemon = start(&bus, home.path(), sys.path(), &[]);
+    let (out, took) = sigterm(&mut daemon);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(took < Duration::from_secs(18), "{took:?}");
+    assert!(err.contains("feed da CPU desligado"), "{err}");
+    assert!(err.contains("sinal 15 recebido"), "{err}");
+    // Sem supervisão nunca houve E0, e a saída não abre aparelho.
+    assert!(!err.contains("E0 de 80"), "{err}");
+}
+
+#[test]
+fn cpu_feed_watchdog_processo_supervisionado() {
+    use std::os::unix::net::UnixDatagram;
+    let bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    // Sem Castor3: o scan avança e o watchdog recebe progresso legítimo.
+    let sys = tempfile::tempdir().unwrap();
+    let notify = home.path().join("notify");
+    let socket = UnixDatagram::bind(&notify).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(6)))
+        .unwrap();
+    let mut cmd = halod(&bus, home.path(), sys.path(), &[]);
+    cmd.env("WATCHDOG_USEC", "20000000")
+        .env("NOTIFY_SOCKET", &notify);
+    let mut daemon = Daemon {
+        child: Some(cmd.spawn().unwrap()),
+    };
+    let mut buf = [0u8; 64];
+    for _ in 0..2 {
+        let n = socket.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"WATCHDOG=1");
+    }
+    let (out, took) = sigterm(&mut daemon);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(took < Duration::from_secs(18), "{took:?}");
+    assert!(err.contains("watchdog de 20s; feed da CPU ligado"), "{err}");
+}
+
+#[test]
+fn cpu_feed_watchdog_processo_ambiente_incompativel() {
+    let bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = tempfile::tempdir().unwrap();
+    let mut cmd = halod(&bus, home.path(), sys.path(), &[]);
+    cmd.env("WATCHDOG_USEC", "20000000")
+        .env("WATCHDOG_PID", "1")
+        .env("NOTIFY_SOCKET", "/caminho/que/nao/existe");
+    let mut daemon = Daemon {
+        child: Some(cmd.spawn().unwrap()),
+    };
+    let client = bus.client();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !has_owner(&client) {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Leituras e operações legadas seguem; o feed fica desligado.
+    assert_eq!(version(&client), env!("CARGO_PKG_VERSION"));
+    let (out, _) = sigterm(&mut daemon);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("ambiente do watchdog incompatível"), "{err}");
+}
+
+/// `halod --waterforce-cpu-safe` sem D-Bus, HOME nem estado.
+fn safe_cmd(sys: &Path, node: Option<&Path>) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_halod"));
+    cmd.env_clear()
+        .arg("--waterforce-cpu-safe")
+        .arg("--sys-root")
+        .arg(sys)
+        .arg("--proc-root")
+        .arg("/caminho/que/nao/existe")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(node) = node {
+        cmd.arg("--hidraw-node").arg(node);
+    }
+    cmd
+}
+
+/// Nó falso: um arquivo comum. O `DE` escrito ocupa os primeiros 6144 bytes;
+/// a "resposta" é o que já está depois deles.
+fn fake_node(dir: &Path, model: u8) -> std::path::PathBuf {
+    let node = dir.join("hidraw250");
+    let mut data = vec![0u8; 6144];
+    data.extend([0x99, 0xDE, model]);
+    std::fs::write(&node, data).unwrap();
+    node
+}
+
+/// Pacotes de 6144 bytes escritos depois da resposta, pelo comando.
+fn written_after_reply(node: &Path) -> Vec<Vec<u8>> {
+    let data = std::fs::read(node).unwrap();
+    data[6147..].chunks(6144).map(<[u8]>::to_vec).collect()
+}
+
+#[test]
+fn cpu_feed_stop_post_ausente() {
+    let sys = tempfile::tempdir().unwrap();
+    let started = Instant::now();
+    let out = safe_cmd(sys.path(), None).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("ausente"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn cpu_feed_stop_post_envia_e0_alto_e_espera() {
+    let sys = sys_with_castor3("hidraw250");
+    let dir = tempfile::tempdir().unwrap();
+    let node = fake_node(dir.path(), 0);
+    let started = Instant::now();
+    let out = safe_cmd(sys.path(), Some(&node)).output().unwrap();
+    let took = started.elapsed();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        took >= Duration::from_secs(8) && took < Duration::from_secs(18),
+        "{took:?}"
+    );
+    let packets = written_after_reply(&node);
+    assert_eq!(packets.len(), 2, "{packets:?}");
+    assert!(packets.iter().all(|p| p.len() == 6144));
+    // E1 com o nome de reserva (metadados ausentes) e E0 de 80 °C zerado.
+    assert_eq!(packets[0][..6], [0x99, 0xE1, 3, b'C', b'P', b'U']);
+    assert_eq!(
+        packets[1][..13],
+        [0x99, 0xE0, 0, 80, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    // O DE saiu no começo; nada de B6, E5, E6.
+    let data = std::fs::read(&node).unwrap();
+    assert_eq!(data[..3], [0x99, 0xDE, 0x00]);
+    for p in &packets {
+        assert!(!matches!(p[1], 0xB6 | 0xE5 | 0xE6));
+    }
+
+    // Repetir manda a mesma sequência.
+    let again = fake_node(dir.path(), 0);
+    assert!(
+        safe_cmd(sys.path(), Some(&again))
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(written_after_reply(&again), packets);
+}
+
+#[test]
+fn cpu_feed_stop_post_modelos() {
+    let sys = sys_with_castor3("hidraw250");
+    let dir = tempfile::tempdir().unwrap();
+    // Modelo 1: sem feed, sucesso sem E1/E0 nem espera.
+    let node = fake_node(dir.path(), 1);
+    let started = Instant::now();
+    let out = safe_cmd(sys.path(), Some(&node)).output().unwrap();
+    assert!(out.status.success());
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(written_after_reply(&node).is_empty());
+    // Fora da tabela: falha explícita.
+    let node = fake_node(dir.path(), 7);
+    let out = safe_cmd(sys.path(), Some(&node)).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        err.contains("NÃO protegido") && err.contains("(7)"),
+        "{err}"
+    );
+    assert!(written_after_reply(&node).is_empty());
+    // Sem resposta ao DE: falha.
+    let silent = dir.path().join("silent");
+    std::fs::write(&silent, b"").unwrap();
+    let out = safe_cmd(sys.path(), Some(&silent)).output().unwrap();
+    assert!(!out.status.success());
+}
+
+#[test]
+fn cpu_feed_stop_post_ocupado() {
+    use std::os::fd::AsRawFd;
+    let sys = sys_with_castor3("hidraw250");
+    let dir = tempfile::tempdir().unwrap();
+    let node = fake_node(dir.path(), 0);
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .unwrap();
+    // SAFETY: o descritor pertence a `held`, vivo até o fim do teste.
+    assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let started = Instant::now();
+    let out = safe_cmd(sys.path(), Some(&node)).output().unwrap();
+    let took = started.elapsed();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("ocupado"), "{err}");
+    assert!(
+        took >= Duration::from_secs(5) && took < Duration::from_secs(7),
+        "{took:?}"
+    );
+    // Nenhum byte escrito.
+    assert_eq!(std::fs::read(&node).unwrap().len(), 6147);
+    drop(held);
 }

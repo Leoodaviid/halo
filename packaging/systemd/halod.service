@@ -9,14 +9,32 @@ Description=halo: daemon de RGB, velocidade e telemetria
 Documentation=https://github.com/Leoodaviid/halo
 PartOf=graphical-session.target
 After=graphical-session.target
+# Desiste depois de 5 inícios em 180 s. O limite padrão (5 em 10 s) nunca
+# seria atingido: com o X 240 presente, cada falha passa pelo ExecStopPost,
+# que espera 8 s, e pelo RestartSec. Uma falha no início leva até ~21 s;
+# falhas tardias pelo watchdog (~40 s cada) podem não atingir o limite, mas
+# cada uma termina com E0 de 80 °C (docs/architecture.md).
+StartLimitIntervalSec=180s
+StartLimitBurst=5
 
 [Service]
 # Pronto quando o nome aparece no D-Bus da sessão.
 Type=dbus
 BusName=io.github.leoodaviid.Halo1
 ExecStart=@BINDIR@/halod
-# Com o nome tomado por outro halod, falha e desiste pelo limite padrão de
-# inícios do systemd, sem laço.
+# Depois de qualquer fim do principal (stop, SIGKILL, watchdog, panic, falha
+# no início), manda ao X 240 o E0 de 80 °C, sem D-Bus. A falha dele não é
+# mascarada com "-".
+ExecStopPost=@BINDIR@/halod --waterforce-cpu-safe
+# O principal renova o watchdog só com progresso do feed da CPU; travado,
+# é morto com SIGKILL (sem core dump nem espera de SIGABRT).
+NotifyAccess=main
+WatchdogSec=20s
+WatchdogSignal=SIGKILL
+# SIGTERM: o halod protege em até 18 s; o helper também cabe em 18 s.
+TimeoutStopSec=20s
+# Com o nome tomado por outro halod, falha e desiste pelo limite acima,
+# sem laço.
 Restart=on-failure
 RestartSec=2
 
