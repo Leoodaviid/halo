@@ -357,14 +357,14 @@ Performance (`5`), bomba Turbo (`4`); slot da fan 0/30/50/80 °C em 1500 RPM,
 slot da bomba nas mesmas temperaturas em 2600 RPM. São slots inativos.
 Enviados somente `DE 00`, `DD`, `D9 01` e `D9 02`; nenhuma configuração alterada.
 O protocolo do primeiro ensaio está em
-[`experimentos.md`](../openspec/changes/waterforce-cpu-feed/experimentos.md).
+[`experimentos.md`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experimentos.md).
 
 ### E0 como referência da curva: confirmado no aparelho (2026-10-25)
 
 Ensaio autorizado com E1 (`Ryzen 5 5600G`), E0 e curva temporária da fan
 0:2200/30:2200/50:2350/80:2500; bomba sem alterações. Payloads, sequência,
 proteção e limitações no protocolo acima; dados brutos em
-[`experiment1.jsonl`](../openspec/changes/waterforce-cpu-feed/experiment1.jsonl).
+[`experiment1.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experiment1.jsonl).
 Nenhum B6 enviado, nenhuma carga de CPU iniciada.
 
 | E0 (°C) | Duty DA após reação | Primeiro DA com esse duty após envio | RPM no fim dos 12 s |
@@ -400,7 +400,7 @@ ensaio; isso não prova ausência de outros efeitos.
 
 Ensaio 2 autorizado separadamente, com a mesma curva conservadora, sem E1
 novo, B6 ou carga de CPU. Dados em
-[`experiment2.jsonl`](../openspec/changes/waterforce-cpu-feed/experiment2.jsonl).
+[`experiment2.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/experiment2.jsonl).
 O E1 do ensaio anterior continuava sendo uma condição inicial conhecida;
 portanto isso não testa sua necessidade após inicialização limpa.
 
@@ -451,7 +451,7 @@ Ensaio autorizado com o par novo instalado (`packaging/install.sh`), o
 halod sob `WatchdogSec=20s` e `HALOD_TRACE_FEED=1` (cada envio no journal).
 Observador só de leitura: `scripts/diag/waterforce_da_sniff.py 900 0 --jsonl`,
 com o Tctl achado pelo rótulo. Dados em
-[`ensaio-6.1.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.1.jsonl),
+[`ensaio-6.1.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.1.jsonl),
 separados dos ensaios 1 e 2. Sem carga na CPU.
 
 Início do halod (10:21:31): sessão nova com `E0` de 80 °C, mais três de 80 °C
@@ -501,7 +501,7 @@ halod parado.
 
 Ensaio autorizado, com a mesma curva do 6.1 gravada pelo `SetFanCurve`
 (10:28:35,6; um `B6`) e o mesmo observador. Dados em
-[`ensaio-6.2.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.2.jsonl).
+[`ensaio-6.2.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.2.jsonl).
 Patamar frio: Tctl de 30,4–33,4 °C, `E0` de 31–32 °C, duty 88–89 por mais de
 40 s (ponto 30:2200 da curva). Morte com
 `systemctl --user kill --kill-whom=main -s KILL halod.service`, que atinge só o
@@ -537,7 +537,7 @@ continua com 2200/2200/2350/2500. O halod ficou ativo, alimentando o Tctl.
 
 Ensaio autorizado, com a mesma curva (`SetFanCurve` às 10:32:18,5; um `B6`) e
 o mesmo observador. Dados em
-[`ensaio-6.3a.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.3a.jsonl).
+[`ensaio-6.3a.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.3a.jsonl).
 Patamar frio: Tctl de ~30–32 °C, duty 88 por mais de 40 s. Congelamento com
 `systemctl --user kill --kill-whom=main -s STOP halod.service`.
 
@@ -573,9 +573,9 @@ bomba em Turbo. O halod ficou ativo, alimentando o Tctl.
 ### Feed com a CLI e lock externo: ensaio 6.4 (2026-10-27)
 
 Ensaio autorizado, sem `B6` e sem mudar modo ou curva (fan em Performance).
-DA em [`ensaio-6.4.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.4.jsonl)
+DA em [`ensaio-6.4.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.4.jsonl)
 e horários da CLI e do lock em
-[`ensaio-6.4-eventos.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.4-eventos.jsonl).
+[`ensaio-6.4-eventos.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.4-eventos.jsonl).
 O lock externo usou `flock /dev/hidraw2 sleep N`, que toma o mesmo `flock` do
 halo sem enviar nada ao aparelho.
 
@@ -607,9 +607,9 @@ Ensaio autorizado, com o par instalado às 11:06:46 (inclui a correção do
 `E0` colado depois da recuperação) e a mesma curva (`SetFanCurve` às
 11:08:15,2; um `B6`). Carga: `stress-ng --cpu 0 --timeout 60s` (12 threads),
 com aborto automático se o Tctl chegasse a 90 °C (não chegou). DA em
-[`ensaio-6.5.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.5.jsonl),
+[`ensaio-6.5.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.5.jsonl),
 fases em
-[`ensaio-6.5-eventos.jsonl`](../openspec/changes/waterforce-cpu-feed/ensaio-6.5-eventos.jsonl);
+[`ensaio-6.5-eventos.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/ensaio-6.5-eventos.jsonl);
 o `E0` enviado vem do journal (`HALOD_TRACE_FEED=1`). Tempos relativos ao
 início da carga (11:08:51,9).
 
@@ -649,7 +649,7 @@ de energia pelo usuário, e ligou às 11:24:50. O halod não rodou no boot novo
 (unidade desabilitada, sem entradas no journal, nenhum processo). Às
 11:26:27, o observador só de leitura registrou 16 `DA` em 40 s; depois,
 `halo speed waterforce status` (DE/DD/D9). Dados em
-[`baseline-pos-corte.jsonl`](../openspec/changes/waterforce-cpu-feed/baseline-pos-corte.jsonl).
+[`baseline-pos-corte.jsonl`](../openspec/changes/archive/2026-10-27-waterforce-cpu-feed/baseline-pos-corte.jsonl).
 
 | Leitura | Resultado |
 |---|---|
