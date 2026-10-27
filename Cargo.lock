@@ -448,6 +448,7 @@ dependencies = [
  "clap",
  "futures-util",
  "halo-core",
+ "libc",
  "serde",
  "tempfile",
  "toml",

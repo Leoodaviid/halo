@@ -101,7 +101,7 @@ Antes de cada `set`, `curve` ou `restore`, o halo grava o estado atual em `$XDG_
 
 Os testes do daemon (`cargo test`) usam `dbus-daemon` privado e `strace` para conferir que o carregamento do LED não abre hidraw.
 
-O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a extensão do GNOME (ver "Extensão do GNOME"). Ele só envia comandos ao aparelho quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. Sozinho, ele só lê o sysfs a cada 2 s (presença dos aparelhos e telemetria do hwmon). Ele não reaplica o perfil no login nem depois da suspensão: o Waterforce guarda a velocidade e o LED gravados com `B6` mesmo sem energia (ver [docs/hardware.md](docs/hardware.md)), e o GCC também não reenvia nada no boot. Reaplicar a cada login seria um `B6` a mais, sem ganho.
+O `halod` é o daemon do usuário: ele publica no D-Bus da sessão o LED, a velocidade e a telemetria do Waterforce e os perfis salvos, para a extensão do GNOME (ver "Extensão do GNOME"). Ele envia comandos de LED e de velocidade só quando um cliente pede, e as sequências são as mesmas da CLI, com os mesmos snapshots. A cada 2 s ele lê o sysfs (presença dos aparelhos, telemetria do hwmon e o Tctl da CPU). Rodando pela unidade, com o watchdog do systemd, ele também alimenta o X 240 com a temperatura da CPU (`E1`/`E0`, como o `AorusLcdService` do Windows), para a curva Customized acompanhar a carga. Cada início e cada resume ficam 8 s em 80 °C antes do Tctl. Toda parada termina com 80 °C, pelo próprio daemon e pelo `halod --waterforce-cpu-safe` no `ExecStopPost`. Esse envio não usa `B6` e não muda modos nem curvas. Rodando à mão, sem o watchdog, o daemon não alimenta a CPU (ver "Alimentação da CPU" em [docs/architecture.md](docs/architecture.md)). Ele não reaplica o perfil no login nem depois da suspensão: o Waterforce guarda a velocidade e o LED gravados com `B6` mesmo sem energia (ver [docs/hardware.md](docs/hardware.md)), e o GCC também não reenvia nada no boot. Reaplicar a cada login seria um `B6` a mais, sem ganho.
 
 #### Instalação
 
@@ -119,7 +119,7 @@ Tudo vai para o seu usuário, sem sudo:
 | Ativação pelo D-Bus de `io.github.leoodaviid.Halo1` | `~/.local/share/dbus-1/services/` |
 | Extensão do GNOME Shell (`halo@leoodaviid.github.io`) | `~/.local/share/gnome-shell/extensions/halo@leoodaviid.github.io/` |
 
-O script compila com `cargo build --release --locked` antes de tocar no que já está instalado: se a compilação falhar, nada muda. Depois ele habilita a unidade, que sobe com a sessão gráfica, e (re)inicia o daemon, para que uma atualização passe a valer na hora. Com a unidade parada ou desabilitada, qualquer chamada ao nome no D-Bus sobe o daemon de novo. A extensão é copiada sem a pasta `tests/` e habilitada pelo `gsettings` (`org.gnome.shell enabled-extensions`), e a pasta só é trocada quando o conteúdo mudou. Depois de instalar ou atualizar a extensão, **saia e entre na sessão**: no Wayland o Shell não recarrega o código de uma extensão. O script só pede isso quando a extensão mudou. A desinstalação desabilita e remove a extensão e mantém os perfis (`~/.config/halo`) e os snapshots de velocidade (`~/.local/state/halo`), inclusive o `waterforce-speed.original`.
+O script compila com `cargo build --release --locked` antes de tocar no que já está instalado: se a compilação falhar, nada muda. Numa atualização, ele para a unidade antes de trocar qualquer arquivo, para o `ExecStopPost` do par antigo deixar o X 240 em 80 °C. Depois habilita a unidade, que sobe com a sessão gráfica, e inicia o daemon, para que a atualização passe a valer na hora. Com a unidade parada ou desabilitada, qualquer chamada ao nome no D-Bus sobe o daemon de novo. A extensão é copiada sem a pasta `tests/` e habilitada pelo `gsettings` (`org.gnome.shell enabled-extensions`), e a pasta só é trocada quando o conteúdo mudou. Depois de instalar ou atualizar a extensão, **saia e entre na sessão**: no Wayland o Shell não recarrega o código de uma extensão. O script só pede isso quando a extensão mudou. A desinstalação desabilita e remove a extensão e mantém os perfis (`~/.config/halo`) e os snapshots de velocidade (`~/.local/state/halo`), inclusive o `waterforce-speed.original`.
 
 A regra udev não é instalada pelo script, porque precisa de sudo: ele só confere se ela está em `/etc/udev/rules.d/` e igual à do repositório e, se não estiver, mostra os comandos (ver [docs/permissions.md](docs/permissions.md)).
 
@@ -128,7 +128,7 @@ systemctl --user status halod.service  # estado do daemon
 journalctl --user -u halod.service     # registro
 ```
 
-Para rodar o daemon à mão, a partir do código, pare a unidade antes: com o nome já tomado, um segundo `halod` recusa e sai.
+Para rodar o daemon à mão, a partir do código, pare a unidade antes: com o nome já tomado, um segundo `halod` recusa e sai. À mão, sem o watchdog da unidade, ele não alimenta a CPU nem aceita a curva com degraus.
 
 ```sh
 systemctl --user stop halod.service

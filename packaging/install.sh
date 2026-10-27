@@ -77,8 +77,7 @@ case $BINDIR in
 esac
 
 # Copia $1 para $2 por um temporário no mesmo diretório e um mv, para que o
-# destino nunca fique pela metade e o halod em execução mantenha o binário
-# antigo até o restart.
+# destino nunca fique pela metade.
 put() {
     mode=$1 src=$2 dest=$3
     install -m "$mode" "$src" "$dest.new"
@@ -197,6 +196,11 @@ install_extension() {
     fi
 }
 
+# O halod em $1 conhece o modo de proteção do ExecStopPost.
+has_safe() {
+    "$1" --help 2>/dev/null | grep -q -- --waterforce-cpu-safe
+}
+
 do_install() {
     say "instalando para $(id -un): binários em $BINDIR"
     say "unidade em $UNIT_DIR, ativação D-Bus em $DBUS_DIR"
@@ -211,17 +215,29 @@ do_install() {
         [ -x "$TARGET_DIR/release/$bin" ] ||
             die "compilação sem $TARGET_DIR/release/$bin; nada instalado foi alterado"
     done
+    # A unidade nova chama o helper no ExecStopPost: o binário precisa ter.
+    has_safe "$TARGET_DIR/release/halod" ||
+        die "o halod compilado não tem --waterforce-cpu-safe; nada instalado foi alterado"
+
+    # Para a unidade instalada antes de trocar qualquer arquivo: o stop roda
+    # o ExecStopPost do par antigo (binário e unidade compatíveis), que
+    # deixa o X 240 com E0 de 80 °C. Só então o par novo entra.
+    if [ -e "$UNIT_FILE" ]; then
+        systemctl --user stop "$UNIT" ||
+            die "não consegui parar o $UNIT; nada instalado foi alterado"
+    fi
 
     mkdir -p "$BINDIR" "$UNIT_DIR" "$DBUS_DIR"
     put 755 "$TARGET_DIR/release/halo" "$BINDIR/halo"
     put 755 "$TARGET_DIR/release/halod" "$BINDIR/halod"
     put_template "$ROOT/packaging/systemd/$UNIT" "$UNIT_FILE"
     put_template "$ROOT/packaging/dbus/$BUS_NAME.service" "$DBUS_FILE"
+    has_safe "$BINDIR/halod" ||
+        die "o halod instalado em $BINDIR não tem --waterforce-cpu-safe; o $UNIT ficou parado"
 
     systemctl --user daemon-reload
     systemctl --user enable "$UNIT"
-    # Na primeira instalação inicia; numa atualização troca o binário em uso.
-    systemctl --user restart "$UNIT" ||
+    systemctl --user start "$UNIT" ||
         die "o $UNIT não subiu; veja journalctl --user -u $UNIT (um halod iniciado à mão segura o nome)"
     say "$UNIT ativo"
 
@@ -260,6 +276,8 @@ disable_extension() {
 do_uninstall() {
     removed=0
     ext_removed=0
+    # Para antes de remover: o ExecStopPost ainda acha o halod instalado e
+    # deixa o X 240 com E0 de 80 °C.
     if [ -e "$UNIT_FILE" ]; then
         systemctl --user disable --now "$UNIT" ||
             say "aviso: não consegui parar e desabilitar o $UNIT"

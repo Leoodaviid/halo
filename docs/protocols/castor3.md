@@ -132,6 +132,36 @@ Para o 7A4D, o serviço (`CoolerDataApi.GetCoolerData`) espera 20 s, manda o nom
 | Nome da CPU | `99 E1 <len> <ASCII…>` | confirmado |
 | Dados | `99 E0 <fabricante: 1 Intel, 0 outro> <temp CPU> <threads> <GHz inteiro> <GHz décimo> <núcleos> <temp VRM> <temp líquido> <uso %> <W lo> <W hi>` | confirmado |
 
+#### Matriz fonte/byte do E0 e do E1 (change `waterforce-cpu-feed`)
+
+Conferida em 2026-10-27 contra `CoolerDataApi.cs` (`GetCoolerData`, linhas 230–257; `SendCpuName`, 318–344; `SendCoolerData`, 383–412; `GetCpuShortName`, 901–920) e `CoolerApi.cs` (`Send`, 42–56) em `extracted/ilspy-aoruslcdservice/AorusLcdService.API.Cooler/`, e contra os payloads de `experiment1.jsonl` e `experiment2.jsonl`. Nenhum envio novo ao aparelho.
+
+| Byte | GCC (`SendCoolerData`, ramo 7A4D) | halo (design da change) | Enviado nos ensaios |
+|---|---|---|---|
+| 0 / 1 | `0x99` / `0xE0` | igual | `99 e0` |
+| 2 | `CpuVendor`: 1 se o fabricante contém `Intel`, senão 0 | 1 para `GenuineIntel`, senão 0 | `00` |
+| 3 | `Math.Round(CpuTemperature, 0)` (meio para o par, padrão do .NET), truncado em `byte` | Tctl arredondado para cima, saturado em 80; inválido = 80 | `50` / `32` / `1e` (80/50/30) |
+| 4 | `CpuThreadCount` | threads online, até 255; sem dado = 0 | `0c` (12) |
+| 5 / 6 | `CpuFrequency / 1000` e `/ 100 % 10` (MHz) | 0 / 0 | `00 00` |
+| 7 | `CpuCoreCount` | núcleos únicos online, até 255; sem dado = 0 | `06` |
+| 8 | `VRAMTemperature` (a tabela antiga chama de VRM) | 0, sem sensor atribuído | `00` |
+| 9 | `LiqiudTemperature`, nunca preenchido nesse ramo = 0 | 0 | `00` |
+| 10 | `CpuUsage` | 0 | `00` |
+| 11 / 12 | `CpuPower % 256`, `CpuPower / 256` | 0 / 0 | `00 00` |
+| 13… | zeros até `OutputReportLen` (`CoolerApi.Send`) | zeros até 6144 | zeros |
+
+| Campo do E1 | GCC (`SendCpuName`) | halo (design da change) | Ensaio 1 |
+|---|---|---|---|
+| Bytes | `99 E1 <len> <nome>`; `len` = `string.Length` (caracteres), cada caractere truncado em `byte`, num buffer de 256 | igual, com `len` em bytes e caractere não ASCII trocado por `?` | `99 e1 0d` + `Ryzen 5 5600G` |
+| Nome | `GetCpuShortName`: maiúsculas, sem `(R)`/`(TM)`, sem `@…`, `… GHz`, `…-Core`/`Threads`, `Processor…`; espaços colapsados; **até 30 caracteres** | nome de `/proc/cpuinfo`, até 30 bytes (sem as outras normalizações), fallback `CPU` | nome curto escrito à mão |
+| Momento | uma vez, 20 s depois de iniciar o serviço, antes do laço de E0 | uma vez por sessão lógica, antes do primeiro E0 | 15 ms antes do primeiro E0 |
+
+O que a matriz sustenta e o que não sustenta:
+
+- **E1 obrigatório: não comprovado.** O GCC sempre manda E1 antes do laço, mas o código não mostra o firmware exigindo isso. O ensaio 2 não mandou E1 e a curva reagiu ao E0, só que o E1 do ensaio 1 continuava valendo, sem corte de energia entre os dois. A necessidade depois de inicialização limpa segue aberta.
+- **Ausência de B6: confirmada no host.** `SendCpuName`, `SendCoolerData` e `CoolerApi.Send` não montam `B6`, e o `Send` só completa com zeros e chama `HidDriver.WriteByte(..., -1)`. Nenhum dos dois JSONL tem `b6`. Isso não prova que o firmware deixe de gravar o E0 na flash por conta própria. A leitura depois de um corte de energia pode limitar hipóteses, não provar a ausência de escrita interna.
+- **Divergências deliberadas do halo:** arredondar para cima e saturar em 80 é mais conservador que o `Math.Round` do GCC. GHz, uso e W ficam em zero, o mesmo que os ensaios mandaram e que bastou para a curva reagir. O nome não passa pelas outras normalizações do `GetCpuShortName` (maiúsculas, cortes de sufixo), mas respeita o mesmo limite de 30 caracteres: o firmware nunca recebeu do GCC um nome maior.
+
 ### Arquivos na flash
 
 | Comando | Bytes | Fonte | Confiança |

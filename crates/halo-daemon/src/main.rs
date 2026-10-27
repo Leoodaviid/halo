@@ -2,27 +2,37 @@
 
 //! `halod`: daemon do usuário do halo. Publica no D-Bus da sessão o LED, a
 //! velocidade e a telemetria do Waterforce e os perfis. Só envia comandos ao
-//! hardware quando um cliente pede; os ticks periódicos só leem o sysfs.
+//! hardware quando um cliente pede, com uma exceção: sob o watchdog da
+//! unidade, alimenta o X 240 com a temperatura da CPU (`E1`/`E0`, ver
+//! `feed`). `halod --waterforce-cpu-safe` é o modo de uma execução que manda
+//! o `E0` de 80 °C, para o `ExecStopPost` (ver `safe`).
 
 mod bus;
 mod error;
+mod feed;
 mod led_state;
 mod profiles;
+mod safe;
 #[cfg(test)]
 mod testbus;
 mod ticks;
+mod watchdog;
 mod worker;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
+use halo_core::waterforce::cpu_feed::{CpuInfo, Protected};
 use halo_core::waterforce::speed::{self, SnapshotStore};
 use zbus::connection;
 
 use crate::bus::BUS_NAME;
+use crate::feed::{Feed, STOP_BUDGET, SysfsSensor, SystemClock};
 use crate::profiles::ProfileStore;
 use crate::ticks::Ticks;
+use crate::watchdog::Notifier;
 use crate::worker::{CoreBackend, KnownModel, Worker};
 
 #[derive(Parser)]
@@ -41,11 +51,27 @@ struct Cli {
     /// Endereço do D-Bus do sistema, onde fica o logind (para testes).
     #[arg(long, hide = true)]
     system_address: Option<String>,
+    /// Raiz do procfs, de onde vem o cpuinfo (para testes).
+    #[arg(long, default_value = "/proc", hide = true)]
+    proc_root: PathBuf,
+    /// Envia ao X 240 o E0 de 80 °C (com DE e E1), espera 8 s e sai, sem
+    /// D-Bus nem arquivos de estado. É o ExecStopPost da unidade.
+    #[arg(long)]
+    waterforce_cpu_safe: bool,
+    /// Nó aberto no lugar do /dev/hidrawN achado no sysfs (para testes).
+    #[arg(long, hide = true, requires = "waterforce_cpu_safe")]
+    hidraw_node: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match zbus::block_on(run(cli)) {
+    if cli.waterforce_cpu_safe {
+        return safe::run(&cli.sys_root, &cli.proc_root, cli.hidraw_node.as_deref());
+    }
+    // Antes de qualquer thread: o SIGTERM vira um evento do fluxo normal
+    // (`on_terminate`), nunca I/O dentro de um signal handler.
+    let signals = block_termination();
+    match zbus::block_on(run(cli, signals)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("halod: {e}");
@@ -54,17 +80,104 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<(), String> {
+/// Bloqueia SIGTERM e SIGINT nesta thread (e nas que ela criar) e devolve o
+/// conjunto, para [`wait_termination`].
+fn block_termination() -> libc::sigset_t {
+    // SAFETY: `set` é inicializado por `sigemptyset` antes do uso, e a
+    // máscara só muda nesta thread, antes de existir outra.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        set
+    }
+}
+
+/// Espera, numa thread própria, um sinal de `set` e chama [`on_terminate`].
+fn wait_termination(set: libc::sigset_t, worker: Worker) {
+    std::thread::Builder::new()
+        .name("signals".into())
+        .spawn(move || {
+            let mut sig = 0;
+            // SAFETY: `set` e `sig` são válidos durante a chamada.
+            while unsafe { libc::sigwait(&set, &mut sig) } != 0 {}
+            std::process::exit(on_terminate(&worker, sig));
+        })
+        .expect("não consegui criar a thread de sinais");
+}
+
+/// SIGTERM: para o feed e os pedidos, espera a operação em andamento e
+/// manda a proteção, tudo em até [`STOP_BUDGET`]. Devolve o código de saída.
+fn on_terminate(worker: &Worker, sig: i32) -> i32 {
+    eprintln!("halod: sinal {sig} recebido; parando o feed da CPU");
+    match worker.shutdown(STOP_BUDGET) {
+        Some(None) => 0,
+        Some(Some(Ok(Protected::Sent(m)))) => {
+            eprintln!("halod: E0 de 80 °C enviado ao modelo {m} antes de sair");
+            0
+        }
+        Some(Some(Ok(_))) => 0,
+        Some(Some(Err(e))) => {
+            eprintln!("halod: aparelho não protegido ao sair: {e}");
+            1
+        }
+        None => {
+            eprintln!(
+                "halod: a fila do Waterforce não terminou em {}s; aparelho não protegido pelo processo",
+                STOP_BUDGET.as_secs()
+            );
+            1
+        }
+    }
+}
+
+/// Supervisão do watchdog pelo ambiente. Sem ela, o feed fica desligado.
+fn supervision() -> Option<Arc<dyn Notifier>> {
+    match watchdog::from_env(|k| std::env::var(k).ok(), std::process::id()) {
+        Ok(Some(s)) => {
+            eprintln!(
+                "halod: watchdog de {}s; feed da CPU ligado",
+                s.timeout.as_secs()
+            );
+            Some(Arc::new(s.notifier))
+        }
+        Ok(None) => {
+            eprintln!("halod: sem watchdog do systemd; feed da CPU desligado");
+            None
+        }
+        Err(e) => {
+            eprintln!("halod: ambiente do watchdog incompatível ({e}); feed da CPU desligado");
+            None
+        }
+    }
+}
+
+async fn run(cli: Cli, signals: libc::sigset_t) -> Result<(), String> {
     let state_dir = speed::state_dir().ok_or("sem XDG_STATE_HOME nem HOME")?;
     let config_dir = profiles::config_dir().ok_or("sem XDG_CONFIG_HOME nem HOME")?;
+    let notifier = supervision();
+    let feed = Feed::new(
+        notifier.is_some(),
+        Arc::new(SysfsSensor(cli.sys_root.clone())),
+        Arc::new(SystemClock),
+    )
+    .traced(std::env::var_os("HALOD_TRACE_FEED").is_some());
     // O worker acorda os ticks pelo `refresh` quando lê um modelo novo.
     let (refresh, wake) = async_channel::bounded(1);
     let model = KnownModel::default();
-    let worker = Worker::spawn(
-        CoreBackend::new(cli.sys_root.clone(), Some(SnapshotStore::new(&state_dir))),
+    let worker = Worker::spawn_with_feed(
+        CoreBackend::with_cpu(
+            cli.sys_root.clone(),
+            Some(SnapshotStore::new(&state_dir)),
+            CpuInfo::read(&cli.sys_root, &cli.proc_root),
+        ),
         model.clone(),
         refresh.clone(),
+        feed,
     );
+    wait_termination(signals, worker.clone());
 
     let builder = match &cli.address {
         Some(a) => connection::Builder::address(a.as_str()),
@@ -74,7 +187,7 @@ async fn run(cli: Cli) -> Result<(), String> {
         .and_then(|b| {
             bus::serve(
                 b,
-                worker,
+                worker.clone(),
                 ProfileStore::new(&config_dir, &state_dir),
                 Some(led_state::LedState::new(&state_dir)),
                 ticks::first_read(&cli.sys_root),
@@ -92,10 +205,12 @@ async fn run(cli: Cli) -> Result<(), String> {
         })?;
     eprintln!("halod: {BUS_NAME} no D-Bus da sessão");
 
-    let ticks = Ticks::new(cli.sys_root, model);
+    // Os ticks começam depois do nome: o primeiro envio do feed só sai com
+    // o daemon pronto.
+    let ticks = Ticks::with_worker(cli.sys_root, model, worker.clone(), notifier);
     futures_util::future::join(
         ticks.run(&conn, wake),
-        ticks::watch_resume(cli.system_address, refresh),
+        ticks::watch_resume(cli.system_address, refresh, Some(worker)),
     )
     .await;
     Ok(())

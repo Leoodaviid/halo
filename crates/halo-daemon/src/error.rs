@@ -4,7 +4,8 @@
 //! dos erros do `halo-core` para eles.
 
 use halo_core::hid::OpenError;
-use halo_core::waterforce::curve::CurveError;
+use halo_core::waterforce::cpu_feed::FeedError;
+use halo_core::waterforce::curve::{CurveError, StepsError};
 use halo_core::waterforce::led::{ApplyError, LedError};
 use halo_core::waterforce::speed::SpeedError;
 
@@ -81,6 +82,27 @@ impl From<SpeedError> for Error {
             | SpeedError::NoSnapshot(_)
             | SpeedError::BadSnapshot(..) => Self::Storage(message),
         }
+    }
+}
+
+impl From<FeedError> for Error {
+    fn from(err: FeedError) -> Self {
+        let message = err.to_string();
+        match &err {
+            FeedError::NotFound => Self::NotFound(message),
+            FeedError::Open(e) => from_open(e, message),
+            FeedError::Io(_)
+            | FeedError::NoModelResponse
+            | FeedError::NotFed(_)
+            | FeedError::UnknownModel(_)
+            | FeedError::Deadline => Self::Device(message),
+        }
+    }
+}
+
+impl From<StepsError> for Error {
+    fn from(err: StepsError) -> Self {
+        Self::InvalidArgument(err.to_string())
     }
 }
 

@@ -1,0 +1,17 @@
+{"event": "opened", "mono": 96.041950502, "wall": 1793111187.014855, "node": "/dev/hidraw2", "tctl_path": "/sys/class/hwmon/hwmon4/temp1_input"}
+{"event": "DA", "mono": 96.059633268, "wall": 1793111187.032538, "tctl": 44125, "coolant_raw": "31000", "raw": "b6 08 00 d6 0b 00 58 64 6b 2f 01 1f", "fan_rpm": 2230, "pump_rpm": 3030, "fan_duty": 88}
+{"event": "DA", "mono": 98.581836828, "wall": 1793111189.5547411, "tctl": 43375, "coolant_raw": "31000", "raw": "b6 08 00 30 0c 00 58 64 6b 38 01 1f", "fan_rpm": 2230, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 101.10384927, "wall": 1793111192.0767536, "tctl": 42625, "coolant_raw": "31000", "raw": "da 08 00 a2 0c 00 58 64 5b 38 01 1f", "fan_rpm": 2266, "pump_rpm": 3234, "fan_duty": 88}
+{"event": "DA", "mono": 103.625856912, "wall": 1793111194.5987616, "tctl": 42125, "coolant_raw": "31000", "raw": "da 08 00 30 0c 00 58 64 5b 38 01 1f", "fan_rpm": 2266, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 106.14469738, "wall": 1793111197.1176019, "tctl": 41500, "coolant_raw": "31000", "raw": "dd 08 00 30 0c 00 58 64 6c 38 01 1f", "fan_rpm": 2269, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 108.666673505, "wall": 1793111199.639578, "tctl": 41125, "coolant_raw": "31000", "raw": "dd 08 00 9b 0c 00 58 64 6c 38 01 1f", "fan_rpm": 2269, "pump_rpm": 3227, "fan_duty": 88}
+{"event": "DA", "mono": 111.188639266, "wall": 1793111202.1615436, "tctl": 40625, "coolant_raw": "31000", "raw": "b8 08 00 9a 0c 00 58 64 79 38 01 1f", "fan_rpm": 2232, "pump_rpm": 3226, "fan_duty": 88}
+{"event": "DA", "mono": 113.711699734, "wall": 1793111204.6846042, "tctl": 40375, "coolant_raw": "31000", "raw": "b8 08 00 30 0c 00 58 64 79 38 01 1f", "fan_rpm": 2232, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 116.230737822, "wall": 1793111207.2036424, "tctl": 40000, "coolant_raw": "31000", "raw": "a9 08 00 30 0c 00 58 64 7d 38 01 1f", "fan_rpm": 2217, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 118.752720154, "wall": 1793111209.7256246, "tctl": 39500, "coolant_raw": "31000", "raw": "a9 08 00 bc 0c 00 58 64 7d 38 01 1f", "fan_rpm": 2217, "pump_rpm": 3260, "fan_duty": 88}
+{"event": "DA", "mono": 121.274728089, "wall": 1793111212.2476327, "tctl": 39250, "coolant_raw": "31000", "raw": "c7 08 00 b1 0c 00 58 64 93 38 01 1f", "fan_rpm": 2247, "pump_rpm": 3249, "fan_duty": 88}
+{"event": "DA", "mono": 123.796934325, "wall": 1793111214.7698388, "tctl": 39000, "coolant_raw": "31000", "raw": "c7 08 00 94 0c 00 58 64 93 fa 00 1f", "fan_rpm": 2247, "pump_rpm": 3220, "fan_duty": 88}
+{"event": "DA", "mono": 126.315752933, "wall": 1793111217.2886574, "tctl": 38750, "coolant_raw": "31000", "raw": "e0 08 00 30 0c 00 58 64 6c 38 01 1f", "fan_rpm": 2272, "pump_rpm": 3120, "fan_duty": 88}
+{"event": "DA", "mono": 128.837836632, "wall": 1793111219.8107412, "tctl": 39875, "coolant_raw": "31000", "raw": "e0 08 00 c8 0c 00 58 64 6c 38 01 1f", "fan_rpm": 2272, "pump_rpm": 3272, "fan_duty": 88}
+{"event": "DA", "mono": 131.359771504, "wall": 1793111222.3326762, "tctl": 39375, "coolant_raw": "31000", "raw": "dc 08 00 8d 0c 00 58 64 d0 38 01 1f", "fan_rpm": 2268, "pump_rpm": 3213, "fan_duty": 88}
+{"event": "DA", "mono": 133.880987334, "wall": 1793111224.8538918, "tctl": 39125, "coolant_raw": "31000", "raw": "dc 08 00 30 0c 00 58 64 d0 38 01 1f", "fan_rpm": 2268, "pump_rpm": 3120, "fan_duty": 88}

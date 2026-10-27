@@ -13,6 +13,7 @@ use serde::de::DeserializeOwned;
 use zbus::{Connection, MatchRule, Message, MessageStream, connection};
 
 use crate::bus::{self, BUS_NAME};
+use crate::feed::Feed;
 use crate::profiles::ProfileStore;
 use crate::worker::fake::FakeBackend;
 use crate::worker::{KnownModel, Worker};
@@ -83,6 +84,8 @@ pub struct Harness {
     pub model: KnownModel,
     /// Os pedidos de volta dos ticks que o worker manda.
     pub wake: async_channel::Receiver<()>,
+    /// A fila, com o feed (sem supervisão, salvo em [`Harness::with_feed`]).
+    pub worker: Worker,
     pub server: Connection,
     pub client: Connection,
     pub sys: PathBuf,
@@ -100,6 +103,11 @@ impl Harness {
     /// Como [`Harness::new`], com o sysfs falso montado por `setup` antes de
     /// os objetos serem publicados, como no início do daemon.
     pub fn with_sys(setup: impl FnOnce(&Path)) -> Self {
+        Self::with_feed(setup, None)
+    }
+
+    /// Como [`Harness::with_sys`], com o feed da CPU em `feed`.
+    pub fn with_feed(setup: impl FnOnce(&Path), feed: Option<Feed>) -> Self {
         let bus = TestBus::start();
         let dirs = tempfile::tempdir().unwrap();
         let sys = dirs.path().join("sys");
@@ -110,11 +118,14 @@ impl Harness {
         let backend = FakeBackend::default();
         let model = KnownModel::default();
         let (refresh, wake) = async_channel::bounded(1);
-        let worker = Worker::spawn(backend.clone(), model.clone(), refresh);
+        let worker = match feed {
+            Some(feed) => Worker::spawn_with_feed(backend.clone(), model.clone(), refresh, feed),
+            None => Worker::spawn(backend.clone(), model.clone(), refresh),
+        };
         let (server, client) = zbus::block_on(async {
             let server = bus::serve(
                 connection::Builder::address(bus.address.as_str()).unwrap(),
-                worker,
+                worker.clone(),
                 ProfileStore::new(&config, &state),
                 Some(crate::led_state::LedState::new(&state)),
                 crate::ticks::first_read(&sys),
@@ -135,6 +146,7 @@ impl Harness {
             backend,
             model,
             wake,
+            worker,
             server,
             client,
             sys,
