@@ -22,20 +22,21 @@ Se for preciso uma tela de edição maior (desenhar efeitos por LED, por exemplo
 
 O comportamento está na spec `gnome-panel`, e o visual no protótipo [`docs/ui/panel-prototype.html`](ui/panel-prototype.html) (ver [docs/ui/README.md](ui/README.md)), que segue o canvas "halo · Apple HIG" com o destaque do GNOME. O painel é só um cliente do `halod`: ele não abre hidraw nem lê o sysfs.
 
-A extensão sai em quatro changes: `gnome-shell-extension` (barra, estado do daemon e atalhos), `gnome-panel-devices` (carrossel e desenhos dos aparelhos, só lendo do daemon), `gnome-panel-led` (controles do LED, liga/desliga, fila de `Apply` e religar) e `gnome-panel-extras` (perfis, detalhes, erros, preferências e fonte CPU). O que está abaixo descreve o painel completo; o que já existe está marcado.
+A extensão sai em cinco changes: `gnome-shell-extension` (barra, estado do daemon e atalhos), `gnome-panel-devices` (carrossel e desenhos dos aparelhos, só lendo do daemon), `gnome-panel-led` (controles do LED, liga/desliga, fila de `Apply` e religar), `gnome-panel-cpu-source` (preferências e fonte CPU na barra) e `gnome-panel-extras` (perfis, detalhes, erros e linha de status). O que está abaixo descreve o painel completo; o que já existe está marcado.
 
 **Estrutura da extensão** (`extension/`, JavaScript puro em ESM, UUID `halo@leoodaviid.github.io`):
 
-- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`, `carousel.js`, `art.js`, `ledState.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`). `carousel.js` decide as páginas, a seleção quando a lista muda, o status e a roda; `art.js` gera o texto SVG de cada aparelho com a cor do LED já aplicada (`deviceSvg`, `ledPaint`); `ledState.js` decide tudo o que leva a um `Led.Apply`: os controles visíveis (`controlsView`), o pedido (`request`), a igualdade com o aplicado (`sameEffective`), a fila (`commit`, `finished`) e o religar (`powerTarget`, `profileLed`).
+- `lib/`: funções puras (`temperature.js`, `view.js`, `journal.js`, `carousel.js`, `art.js`, `ledState.js`, `prefs.js`), sem `gi://St` nem módulos do Shell, testadas com `gjs -m` (`sh extension/tests/run.sh`). `carousel.js` decide as páginas, a seleção quando a lista muda, o status e a roda; `art.js` gera o texto SVG de cada aparelho com a cor do LED já aplicada (`deviceSvg`, `ledPaint`); `ledState.js` decide tudo o que leva a um `Led.Apply`: os controles visíveis (`controlsView`), o pedido (`request`), a igualdade com o aplicado (`sameEffective`), a fila (`commit`, `finished`) e o religar (`powerTarget`, `profileLed`).
 - `daemon.js`: o estado único (dono do nome, telemetria, lista de aparelhos e contagem dos presentes, `LastApplied` e o estado do LED de `ledState.js`, estado da unidade, registro) e os proxies D-Bus; chama um callback a cada mudança. O estado do LED (fila, `lastOn`, pedido em voo) zera quando o dono do nome muda, e é preenchido pelo `LastApplied` que o daemon carrega do arquivo.
 - `carousel.js`: o carrossel no St (`HaloCarousel`), com o contêiner público `body` e o sinal `device-changed`.
 - `ledControls.js`: os controles do LED do Waterforce no `body` (efeito, cor, brilho e velocidade), que só mostram o `controlsView` e chamam o rascunho durante o gesto e o `commit` no fim dele.
 - `indicator.js`: só desenha, a partir do estado e das funções de `lib/`.
-- `extension.js`: `enable()` cria o indicador, e `disable()` desfaz tudo (sinais, proxies, subprocessos e cancelables).
+- `extension.js`: `enable()` lê as preferências (`getSettings()`) e cria o indicador, e `disable()` desfaz tudo (sinais, proxies, subprocessos e cancelables).
+- `prefs.js` e `schemas/`: a janela de preferências (libadwaita) e o schema `org.gnome.shell.extensions.halo`, com a chave `temperature-source` (`coolant` ou `cpu`). A janela roda em outro processo, sem o estado do Shell: ela cria o próprio proxy de `Waterforce.Telemetry`, também com `DO_NOT_AUTO_START`, e habilita a CPU quando o `halod` tem dono e publica `CpuMilliCelsius` (`cpuOption` em `lib/prefs.js`). O Shell não compila o schema: o `packaging/install.sh` e os scripts de `scripts/dev/` geram o `gschemas.compiled` na cópia instalada, e ele não vai para o git.
 
 **D-Bus sem ativação:** os proxies do `halod` (`Manager`, `Waterforce.Telemetry`, `Waterforce.Led` e `Profiles`, este só com o `ActiveProfile` e o `Get`) são criados com `DO_NOT_AUTO_START`, e o `Led.Apply` sai com `NO_AUTO_START`, então a extensão nunca sobe o daemon. O dono do nome vem do `g-name-owner` do próprio proxy; sem dono, o ícone fica esmaecido e o painel mostra o daemon fora do ar. Não há leitura periódica: valem o `PropertiesChanged` e o `DevicesChanged`.
 
-- **Barra (já existe, só com o líquido):** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU, escolhida nas preferências.
+- **Barra (já existe):** o ícone e a temperatura, arredondada para o inteiro. A fonte é o líquido (`CoolantMilliCelsius`, `--` quando `CoolantValid` é falso) ou a CPU (`CpuMilliCelsius`, `--` quando `CpuValid` é falso, porque o daemon guarda o último valor na falha), escolhida nas preferências e trocada na hora pelo `changed::temperature-source`. A CPU não depende do Waterforce, então o `Available` não conta para ela.
 - **Aparelhos (já existe):** o carrossel mostra os aparelhos que o `Devices` lista como presentes, com o nome que o daemon informa, e mostra os controles de LED só para quem tem a capacidade `led`. A extensão não guarda catálogo de hardware.
 - **Aplicação (já existe):** um `Led.Apply` por gesto concluído, no máximo um em voo, e só o último valor pendente é enviado; nenhum pedido igual ao aplicado, e uma falha descarta o pendente e volta os controles ao aplicado. Cada aplicação termina com `B6`, então nada é enviado durante um gesto, e o desenho do anel segue o rascunho. O fim do gesto em cada controle:
   - brilho e velocidade: o `drag-end` do `Slider` (arraste ou clique); as setas andam um inteiro e aplicam 300 ms depois da última tecla; a roda do mouse fica desligada, porque no Shell ela muda o valor sem `drag-end`;
@@ -65,7 +66,7 @@ Equivalência de cada elemento do protótipo no St (Shell 50):
 | Liga/desliga (já existe) | O `PopupMenu.Switch` dentro de um `St.Button` |
 | Detalhes, Aparelhos e Registro (só o registro existe) | Troca de página dentro do mesmo menu |
 | Copiar comando | `St.Clipboard` |
-| Preferências | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings |
+| Preferências (já existe) | `Adw.PreferencesWindow` (prefs.js), com a fonte da temperatura em GSettings; o item "Preferências do halo…" do rodapé chama `openPreferences()` |
 
 Pré-requisitos no `halod` para a extensão: o `Devices` com nome e capacidades (change `daemon-device-status`) e a temperatura da CPU (`waterforce-cpu-feed`).
 

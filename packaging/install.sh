@@ -9,8 +9,10 @@
 # nunca executados.
 #
 # Caminhos (para testes): BINDIR, XDG_CONFIG_HOME, XDG_DATA_HOME,
-# XDG_STATE_HOME, CARGO_TARGET_DIR, HALO_UDEV_RULES_DIR e HALO_EXTENSION_SRC
-# (a pasta da extensão a instalar; padrão extension/ do repositório).
+# XDG_STATE_HOME, CARGO_TARGET_DIR, HALO_UDEV_RULES_DIR, HALO_EXTENSION_SRC
+# (a pasta da extensão a instalar; padrão extension/ do repositório) e
+# HALO_GLIB_COMPILE_SCHEMAS (o compilador de schemas; padrão
+# glib-compile-schemas).
 
 set -eu
 
@@ -61,6 +63,7 @@ BINDIR=${BINDIR:-$HOME/.local/bin}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 UDEV_DIR=${HALO_UDEV_RULES_DIR:-/etc/udev/rules.d}
 EXT_SRC=${HALO_EXTENSION_SRC:-$ROOT/extension}
+COMPILE_SCHEMAS=${HALO_GLIB_COMPILE_SCHEMAS:-glib-compile-schemas}
 
 UNIT_DIR=$CONFIG_HOME/systemd/user
 DBUS_DIR=$DATA_HOME/dbus-1/services
@@ -180,6 +183,13 @@ install_extension() {
     cp -R "$EXT_SRC/." "$staging/"
     find "$staging" -mindepth 1 \( -path "$staging/tests" -o -name '.*' -o -name '*~' \) \
         -prune -exec rm -rf {} +
+    # O Shell não compila o schema ao carregar a extensão: o getSettings()
+    # procura schemas/gschemas.compiled na pasta dela.
+    if [ -d "$staging/schemas" ]; then
+        rm -f "$staging/schemas/gschemas.compiled"
+        "$COMPILE_SCHEMAS" --strict "$staging/schemas" ||
+            die "o schema da extensão não compilou; a extensão instalada não foi alterada"
+    fi
     if diff -r "$staging" "$EXT_DIR" > /dev/null 2>&1; then
         rm -rf "$staging"
         changed=0
@@ -206,6 +216,8 @@ do_install() {
     say "unidade em $UNIT_DIR, ativação D-Bus em $DBUS_DIR"
     [ -f "$EXT_SRC/metadata.json" ] ||
         die "extensão sem metadata.json em $EXT_SRC; nada instalado foi alterado"
+    command -v "$COMPILE_SCHEMAS" > /dev/null 2>&1 ||
+        die "falta o $COMPILE_SCHEMAS, que compila as preferências da extensão (pacote libglib2.0-bin); nada instalado foi alterado"
 
     # Compila antes de tocar no que já está instalado.
     cargo build --release --locked --manifest-path "$ROOT/Cargo.toml" \

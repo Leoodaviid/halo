@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+<schemalist gettext-domain="halo">
+  <enum id="org.gnome.shell.extensions.halo.TemperatureSource">
+    <value nick="coolant" value="0"/>
+    <value nick="cpu" value="1"/>
+  </enum>
+  <schema id="org.gnome.shell.extensions.halo" path="/org/gnome/shell/extensions/halo/">
+    <key name="temperature-source" enum="org.gnome.shell.extensions.halo.TemperatureSource">
+      <default>'coolant'</default>
+      <summary>Temperatura na barra</summary>
+      <description>Fonte da temperatura do indicador: o líquido do Waterforce (coolant) ou a CPU (cpu).</description>
+    </key>
+  </schema>
+</schemalist>

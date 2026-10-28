@@ -745,6 +745,56 @@ hora     temp1   Tctl | b2..13 do DA
 - **O que o `halo telemetry waterforce` mostra:** `Líquido:  inválido (o aparelho informou 224 °C)` no stdout, no lugar da temperatura, como o `FAULT` do `sensors` (lm-sensors). Uma nota sobre o corte de energia vai para o stderr, uma vez por execução, mesmo com `--watch`. Fan e bomba continuam sendo mostradas, e o código de saída continua 0.
 - **Limite:** um sensor travado num valor plausível (como `1f`) não é detectado.
 
+**Segunda ocorrência, depois de logout e login (2026-10-27, ~22:39–22:45).** O usuário saiu e entrou na sessão para carregar a extensão nova (change `gnome-panel-cpu-source`). Com a sessão, o `halod` parou às 22:39:17 (`E0` de 80 °C do próprio daemon e do `ExecStopPost`) e subiu às 22:39:37 (`E1`, janela de 8 s em 80 °C e depois o Tctl a cada 2 s, sem `B6`). O journal do `halod` só tem o stop e o start nesse intervalo, sem nenhum pedido de velocidade ou LED. A barra do painel e o LCD do Waterforce mostraram o líquido alto logo depois do login, depois descendo e passando por `0°`. Leituras só do sysfs, sem enviar nada:
+
+```
+hora        temp1_input  Tctl (m°C)
+22:41:35    32000        36125      (halod: CoolantMilliCelsius 32000)
+22:41:45    48000        35000      48000 por ~17 s, depois 32000 e 48000 de novo
+22:44:08    16000        32750      fan 2244, bomba 3232
+22:44:14        0        32625      0 por ~6 s
+22:44:20    16000        32250
+```
+
+Captura passiva do `99 DA` às 22:45:56–22:46:23, com `scripts/diag/waterforce_da_sniff.py 40 14` (só leitura, quem pede o `DA` é o driver). A leitura já tinha voltado ao normal:
+
+```
+hora     temp1   Tctl | b2..13 do DA
+22:45:56   26000  31.4 | 14 08 00 a9 0c 00 50 64 47 38 01 19
+22:46:07   26000  31.6 | b4 06 00 b7 0c 00 50 64 34 38 01 19
+22:46:17   25000  34.2 | 61 08 00 85 0c 00 51 64 41 38 01 1a
+22:46:23   25000  35.0 | fe 07 00 b0 0c 00 52 64 3e 2f 01 19
+```
+
+- Os valores errados (0, 16, 32, 48 °C, ou seja, `00`, `10`, `20`, `30`) têm o nibble baixo em `0`, como o `e0`/`f0` de 2026-10-20. Como byte com sinal, a primeira ocorrência ficou entre −32 e −16, e a segunda entre 0 e 48. Isso reforça a hipótese de um valor que não é temperatura, mas continua sendo hipótese.
+- Desta vez o erro **passou sozinho** em uns 6 minutos, sem corte de energia, e o byte 13 voltou a `19`/`1a` (25–26 °C), estável. Depois disso, o usuário ainda desligou o PC, tirou da tomada por alguns segundos e religou (boot às ~22:59). Às 23:06, o líquido estava em 26 °C, coerente com o Tctl (31–37 °C), com a `amdgpu` do 5600G (edge 36 °C) e com o `gigabyte_wmi`. O corte veio depois da normalização, então não foi o que a resolveu.
+- O LCD mostrou o mesmo valor que o hwmon, então o erro está no aparelho, e não no driver nem no halo. Fan e bomba seguiram normais (2045–2244 e 3220–3290 RPM), e o duty da fan (byte 8, 80–82 %) acompanhou o Tctl enviado.
+- As duas ocorrências vieram depois de comandos do host: um `E5`/`E6` na primeira e, na segunda, o par stop/start do `halod` (`E0` de 80 °C, `E1`, `E0`), sem pedido de velocidade. Duas ocorrências não provam a causa. O `halod` alimenta o `E0` desde 2026-10-27 de manhã, com reinícios nos ensaios 6.1–6.5, e só este episódio foi visto.
+- **GCC revisto (C# do `ucCooler` e do `AorusLcdService`, sem nada enviado):** nenhum código trata, valida ou recupera o byte 13. O único pedido de `DA` é o `DeviceApi.GetRPMSpeed`, que só lê o RPM. Os "Reset" do GCC voltam o LED e a fan ao padrão, e nenhum reinicia o Castor3. No LCD, o líquido é só o bit `Display.LiquidTemperature` (`0x40`), e o firmware desenha o valor. No Windows, um erro desses apareceria do mesmo jeito no LCD, sem correção. A diferença de envio que mais chama atenção é que o GCC espera 20 s depois de achar o aparelho antes do `E1` (`CoolerDataApi.GetCoolerData`), e o `halod` manda o `E1` ao iniciar. Ela ainda não foi testada como causa.
+- **Lacuna do halo:** 0 a 48 °C passam pelo critério de sanidade (líquido > 100 °C é inválido), então a barra mostrou `0°` em vez de `--`. Detectar isso exigiria outro critério, por exemplo um salto impossível entre leituras, o que é trabalho para outra change.
+- **Se acontecer de novo:** anotar o horário, rodar `python3 -I scripts/diag/waterforce_da_sniff.py 120 0 --jsonl <arquivo>` durante o erro e cruzar com `journalctl --user -u halod -o short-iso-precise`.
+
+**LCD durante a proteção de 80 °C (2026-10-27, 23:12).** Num logout, o usuário viu o LCD do Waterforce mostrar a CPU em **80 °C** e a fan acelerar. O journal mostra o `E0` de 80 °C do `halod` (23:12:10,951) e do `ExecStopPost` (23:12:11,017), com a unidade parada às 23:12:19 e de volta às 23:12:35 (mais 8 s em 80 °C antes do Tctl).
+
+- O LCD desenha o byte da temperatura da CPU do `E0`, o mesmo que o firmware usa como referência da curva. Por isso, durante a proteção (stop, logout, falha e os 8 s de cada início), o LCD mostra 80 °C. Isso é esperado, e não uma leitura errada. O `CpuMilliCelsius` do D-Bus continua vindo do Tctl e não mostra o 80.
+- Entre o logout e o login, ninguém envia `E0`, e o aparelho fica no último valor (80 °C). A unidade é de usuário (`PartOf=graphical-session.target`), e o acesso ao hidraw vem do `uaccess` (ACL da sessão ativa no assento), então o `halod` não roda na tela de login. No Windows, o `AorusLcdService` é um serviço do sistema (`MainService : ServiceBase`), que roda antes do login e não para no logout. Lá, o LCD mostra a CPU real também na tela de login.
+
+**Bloqueio e logout medidos (2026-10-27, 23:27–23:32).** Captura passiva do `DA` com `scripts/diag/waterforce_da_sniff.py` (como usuário no bloqueio; como root no logout, por `sudo systemd-run --unit=halo-da-capture`, porque na tela de login o `uaccess` tira a ACL do hidraw), cruzada com o `LockedHint` do logind e o journal do `halod`. Fan em Performance, bomba em Turbo.
+
+| Estado | Janela | Tctl | Duty da fan | RPM da fan |
+|---|---|---|---|---|
+| Sessão ativa | 23:27:16–23:27:48 | 30,8–32,6 °C | 80–81 % | 2009–2211 |
+| Tela bloqueada (`LockedHint=yes`) | 23:27:48–23:28:23 | 37,0–43,6 °C | 80–85 % | 2076–2244 |
+| Sessão ativa, antes do logout | 23:31:09–23:31:23 | 34,0–35,4 °C | 81–82 % | 2178–2211 |
+| Logout: `E0` de 80 °C (23:31:23,867 e ,932) | 23:31:26–23:31:31 | 34,3–35,3 °C | **100 %** | 2178–2541 |
+| Tela de login, sem `halod` | 23:31:31–23:32:06 | 34,3–46,0 °C | **100 %** | 2541–2607 |
+| Login: janela de 8 s em 80 °C | 23:32:06–23:32:14 | 44,1–50,0 °C | **100 %** | 2508–2541 |
+| Sessão ativa, com o Tctl | 23:32:16–23:32:40 | 41,4–51,4 °C | 88 → 85 % | 2173–2541 |
+
+- **Bloquear a tela não muda nada:** o `halod` continua ativo, o journal não tem nenhuma entrada, e a fan segue a CPU.
+- **O "modo game" é o logout:** do `E0` de 80 °C até o primeiro Tctl depois do login, a fan ficou ~50 s em duty 100 com a CPU entre 34 e 50 °C. São ~35 s na tela de login, mais a parada e a janela de 8 s do início. Um logout mais longo deixa a fan no máximo pelo tempo todo da tela de login. A bomba não mudou (Turbo).
+- Boot até o login: não medido. Pela mesma lógica, o aparelho fica com o último `E0` (os 80 °C do desligamento), a não ser que perca energia. Depois de um corte de energia, o Performance deu duty 88, compatível com a referência padrão de ~50 °C.
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.

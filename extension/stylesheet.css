@@ -28,6 +28,30 @@
   spacing: 8px;
 }
 
+/* Rodapé: o .foot, o .hr e o .menu-row do protótipo. */
+.halo-foot {
+  spacing: 2px;
+  padding: 0 2px;
+}
+
+.halo-hr {
+  height: 1px;
+  margin: 2px 8px 4px;
+  background-color: rgba(127, 127, 127, 0.2);
+}
+
+.halo-menu-row {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+
+.halo-menu-row:hover,
+.halo-menu-row:focus {
+  background-color: -st-accent-color;
+  color: #fff;
+}
+
 .halo-button:insensitive {
   color: rgba(127, 127, 127, 1);
 }
