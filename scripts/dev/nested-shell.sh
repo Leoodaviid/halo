@@ -66,6 +66,9 @@ trap cleanup EXIT
 DEST=$T/home/.local/share/gnome-shell/extensions/$UUID
 mkdir -p "$DEST"
 (cd "$ROOT/extension" && tar --exclude=./tests -cf - .) | (cd "$DEST" && tar -xf -)
+# O getSettings() do enable() precisa do schema compilado na pasta da extensão.
+rm -f "$DEST/schemas/gschemas.compiled"
+glib-compile-schemas --strict "$DEST/schemas" || exit 1
 
 # sysfs falso com o Castor3 num hidraw que não existe em /dev (hidraw99).
 if [ "$daemon" = yes ]; then

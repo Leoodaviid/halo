@@ -38,6 +38,8 @@ const TelemetryProxy = Gio.DBusProxy.makeProxyWrapper(`
     <property name="Available" type="b" access="read"/>
     <property name="CoolantMilliCelsius" type="i" access="read"/>
     <property name="CoolantValid" type="b" access="read"/>
+    <property name="CpuMilliCelsius" type="i" access="read"/>
+    <property name="CpuValid" type="b" access="read"/>
   </interface>
 </node>`);
 
@@ -182,6 +184,10 @@ export class HaloDaemon {
                 available: t.Available ?? false,
                 coolantMilliCelsius: t.CoolantMilliCelsius ?? 0,
                 coolantValid: t.CoolantValid ?? false,
+                // Um halod sem a CPU no D-Bus deixa a propriedade fora do cache.
+                cpuPublished: t.get_cached_property('CpuMilliCelsius') !== null,
+                cpuMilliCelsius: t.CpuMilliCelsius ?? 0,
+                cpuValid: t.CpuValid ?? false,
             },
         });
     }

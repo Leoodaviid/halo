@@ -77,10 +77,12 @@ esac
 EOF
 chmod 755 "$T/stubs/cargo" "$T/stubs/systemctl" "$T/stubs/gsettings"
 
-# Extensão falsa, com o que o script não pode instalar: tests/ e arquivos de
-# editor.
+# Extensão falsa, com o schema de verdade e o que o script não pode instalar:
+# tests/, arquivos de editor e um gschemas.compiled velho.
 EXT_SRC=$T/extsrc
-mkdir -p "$EXT_SRC/tests" "$EXT_SRC/lib"
+mkdir -p "$EXT_SRC/tests" "$EXT_SRC/lib" "$EXT_SRC/schemas"
+cp "$ROOT"/extension/schemas/*.gschema.xml "$EXT_SRC/schemas/"
+echo 'velho' > "$EXT_SRC/schemas/gschemas.compiled"
 echo '{"uuid": "halo@leoodaviid.github.io"}' > "$EXT_SRC/metadata.json"
 echo '// versão 1' > "$EXT_SRC/extension.js"
 echo '// lib' > "$EXT_SRC/lib/view.js"
@@ -148,6 +150,13 @@ ext_installed() {
         missing_all "$EXT_DIR/tests" "$EXT_DIR/.extension.js.swp" "$EXT_DIR/extension.js~"
 }
 RELOGIN="saia e entre na sessão"
+# O gschemas.compiled instalado é o compilado agora, não o velho do repositório,
+# e tem a chave da fonte da temperatura (lida pelo gsettings real, não o falso).
+schema_compiled() {
+    ! grep -qx velho "$EXT_DIR/schemas/gschemas.compiled" &&
+        [ "$(GSETTINGS_SCHEMA_DIR=$EXT_DIR/schemas GSETTINGS_BACKEND=memory \
+            /usr/bin/gsettings get org.gnome.shell.extensions.halo temperature-source)" = "'coolant'" ]
+}
 
 touch "$T/marker"
 sleep 1
@@ -175,6 +184,7 @@ check "avisa que o BINDIR não está no PATH" out_has "não está no PATH"
 check "nenhum .new sobrando" \
     sh -c "! find '$HOME' -name '*.new' | grep -q ."
 check "extensão instalada sem tests/ nem arquivos de editor" ext_installed
+check "schema compilado na extensão instalada" schema_compiled
 check "extensão habilitada pelo gsettings" enabled_is "['$UUID']"
 check "extensão nova: pede para sair e entrar na sessão" out_has "$RELOGIN"
 check "extensões do usuário ligadas: sem aviso" sh -c "! grep -q 'extensões do usuário estão desligadas' '$T/out'"
@@ -263,6 +273,18 @@ check "extensão sem metadata.json: código diferente de zero" [ "$status" != 0 
 check "extensão sem metadata.json: avisa" out_has "sem metadata.json"
 check "extensão sem metadata.json: nada compilado" sh -c "! grep -q '^cargo' '$FAKE_LOG'"
 mv "$T/metadata.json" "$EXT_SRC/metadata.json"
+
+# Sem o compilador de schemas: para antes de tudo, e a extensão instalada
+# continua como estava.
+cp -R "$EXT_DIR" "$T/ext-before"
+echo '// versão sem compilador' > "$EXT_SRC/extension.js"
+HALO_GLIB_COMPILE_SCHEMAS=$T/nao-existe/glib-compile-schemas run
+check "sem o compilador: código diferente de zero" [ "$status" != 0 ]
+check "sem o compilador: diz o que instalar" out_has "libglib2.0-bin"
+check "sem o compilador: nada compilado nem parado" sh -c "! grep -qE '^(cargo|systemctl)' '$FAKE_LOG'"
+check "sem o compilador: extensão instalada intacta" diff -r "$T/ext-before" "$EXT_DIR"
+check "sem o compilador: nenhum .new sobrando" missing_all "$EXT_DIR.new"
+cp "$T/ext-before/extension.js" "$EXT_SRC/extension.js"
 
 check "perfis e snapshots iguais depois das instalações" \
     [ "$(user_data_sum)" = "$DATA_BEFORE" ]

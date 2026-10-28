@@ -42,6 +42,9 @@ trap 'exit 130' INT TERM
 DEST=$T/home/.local/share/gnome-shell/extensions/$UUID
 mkdir -p "$DEST"
 (cd "$ROOT/extension" && tar --exclude=./tests -cf - .) | (cd "$DEST" && tar -xf -)
+# O getSettings() do enable() precisa do schema compilado na pasta da extensão.
+rm -f "$DEST/schemas/gschemas.compiled"
+glib-compile-schemas --strict "$DEST/schemas" || exit 1
 
 # sysfs falso com o Castor3 num hidraw que não existe em /dev (hidraw99).
 sh "$ROOT/scripts/dev/fake-sysfs.sh" "$T/sys" || exit 1
@@ -130,6 +133,17 @@ while ! has_owner && [ "$i" -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
 sleep 2
 if has_owner && [ "$(state)" = ACTIVE ]; then echo "ok    com o halod, a extensão continua ACTIVE"
 else echo "FALHA com o halod (dono: $(has_owner && echo sim || echo não), estado: $(state))"; status=1; fi
+
+# A fonte da barra muda pelo gsettings, com o schema da extensão, e a
+# extensão segue ACTIVE (os erros do sinal aparecem no log do Shell).
+SCHEMAS=$T/home/.local/share/gnome-shell/extensions/$UUID/schemas
+for source in cpu coolant; do
+    GSETTINGS_SCHEMA_DIR=$SCHEMAS gsettings set org.gnome.shell.extensions.halo temperature-source "$source"
+    sleep 1
+done
+if [ "$(GSETTINGS_SCHEMA_DIR=$SCHEMAS gsettings get org.gnome.shell.extensions.halo temperature-source)" = "'coolant'" ] &&
+    [ "$(state)" = ACTIVE ]; then echo "ok    troca da fonte para a CPU e de volta, extensão ACTIVE"
+else echo "FALHA troca da fonte (estado: $(state))"; status=1; fi
 
 gnome-extensions disable "$UUID"
 if wait_state INACTIVE 10; then echo "ok    disable deixa INACTIVE"

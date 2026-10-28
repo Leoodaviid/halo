@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Monta em <dir> um sysfs falso para o halod de teste: o Castor3 do Waterforce
-# em class/hidraw/hidraw99 e o hwmon dele, com o líquido a 31 °C.
+# em class/hidraw/hidraw99 e o hwmon dele, com o líquido a 31 °C, e o
+# k10temp da CPU com o Tctl a 45 °C.
 #
 # O halod transforma o nome do hidraw em /dev/<nome>, então o nome falso não
 # pode existir em /dev: com hidraw3, por exemplo, ele abriria o teclado
@@ -37,3 +38,10 @@ printf 'DRIVER=gigabyte_waterforce\nHID_ID=0003:00001044:00007A4D\n' > "$HW/devi
 for kv in fan1_input:1200 fan2_input:2600 pwm1:120 pwm2:200 temp1_input:31000; do
     echo "${kv#*:}" > "$HW/${kv%%:*}"
 done
+
+# CPU: o halod acha o Tctl pelo name e pelo label, sem índice fixo.
+CPU=$SYS/class/hwmon/hwmon2
+mkdir -p "$CPU"
+echo k10temp > "$CPU/name"
+echo Tctl > "$CPU/temp1_label"
+echo 45000 > "$CPU/temp1_input"

@@ -18,7 +18,7 @@ import {ledPaint} from './lib/art.js';
 import {EMPTY as LED_EMPTY, controlsView} from './lib/ledState.js';
 import {lockedText} from './lib/carousel.js';
 import {journalText} from './lib/journal.js';
-import {barText} from './lib/temperature.js';
+import {COOLANT, barText} from './lib/temperature.js';
 import {indicatorDimmed, panelView} from './lib/view.js';
 
 // Opacidade do indicador com o daemon fora do ar.
@@ -65,11 +65,12 @@ function button(label, onClick) {
 export const HaloIndicator = GObject.registerClass(
 class HaloIndicator extends PanelMenu.Button {
     // handlers: { start(), journal(), back(), ledDraft(s), ledCommit(s),
-    // ledPower() }, chamados pelos botões e controles do painel. Sem eles,
-    // nada acontece.
-    _init(extension, handlers = {}) {
+    // ledPower(), prefs() }, chamados pelos botões e controles do painel. Sem eles,
+    // nada acontece. source: a fonte da temperatura na barra (COOLANT ou CPU).
+    _init(extension, handlers = {}, source = COOLANT) {
         super._init(0.5, 'halo');
         this._handlers = handlers;
+        this._source = source;
         this._state = INITIAL_STATE;
         this._ledControls = null;
 
@@ -153,6 +154,36 @@ class HaloIndicator extends PanelMenu.Button {
         this._main.addMenuItem(this._actions);
         this.menu.addMenuItem(this._main);
 
+        // Rodapé da página principal, com o daemon no ar ou fora do ar: a
+        // linha e o item das preferências (o .foot do protótipo).
+        this._foot = new PopupMenu.PopupBaseMenuItem({
+            reactive: false, can_focus: false, style_class: 'halo-item',
+        });
+        this._foot.style = ITEM_STYLE;
+        const foot = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'halo-foot',
+            x_expand: true,
+        });
+        foot.add_child(new St.Widget({style_class: 'halo-hr', x_expand: true}));
+        const prefs = new St.Button({
+            style_class: 'halo-menu-row',
+            can_focus: true,
+            x_expand: true,
+            child: new St.Label({
+                text: 'Preferências do halo…',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            }),
+        });
+        prefs.connect('clicked', () => {
+            this.menu.close();
+            this._handlers.prefs?.();
+        });
+        foot.add_child(prefs);
+        this._foot.add_child(foot);
+        this.menu.addMenuItem(this._foot);
+
         // Registro do halod, só leitura, com "Voltar".
         this._journalSection = new PopupMenu.PopupMenuSection();
         const journalItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
@@ -224,18 +255,32 @@ class HaloIndicator extends PanelMenu.Button {
             this._power.add_style_pseudo_class('insensitive');
     }
 
+    // Troca a fonte da barra e redesenha com o último estado.
+    setSource(source) {
+        if (this._destroyed)
+            return;
+        this._source = source;
+        this._renderTemp();
+    }
+
+    _renderTemp() {
+        const state = this._state;
+        const text = state.owner ? barText(state.telemetry, this._source) : '';
+        this._temp.text = text;
+        this._temp.visible = text !== '';
+    }
+
     update(state) {
         if (this._destroyed)
             return;
         this._state = state;
-        const text = state.owner ? barText(state.telemetry) : '';
-        this._temp.text = text;
-        this._temp.visible = text !== '';
+        this._renderTemp();
         this._box.opacity = indicatorDimmed(state) ? DIMMED_OPACITY : 255;
 
         const view = panelView(state);
         const showJournal = view.kind === 'down' && state.journal !== null;
         this._main.actor.visible = !showJournal;
+        this._foot.visible = !showJournal;
         this._journalSection.actor.visible = showJournal;
         if (showJournal)
             this._journalLabel.text = journalText(state.journal);

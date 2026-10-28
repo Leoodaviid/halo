@@ -43,3 +43,9 @@
 }
 .halo-led-slider-icon { color: rgba(0, 0, 0, 0.6); }
 .halo-led-error { color: #ff6961; }
+
+/* Rodapé. */
+.halo-hr { background-color: rgba(255, 255, 255, 0.1); }
+.halo-menu-row { color: rgba(255, 255, 255, 0.9); }
+.halo-menu-row:hover,
+.halo-menu-row:focus { color: #fff; }
