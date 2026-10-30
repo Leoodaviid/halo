@@ -7,5 +7,7 @@
 # Placa-mãe Gigabyte, controlador RGB ITE IT5702
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="5702", TAG+="uaccess"
 
-# AORUS Waterforce, controlador Castor3
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1044", ATTRS{idProduct}=="7a4d", TAG+="uaccess"
+# AORUS Waterforce, controlador Castor3. O grupo plugdev mantém o acesso do
+# halod sem sessão ativa (tela de login, boot com linger), para ele continuar
+# mandando a CPU ao X 240; o uaccess sozinho some no logout.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1044", ATTRS{idProduct}=="7a4d", TAG+="uaccess", GROUP="plugdev", MODE="0660"

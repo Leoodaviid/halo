@@ -377,6 +377,35 @@ impl Worker {
         self.shared.set_slot(slot);
     }
 
+    /// `Session.End()` com acesso só pela ACL: pausa o feed, descarta o envio
+    /// pendente e faz a proteção do SIGTERM antes dos pedidos da fila. Depois
+    /// dela, nenhum `E0` com Tctl até o `Begin()`. `None` sem supervisão
+    /// (nada enviado).
+    pub async fn end_session(&self) -> FinalProtect {
+        self.feed.pause_session();
+        let (reply, result) = async_channel::bounded(1);
+        {
+            let mut q = self.shared.queue.lock().unwrap();
+            if q.stopped || q.stop.is_some() {
+                return Some(Err(Error::Device(
+                    "o halod está parando; a proteção fica com o SIGTERM".into(),
+                )));
+            }
+            if q.slot == Some(FeedSlot::Tick) {
+                q.slot = None;
+            }
+            let feed = self.feed.clone();
+            q.jobs.push_front(Box::new(move |backend| {
+                let _ = reply.send_blocking(feed.final_protect(backend));
+            }));
+            self.shared.ready.notify_one();
+        }
+        match result.recv().await {
+            Ok(value) => value,
+            Err(_) => std::future::pending().await,
+        }
+    }
+
     /// SIGTERM: nenhum feed nem pedido novo; espera a operação em andamento
     /// terminar e faz a última proteção, até `timeout`. `None` se o prazo
     /// vencer (a thread pode estar presa).

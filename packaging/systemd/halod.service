@@ -3,12 +3,16 @@
 # Unidade do systemd do usuário para o halod. O packaging/install.sh troca
 # @BINDIR@ pelo diretório dos binários e instala em
 # $XDG_CONFIG_HOME/systemd/user/.
+#
+# Sobe com o gerenciador do usuário, e não com a sessão gráfica: com o linger
+# (loginctl enable-linger), sobe no boot e continua no logout, alimentando o
+# X 240 com a CPU na tela de login. Sem o linger, o gerenciador termina no
+# logout da última sessão e a unidade para pelo ExecStopPost, como antes. O
+# fim da sessão gráfica é tratado pela halod-session.service.
 
 [Unit]
 Description=halo: daemon de RGB, velocidade e telemetria
 Documentation=https://github.com/Leoodaviid/halo
-PartOf=graphical-session.target
-After=graphical-session.target
 # Desiste depois de 5 inícios em 180 s. O limite padrão (5 em 10 s) nunca
 # seria atingido: com o X 240 presente, cada falha passa pelo ExecStopPost,
 # que espera 8 s, e pelo RestartSec. Uma falha no início leva até ~21 s;
@@ -18,8 +22,13 @@ StartLimitIntervalSec=180s
 StartLimitBurst=5
 
 [Service]
-# Pronto quando o nome aparece no D-Bus da sessão.
-Type=dbus
+# Pronto quando o nome aparece no D-Bus da sessão: o halod manda READY=1
+# depois de adquiri-lo. Não é Type=dbus porque, no logout, o GNOME para o
+# dbus.service do usuário (gnome-session-restart-dbus.service) e o halod
+# reconecta no mesmo processo; com Type=dbus, se o nome estivesse sem dono
+# quando o barramento volta, o systemd pararia a unidade como sucesso, sem
+# Restart. O BusName fica para a ativação D-Bus.
+Type=notify
 BusName=io.github.leoodaviid.Halo1
 ExecStart=@BINDIR@/halod
 # Depois de qualquer fim do principal (stop, SIGKILL, watchdog, panic, falha
@@ -39,4 +48,4 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

@@ -6,12 +6,14 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use zbus::{Connection, MatchRule, Message, MessageStream, connection};
 
+use crate::access::Access;
 use crate::bus::{self, BUS_NAME};
 use crate::feed::Feed;
 use crate::profiles::ProfileStore;
@@ -23,6 +25,7 @@ use crate::worker::{KnownModel, Worker};
 pub struct TestBus {
     child: Child,
     pub address: String,
+    config: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -40,7 +43,7 @@ impl TestBus {
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
   <type>session</type>
-  <listen>unix:dir={}</listen>
+  <listen>unix:path={}/bus</listen>
   <policy context="default">
     <allow send_destination="*" eavesdrop="true"/>
     <allow eavesdrop="true"/>
@@ -52,6 +55,16 @@ impl TestBus {
             ),
         )
         .unwrap();
+        let (child, address) = Self::spawn(&config);
+        Self {
+            child,
+            address,
+            config,
+            _dir: dir,
+        }
+    }
+
+    fn spawn(config: &Path) -> (Child, String) {
         let mut child = Command::new("dbus-daemon")
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
@@ -62,11 +75,19 @@ impl TestBus {
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut address)
             .unwrap();
-        Self {
-            child,
-            address: address.trim().to_owned(),
-            _dir: dir,
-        }
+        // Sem o `guid`, que muda a cada início, como o endereço do usuário
+        // (`unix:path=/run/user/<uid>/bus`).
+        let address = address.trim().split(",guid=").next().unwrap().to_owned();
+        (child, address)
+    }
+
+    /// Um `dbus-daemon` novo no mesmo socket, como o `dbus.socket` do
+    /// usuário ativando o `dbus.service` de novo.
+    pub fn restart(&mut self) {
+        let _ = std::fs::remove_file(self.config.with_file_name("bus"));
+        let (child, address) = Self::spawn(&self.config);
+        self.child = child;
+        assert_eq!(address, self.address);
     }
 }
 
@@ -88,11 +109,13 @@ pub struct Harness {
     pub worker: Worker,
     pub server: Connection,
     pub client: Connection,
+    /// O que a sonda do `Session.End()` responde (só ACL, de início).
+    pub access: Arc<Mutex<Access>>,
     pub sys: PathBuf,
     pub config: PathBuf,
     pub state: PathBuf,
     _dirs: tempfile::TempDir,
-    _bus: TestBus,
+    bus: TestBus,
 }
 
 impl Harness {
@@ -122,6 +145,11 @@ impl Harness {
             Some(feed) => Worker::spawn_with_feed(backend.clone(), model.clone(), refresh, feed),
             None => Worker::spawn(backend.clone(), model.clone(), refresh),
         };
+        let access = Arc::new(Mutex::new(Access::AclOnly("harness".into())));
+        let probe = {
+            let access = access.clone();
+            Arc::new(move || access.lock().unwrap().clone())
+        };
         let (server, client) = zbus::block_on(async {
             let server = bus::serve(
                 connection::Builder::address(bus.address.as_str()).unwrap(),
@@ -129,6 +157,7 @@ impl Harness {
                 ProfileStore::new(&config, &state),
                 Some(crate::led_state::LedState::new(&state)),
                 crate::ticks::first_read(&sys),
+                probe,
             )
             .and_then(bus::claim_name)
             .unwrap()
@@ -149,12 +178,64 @@ impl Harness {
             worker,
             server,
             client,
+            access,
             sys,
             config,
             state,
             _dirs: dirs,
-            _bus: bus,
+            bus,
         }
+    }
+
+    /// Derruba o `dbus-daemon`, como o GNOME no logout
+    /// (`gnome-session-restart-dbus.service` para o `dbus.service`).
+    pub fn kill_bus(&mut self) {
+        let _ = self.bus.child.kill();
+        let _ = self.bus.child.wait();
+    }
+
+    /// Sobe o barramento de novo no mesmo endereço.
+    pub fn restart_bus(&mut self) {
+        self.bus.restart();
+    }
+
+    /// Uma conexão nova ao barramento, para ler depois de uma reconexão.
+    pub fn new_client(&self) -> Connection {
+        zbus::block_on(
+            connection::Builder::address(self.bus.address.as_str())
+                .unwrap()
+                .build(),
+        )
+        .unwrap()
+    }
+
+    /// Os objetos do daemon numa conexão nova, como o `main` monta para a
+    /// reconexão.
+    pub fn connect(&self) -> crate::link::Connect {
+        let (address, worker, sys) = (
+            self.bus.address.clone(),
+            self.worker.clone(),
+            self.sys.clone(),
+        );
+        let (config, state, access) =
+            (self.config.clone(), self.state.clone(), self.access.clone());
+        Arc::new(move || {
+            let access = access.clone();
+            let probe: crate::session::AccessProbe =
+                Arc::new(move || access.lock().unwrap().clone());
+            bus::serve(
+                connection::Builder::address(address.as_str())?,
+                worker.clone(),
+                ProfileStore::new(&config, &state),
+                Some(crate::led_state::LedState::new(&state)),
+                crate::ticks::first_read(&sys),
+                probe,
+            )
+        })
+    }
+
+    pub fn address(&self) -> &str {
+        &self.bus.address
     }
 
     pub fn profiles(&self) -> ProfileStore {

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Testa o packaging/install.sh num diretório temporário, com cargo,
-# systemctl e gsettings falsos no PATH e uma extensão falsa. Nada é
+# systemctl, loginctl, id e gsettings falsos no PATH e uma extensão falsa. Nada é
 # compilado, nenhuma unidade de verdade é carregada, as configurações do
 # GNOME não são tocadas e nada é escrito fora do temporário.
 #
@@ -31,7 +31,9 @@ check() {
 # com FAKE_CARGO_FAIL=1. O halod falso responde ao --help com o
 # --waterforce-cpu-safe, salvo com FAKE_NO_SAFE=1. systemctl falso: registra
 # os argumentos e, num stop, qual halod estava instalado (o ExecStopPost
-# precisa dele).
+# precisa dele); o enable e o disable criam e removem os links pelo WantedBy
+# da unidade instalada, como o systemd; o is-active do alvo da sessão
+# responde FAKE_SESSION (padrão inactive).
 mkdir -p "$T/stubs"
 cat > "$T/stubs/cargo" <<'EOF'
 #!/bin/sh
@@ -58,6 +60,47 @@ case "$*" in
         fi
         ;;
 esac
+dir=${XDG_CONFIG_HOME:?}/systemd/user
+shift
+case "${1:-}" in
+    enable)
+        shift
+        for u in "$@"; do
+            for t in $(sed -n 's/^WantedBy=//p' "$dir/$u"); do
+                mkdir -p "$dir/$t.wants"
+                ln -sf "$dir/$u" "$dir/$t.wants/$u"
+            done
+        done
+        ;;
+    disable)
+        shift
+        for u in "$@"; do
+            [ "$u" = --now ] || rm -f "$dir"/*.wants/"${u:?}"
+        done
+        ;;
+    is-active)
+        echo "${FAKE_SESSION:-inactive}"
+        [ "${FAKE_SESSION:-inactive}" = active ]
+        ;;
+esac
+EOF
+# loginctl falso: Linger=FAKE_LINGER (padrão yes), ou falha com
+# FAKE_LINGER=fail. id falso: usuário tester, grupos FAKE_GROUPS (padrão
+# "tester plugdev").
+cat > "$T/stubs/loginctl" <<'EOF'
+#!/bin/sh
+echo "loginctl $*" >> "$FAKE_LOG"
+[ "${FAKE_LINGER:-yes}" = fail ] && { echo "loginctl: falha de mentira" >&2; exit 1; }
+[ "$*" = "show-user tester -p Linger --value" ] || { echo "loginctl falso: $*" >&2; exit 1; }
+echo "${FAKE_LINGER:-yes}"
+EOF
+cat > "$T/stubs/id" <<'EOF'
+#!/bin/sh
+case "$*" in
+    -un) echo tester ;;
+    -nG) echo "${FAKE_GROUPS:-tester plugdev}" ;;
+    *) exec /usr/bin/id "$@" ;;
+esac
 EOF
 # gsettings falso: guarda enabled-extensions e disable-user-extensions em
 # arquivos de $FAKE_GSETTINGS_DIR (padrões '@as []' e false) e falha com
@@ -75,7 +118,7 @@ case "${1:-} ${3:-}" in
     *) echo "gsettings falso: $*" >&2; exit 1 ;;
 esac
 EOF
-chmod 755 "$T/stubs/cargo" "$T/stubs/systemctl" "$T/stubs/gsettings"
+chmod 755 "$T/stubs/cargo" "$T/stubs/systemctl" "$T/stubs/gsettings" "$T/stubs/loginctl" "$T/stubs/id"
 
 # Extensão falsa, com o schema de verdade e o que o script não pode instalar:
 # tests/, arquivos de editor e um gschemas.compiled velho.
@@ -104,7 +147,9 @@ export FAKE_VERSION=1
 export PATH="$T/stubs:/usr/bin:/bin"
 mkdir -p "$HOME" "$HALO_UDEV_RULES_DIR" "$FAKE_GSETTINGS_DIR"
 
-UNIT_FILE=$XDG_CONFIG_HOME/systemd/user/halod.service
+UNIT_DIR=$XDG_CONFIG_HOME/systemd/user
+UNIT_FILE=$UNIT_DIR/halod.service
+GUARD_FILE=$UNIT_DIR/halod-session.service
 DBUS_FILE=$XDG_DATA_HOME/dbus-1/services/io.github.leoodaviid.Halo1.service
 PROFILE=$XDG_CONFIG_HOME/halo/profiles/noite.toml
 ORIGINAL=$XDG_STATE_HOME/halo/waterforce-speed.original
@@ -140,6 +185,13 @@ missing_all() {
 }
 calls() { grep '^systemctl' "$FAKE_LOG" || true; }
 calls_are() { [ "$(calls)" = "$1" ]; }
+# A habilitação desta versão, sem o link antigo.
+links_ok() {
+    [ -L "$UNIT_DIR/default.target.wants/halod.service" ] &&
+        [ -L "$UNIT_DIR/graphical-session.target.wants/halod-session.service" ] &&
+        [ ! -e "$UNIT_DIR/graphical-session.target.wants/halod.service" ]
+}
+no_links() { [ -z "$(find "$UNIT_DIR" -type l 2>/dev/null)" ]; }
 
 # Lista de extensões habilitadas guardada pelo gsettings falso.
 set_enabled() { printf '%s\n' "$1" > "$FAKE_GSETTINGS_DIR/enabled-extensions"; }
@@ -166,14 +218,24 @@ run
 check "primeira instalação termina com sucesso" [ "$status" = 0 ]
 check "halo instalado e executável" [ -x "$BINDIR/halo" ]
 check "halod instalado e executável" [ -x "$BINDIR/halod" ]
-check "unidade e ativação instaladas" exist_all "$UNIT_FILE" "$DBUS_FILE"
+check "unidades e ativação instaladas" exist_all "$UNIT_FILE" "$GUARD_FILE" "$DBUS_FILE"
 check "@BINDIR@ trocado na unidade" grep -qxF "ExecStart=$BINDIR/halod" "$UNIT_FILE"
+check "@BINDIR@ trocado na guarda" \
+    sh -c "grep -qxF 'ExecStart=$BINDIR/halod --session begin' '$GUARD_FILE' && grep -qxF 'ExecStop=$BINDIR/halod --session end' '$GUARD_FILE'"
 check "@BINDIR@ trocado na ativação" grep -qxF "Exec=$BINDIR/halod" "$DBUS_FILE"
-check "nenhum @BINDIR@ sobrando" sh -c "! grep -q @BINDIR@ '$UNIT_FILE' '$DBUS_FILE'"
+check "nenhum @BINDIR@ sobrando" sh -c "! grep -q @BINDIR@ '$UNIT_FILE' '$GUARD_FILE' '$DBUS_FILE'"
+check "unidades geradas passam no systemd-analyze verify" \
+    sh -c "/usr/bin/systemd-analyze --user verify '$UNIT_FILE' '$GUARD_FILE' > '$T/verify' 2>&1 && ! grep -E 'halod(-session)?\.service' '$T/verify'"
 check "compila com --release --locked" grep -q -- '--release --locked' "$FAKE_LOG"
 check "primeira instalação: daemon-reload, enable e start, sem stop" calls_are "systemctl --user daemon-reload
-systemctl --user enable halod.service
-systemctl --user start halod.service"
+systemctl --user enable halod.service halod-session.service
+systemctl --user start halod.service
+systemctl --user is-active graphical-session.target"
+check "primeira instalação: halod no default.target e guarda na sessão" links_ok
+check "fora da sessão gráfica: a guarda não é iniciada" sh -c "! grep -q 'start halod-session' '$FAKE_LOG'"
+check "tudo em dia: linger e grupo conferidos" out_has_all "linger ligado para tester" "tester está no grupo plugdev"
+check "tudo em dia: sem os comandos do linger e do grupo" \
+    sh -c "! grep -qE 'enable-linger|usermod' '$T/out'"
 check "unidade com o helper no ExecStopPost" \
     grep -qxF "ExecStopPost=$BINDIR/halod --waterforce-cpu-safe" "$UNIT_FILE"
 check "unidade com o watchdog e o limite de inícios" \
@@ -196,9 +258,12 @@ PATH="$PATH:$BINDIR" run
 check "reinstalação termina com sucesso" [ "$status" = 0 ]
 check "reinstalação troca os binários" grep -q 'halod 2' "$BINDIR/halod"
 check "reinstalação para antes de trocar e inicia depois" calls_are "systemctl --user stop halod.service
+systemctl --user disable halod.service
 systemctl --user daemon-reload
-systemctl --user enable halod.service
-systemctl --user start halod.service"
+systemctl --user enable halod.service halod-session.service
+systemctl --user start halod.service
+systemctl --user is-active graphical-session.target"
+check "reinstalação: links da versão nova" links_ok
 check "o stop roda com o halod antigo ainda instalado" grep -qxF 'helper: # halod 1' "$FAKE_LOG"
 check "o halod instalado tem o modo de proteção" sh -c "'$BINDIR/halod' --help | grep -q -- --waterforce-cpu-safe"
 check "regra em dia: nenhum comando com sudo" sh -c "! grep -q sudo '$T/out'"
@@ -206,6 +271,46 @@ check "BINDIR no PATH: sem aviso" sh -c "! grep -q 'não está no PATH' '$T/out'
 check "extensão igual: não pede para sair e entrar na sessão" sh -c "! grep -qF '$RELOGIN' '$T/out'"
 check "extensão igual: nenhum .new sobrando" missing_all "$EXT_DIR.new"
 check "extensão já na lista: o UUID aparece uma vez só" enabled_is "['$UUID']"
+
+# Migração da habilitação: a unidade antiga subia com o
+# graphical-session.target, e a guarda não existia.
+sed -i 's/^WantedBy=.*/WantedBy=graphical-session.target/' "$UNIT_FILE"
+rm -rf "${UNIT_DIR:?}"/*.wants
+mkdir -p "$UNIT_DIR/graphical-session.target.wants"
+ln -s "$UNIT_FILE" "$UNIT_DIR/graphical-session.target.wants/halod.service"
+rm -f "${GUARD_FILE:?}"
+run
+check "migração: termina com sucesso" [ "$status" = 0 ]
+check "migração: disable com a unidade antiga ainda instalada" grep -qxF 'systemctl --user disable halod.service' "$FAKE_LOG"
+check "migração: os três links conferidos" links_ok
+check "migração: nenhum aviso de link" sh -c "! grep -q 'link' '$T/out'"
+
+# Instalação numa sessão aberta: a guarda sobe depois do halod.
+FAKE_SESSION=active run
+check "sessão aberta: guarda iniciada depois do halod" calls_are "systemctl --user stop halod.service
+systemctl --user disable halod.service
+systemctl --user daemon-reload
+systemctl --user enable halod.service halod-session.service
+systemctl --user start halod.service
+systemctl --user is-active graphical-session.target
+systemctl --user start halod-session.service"
+
+# Linger desligado, fora do grupo e loginctl falhando: avisa, mostra o
+# comando sem executar e termina com sucesso.
+FAKE_LINGER=no run
+check "linger desligado: sucesso" [ "$status" = 0 ]
+check "linger desligado: avisa e mostra o comando" \
+    out_has_all "o linger está desligado para tester" "para no logout" "loginctl enable-linger tester"
+check "linger desligado: comando não executado" sh -c "! grep -q 'enable-linger' '$FAKE_LOG'"
+check "linger desligado: sem o comando do grupo" sh -c "! grep -q usermod '$T/out'"
+FAKE_GROUPS="tester sudo" run
+check "fora do plugdev: sucesso" [ "$status" = 0 ]
+check "fora do plugdev: avisa e mostra o comando" \
+    out_has_all "não está no grupo plugdev" "só abre com a sessão ativa" "sudo usermod -aG plugdev tester" "sair e entrar"
+check "fora do plugdev: sem o comando do linger" sh -c "! grep -q enable-linger '$T/out'"
+FAKE_LINGER=fail run
+check "loginctl falha: sucesso" [ "$status" = 0 ]
+check "loginctl falha: avisa que não conferiu" out_has "não consegui conferir o linger"
 
 # Extensão já habilitada entre outras: a lista não muda.
 set_enabled "['user-theme@x', '$UUID', 'blur@y']"
@@ -246,7 +351,11 @@ run
 check "extensões do usuário desligadas: avisa" out_has "extensões do usuário estão desligadas"
 echo false > "$FAKE_GSETTINGS_DIR/disable-user-extensions"
 
-# Regra desatualizada.
+# Regra desatualizada: a de antes, com o Castor3 só com uaccess.
+sed 's/, GROUP="plugdev", MODE="0660"//' "$ROOT/packaging/udev/70-halo.rules" > "$HALO_UDEV_RULES_DIR/70-halo.rules"
+run
+check "regra só com uaccess: avisa que está desatualizada" \
+    out_has_all "está desatualizada" "sudo install -m 644" "sudo udevadm trigger" "reinicie o PC"
 echo '# mudada' >> "$HALO_UDEV_RULES_DIR/70-halo.rules"
 run
 check "regra diferente: avisa que está desatualizada" \
@@ -293,11 +402,13 @@ check "perfis e snapshots iguais depois das instalações" \
 set_enabled "['user-theme@x', '$UUID', 'blur@y']"
 run --uninstall
 check "desinstalação termina com sucesso" [ "$status" = 0 ]
-check "desinstalação para, desabilita e recarrega" calls_are "systemctl --user disable --now halod.service
+check "desinstalação para, desabilita e recarrega" calls_are "systemctl --user disable --now halod-session.service
+systemctl --user disable --now halod.service
 systemctl --user daemon-reload"
 check "desinstalação para com o halod ainda instalado" grep -qxF 'helper: # halod 2' "$FAKE_LOG"
-check "binários, unidade e ativação removidos" \
-    missing_all "$BINDIR/halo" "$BINDIR/halod" "$UNIT_FILE" "$DBUS_FILE"
+check "binários, unidades e ativação removidos" \
+    missing_all "$BINDIR/halo" "$BINDIR/halod" "$UNIT_FILE" "$GUARD_FILE" "$DBUS_FILE"
+check "desinstalação: nenhum link sobrando" no_links
 check "perfis e snapshots mantidos, inclusive o original" \
     [ "$(user_data_sum)" = "$DATA_BEFORE" ]
 check "desinstalação informa onde ficaram os dados" \
