@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Instala o halo no usuário, sem root: compila o halo e o halod, instala os
-# binários, a unidade do systemd do usuário e a ativação pelo D-Bus, e sobe o
-# daemon. Instala também a extensão do GNOME Shell e a habilita pelo
-# gsettings. Com --uninstall, remove só o que instalou e mantém perfis e
-# snapshots. A regra udev é só conferida: os comandos com sudo são mostrados,
-# nunca executados.
+# binários, as unidades do systemd do usuário (o halod e a guarda da sessão
+# gráfica) e a ativação pelo D-Bus, e sobe o daemon. Instala também a
+# extensão do GNOME Shell e a habilita pelo gsettings. Com --uninstall,
+# remove só o que instalou e mantém perfis e snapshots. A regra udev, o
+# linger e o grupo plugdev são só conferidos: os comandos que os resolvem
+# são mostrados, nunca executados.
 #
 # Caminhos (para testes): BINDIR, XDG_CONFIG_HOME, XDG_DATA_HOME,
 # XDG_STATE_HOME, CARGO_TARGET_DIR, HALO_UDEV_RULES_DIR, HALO_EXTENSION_SRC
@@ -17,6 +18,7 @@
 set -eu
 
 UNIT=halod.service
+GUARD=halod-session.service
 BUS_NAME=io.github.leoodaviid.Halo1
 RULE=70-halo.rules
 UUID=halo@leoodaviid.github.io
@@ -32,15 +34,17 @@ Uso: packaging/install.sh [--uninstall]
 
 Sem argumentos, compila e instala (ou atualiza) o halo no usuário:
   binários   \$BINDIR (padrão ~/.local/bin): halo e halod
-  unidade    \$XDG_CONFIG_HOME/systemd/user/$UNIT
+  unidades   \$XDG_CONFIG_HOME/systemd/user/$UNIT e $GUARD
   ativação   \$XDG_DATA_HOME/dbus-1/services/$BUS_NAME.service
   extensão   \$XDG_DATA_HOME/gnome-shell/extensions/$UUID
-e habilita e (re)inicia o $UNIT. A extensão do GNOME é habilitada pelo
+e habilita e (re)inicia o $UNIT, que sobe com o gerenciador do usuário
+(com o linger, também fora da sessão), e habilita a $GUARD, que segue a
+sessão gráfica. A extensão do GNOME é habilitada pelo
 gsettings e carrega depois de sair e entrar na sessão. Nada é escrito fora
 do \$HOME.
 
-  --uninstall  para e desabilita o daemon, desabilita a extensão e remove
-               os arquivos acima. Perfis e snapshots ficam.
+  --uninstall  para e desabilita o daemon e a guarda, desabilita a extensão
+               e remove os arquivos acima. Perfis e snapshots ficam.
   --help       mostra esta ajuda.
 EOF
 }
@@ -68,6 +72,7 @@ COMPILE_SCHEMAS=${HALO_GLIB_COMPILE_SCHEMAS:-glib-compile-schemas}
 UNIT_DIR=$CONFIG_HOME/systemd/user
 DBUS_DIR=$DATA_HOME/dbus-1/services
 UNIT_FILE=$UNIT_DIR/$UNIT
+GUARD_FILE=$UNIT_DIR/$GUARD
 DBUS_FILE=$DBUS_DIR/$BUS_NAME.service
 EXT_DIR=$DATA_HOME/gnome-shell/extensions/$UUID
 
@@ -111,6 +116,63 @@ check_udev() {
     printf '\n  sudo install -m 644 %s %s/\n' "$src" "$UDEV_DIR"
     printf '  sudo udevadm control --reload\n'
     printf '  sudo udevadm trigger --subsystem-match=hidraw --action=change\n\n'
+    # Com a ACL da sessão já no nó, o MODE="0660" vira um chmod, que muda só a
+    # máscara da ACL, e a entrada do grupo fica como estava (group::---).
+    say "Depois, reinicie o PC: o grupo plugdev do Castor3 só vale num nó criado"
+    say "de novo. Até lá, o halod continua com acesso só pela ACL da sessão."
+}
+
+# Com o linger, o gerenciador do usuário (e o halod) sobe no boot e continua
+# depois do logout. Sem ele, o halod para no logout com a proteção, como
+# antes.
+check_linger() {
+    user=$(id -un)
+    if ! linger=$(loginctl show-user "$user" -p Linger --value 2>/dev/null); then
+        say "aviso: não consegui conferir o linger de $user (loginctl ausente ou falhou)."
+        say "Sem o linger, o halod para no logout; veja docs/permissions.md."
+        return
+    fi
+    case $linger in
+        yes) say "linger ligado para $user" ;;
+        *)
+            say "aviso: o linger está desligado para $user: sem ele, o halod para no logout"
+            say "e o X 240 fica com a proteção de 80 °C na tela de login. Para ligar, rode:"
+            printf '\n  loginctl enable-linger %s\n\n' "$user"
+            ;;
+    esac
+}
+
+# Com o grupo plugdev (e a regra udev atual), o halod abre o Castor3 sem
+# sessão ativa.
+check_group() {
+    user=$(id -un)
+    case " $(id -nG 2>/dev/null) " in
+        *' plugdev '*) say "$user está no grupo plugdev" ;;
+        *)
+            say "aviso: $user não está no grupo plugdev: o Castor3 só abre com a sessão ativa,"
+            say "e o halod pausa a CPU do X 240 na tela de login. Para entrar no grupo, rode"
+            say "(pede a sua senha; vale depois de sair e entrar na sessão):"
+            printf '\n  sudo usermod -aG plugdev %s\n\n' "$user"
+            ;;
+    esac
+}
+
+# A habilitação desta versão: o halod pelo default.target e a guarda pelo
+# graphical-session.target, sem o link antigo do halod no alvo da sessão.
+check_links() {
+    ok=1
+    for link in "default.target.wants/$UNIT" "graphical-session.target.wants/$GUARD"; do
+        [ -e "$UNIT_DIR/$link" ] || {
+            say "aviso: falta o link $UNIT_DIR/$link"
+            ok=0
+        }
+    done
+    if [ -e "$UNIT_DIR/graphical-session.target.wants/$UNIT" ]; then
+        say "aviso: sobrou o link antigo $UNIT_DIR/graphical-session.target.wants/$UNIT"
+        ok=0
+    fi
+    [ "$ok" = 1 ] ||
+        say "rode: systemctl --user reenable $UNIT $GUARD"
 }
 
 # Lista de extensões habilitadas, como o gsettings devolve: '@as []' ou
@@ -233,25 +295,39 @@ do_install() {
 
     # Para a unidade instalada antes de trocar qualquer arquivo: o stop roda
     # o ExecStopPost do par antigo (binário e unidade compatíveis), que
-    # deixa o X 240 com E0 de 80 °C. Só então o par novo entra.
+    # deixa o X 240 com E0 de 80 °C. Só então o par novo entra. O disable,
+    # com o [Install] antigo ainda no lugar, tira o link de uma versão que
+    # subia com o graphical-session.target. A guarda ativa fica: o halod novo
+    # a lê como ativa e não começa pausado.
     if [ -e "$UNIT_FILE" ]; then
         systemctl --user stop "$UNIT" ||
             die "não consegui parar o $UNIT; nada instalado foi alterado"
+        systemctl --user disable "$UNIT" ||
+            say "aviso: não consegui desabilitar o $UNIT antigo"
     fi
 
     mkdir -p "$BINDIR" "$UNIT_DIR" "$DBUS_DIR"
     put 755 "$TARGET_DIR/release/halo" "$BINDIR/halo"
     put 755 "$TARGET_DIR/release/halod" "$BINDIR/halod"
     put_template "$ROOT/packaging/systemd/$UNIT" "$UNIT_FILE"
+    put_template "$ROOT/packaging/systemd/$GUARD" "$GUARD_FILE"
     put_template "$ROOT/packaging/dbus/$BUS_NAME.service" "$DBUS_FILE"
     has_safe "$BINDIR/halod" ||
         die "o halod instalado em $BINDIR não tem --waterforce-cpu-safe; o $UNIT ficou parado"
 
     systemctl --user daemon-reload
-    systemctl --user enable "$UNIT"
+    systemctl --user enable "$UNIT" "$GUARD"
     systemctl --user start "$UNIT" ||
         die "o $UNIT não subiu; veja journalctl --user -u $UNIT (um halod iniciado à mão segura o nome)"
     say "$UNIT ativo"
+    # O enable não inicia uma unidade presa a um alvo já ativo: sem este
+    # start, a guarda só subiria no próximo login, e o primeiro logout
+    # ficaria sem a barreira.
+    if [ "$(systemctl --user is-active graphical-session.target 2>/dev/null || true)" = active ]; then
+        systemctl --user start "$GUARD" ||
+            say "aviso: a $GUARD não subiu; veja journalctl --user -u $GUARD"
+    fi
+    check_links
 
     case ":${PATH:-}:" in
         *":$BINDIR:"*) ;;
@@ -263,6 +339,8 @@ do_install() {
     install_extension
 
     check_udev
+    check_linger
+    check_group
     say "pronto"
 }
 
@@ -288,13 +366,17 @@ disable_extension() {
 do_uninstall() {
     removed=0
     ext_removed=0
-    # Para antes de remover: o ExecStopPost ainda acha o halod instalado e
-    # deixa o X 240 com E0 de 80 °C.
+    # Para antes de remover: a guarda e o ExecStopPost ainda acham o halod
+    # instalado e deixam o X 240 com E0 de 80 °C.
+    if [ -e "$GUARD_FILE" ]; then
+        systemctl --user disable --now "$GUARD" ||
+            say "aviso: não consegui parar e desabilitar a $GUARD"
+    fi
     if [ -e "$UNIT_FILE" ]; then
         systemctl --user disable --now "$UNIT" ||
             say "aviso: não consegui parar e desabilitar o $UNIT"
     fi
-    for f in "$UNIT_FILE" "$DBUS_FILE" "$BINDIR/halo" "$BINDIR/halod"; do
+    for f in "$GUARD_FILE" "$UNIT_FILE" "$DBUS_FILE" "$BINDIR/halo" "$BINDIR/halod"; do
         if [ -e "$f" ]; then
             rm -f "$f"
             say "removido $f"

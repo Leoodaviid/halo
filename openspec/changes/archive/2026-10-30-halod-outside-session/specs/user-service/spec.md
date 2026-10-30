@@ -61,6 +61,29 @@ A instalação SHALL incluir `halod-session.service`, presa ao `graphical-sessio
 - **WHEN** o usuário instala pela primeira vez esta versão com a sessão gráfica ativa
 - **THEN** ao fim do script a guarda está ativa, o `Begin()` foi chamado, e o feed não começa pausado
 
+### Requirement: D-Bus da sessão que reinicia
+Quando a conexão com o D-Bus da sessão cair, o daemon SHALL continuar enviando a CPU e renovando o watchdog, e SHALL reconectar no mesmo processo, tentando uma vez por segundo, com os mesmos objetos, o estado em memória deles e o mesmo nome. Sem o nome em 10 s, o daemon SHALL sair com falha. Reconectado, SHALL reler o estado da guarda. MUST NOT alterar unidades do GNOME.
+
+#### Scenario: Logout no GNOME com acesso pelo grupo
+- **WHEN** o linger está ligado, o Castor3 tem o grupo `plugdev`, o usuário sai, e o `gnome-session-restart-dbus.service` para o `dbus.service`
+- **THEN** o `MainPID` e o `NRestarts` de `halod.service` continuam os mesmos, o journal registra a queda e a reconexão uma vez cada, sem `Watchdog timeout`, o nome volta a ter dono, e nenhum `E0` de 80 °C é enviado
+
+#### Scenario: Envio durante a queda
+- **WHEN** a conexão com o D-Bus está morta e o Waterforce está presente
+- **THEN** cada tick envia o Tctl e renova o watchdog, e as emissões de sinal que falham não interrompem o tick
+
+#### Scenario: Estado preservado
+- **WHEN** o daemon reconecta
+- **THEN** a lista de aparelhos, a telemetria, o `LastApplied` do LED e o perfil ativo lidos pelo D-Bus são os de antes da queda
+
+#### Scenario: Barramento que não volta
+- **WHEN** o daemon não adquire o nome em 10 s depois da queda, porque o barramento não sobe ou o nome está com outro processo
+- **THEN** o daemon registra o motivo e sai com falha, o `ExecStopPost` envia o `E0` de 80 °C, e a unidade é reiniciada
+
+#### Scenario: Begin perdido durante a reconexão
+- **WHEN** o feed está pausado por sessão e a guarda fica ativa enquanto o daemon está sem conexão
+- **THEN** depois de reconectar, o daemon lê a guarda ativa e retoma o feed com E1 e 8 s em 80 °C, como o `Begin()`
+
 ## MODIFIED Requirements
 
 ### Requirement: Atualização
@@ -90,7 +113,7 @@ halod.service SHALL executar halod --waterforce-cpu-safe em ExecStopPost, inclui
 - **THEN** a documentação identifica ausência de garantia; a unidade não promete recuperar esses casos
 
 ### Requirement: Watchdog ligado ao progresso
-A unidade SHALL manter Type=dbus e usar WatchdogSec=20s, WatchdogSignal=SIGKILL e NotifyAccess=main. O principal SHALL chamar sd_notify com WATCHDOG=1 somente por novo ciclo saudável de telemetria e envio CPU aceito, ou scan com aparelho ausente, com feed desabilitado pelo modelo lido no DE, ou com o feed pausado por sessão; MUST NOT renovar por timer independente ou repetir um sucesso antigo.
+A unidade SHALL usar Type=notify, WatchdogSec=20s, WatchdogSignal=SIGKILL e NotifyAccess=main. O principal SHALL chamar sd_notify com READY=1 só depois de adquirir o nome `io.github.leoodaviid.Halo1`, e com WATCHDOG=1 somente por novo ciclo saudável de telemetria e envio CPU aceito, ou scan com aparelho ausente, com feed desabilitado pelo modelo lido no DE, ou com o feed pausado por sessão sem um Tctl como último `E0` aceito; MUST NOT renovar por timer independente ou repetir um sucesso antigo.
 
 #### Scenario: Worker bloqueado com tick vivo
 - **WHEN** ticks continuam, mas o feed presente não conclui novos envios
@@ -108,9 +131,17 @@ A unidade SHALL manter Type=dbus e usar WatchdogSec=20s, WatchdogSignal=SIGKILL 
 - **WHEN** o scan avança e confirma ausência do Waterforce
 - **THEN** o watchdog recebe progresso legítimo e não reinicia o daemon apenas por falta de aparelho
 
+#### Scenario: Pausa antes da proteção aceita
+- **WHEN** o `End()` pausou o feed, o último `E0` aceito foi um Tctl, e a proteção de 80 °C ainda não foi aceita (worker preso) ou falhou
+- **THEN** o scan não renova o watchdog, e o daemon é morto pelo prazo, passando pelo `ExecStopPost`
+
 #### Scenario: Feed pausado por sessão
 - **WHEN** o feed está pausado depois do `End()`, com o Waterforce presente, e a tela de login fica aberta por mais de 20 s
 - **THEN** cada scan concluído renova o watchdog sem E0, e o daemon não é morto nem reiniciado; depois do `Begin()`, o progresso volta a exigir envios aceitos
+
+#### Scenario: Pronto só com o nome
+- **WHEN** a unidade inicia o daemon
+- **THEN** o systemd só considera a unidade ativa depois de o nome `io.github.leoodaviid.Halo1` ter dono, e o READY=1 nunca vem antes disso
 
 #### Scenario: Ambiente watchdog incompatível
 - **WHEN** o processo não dispõe de supervisão efetiva ou seu ambiente é inválido

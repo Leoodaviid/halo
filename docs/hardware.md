@@ -793,7 +793,46 @@ hora     temp1   Tctl | b2..13 do DA
 
 - **Bloquear a tela não muda nada:** o `halod` continua ativo, o journal não tem nenhuma entrada, e a fan segue a CPU.
 - **O "modo game" é o logout:** do `E0` de 80 °C até o primeiro Tctl depois do login, a fan ficou ~50 s em duty 100 com a CPU entre 34 e 50 °C. São ~35 s na tela de login, mais a parada e a janela de 8 s do início. Um logout mais longo deixa a fan no máximo pelo tempo todo da tela de login. A bomba não mudou (Turbo).
-- Boot até o login: não medido. Pela mesma lógica, o aparelho fica com o último `E0` (os 80 °C do desligamento), a não ser que perca energia. Depois de um corte de energia, o Performance deu duty 88, compatível com a referência padrão de ~50 °C.
+- Boot até o login: não medido nesta data (com o `halod` fora da sessão, ver abaixo). Pela mesma lógica, o aparelho fica com o último `E0` (os 80 °C do desligamento), a não ser que perca energia. Depois de um corte de energia, o Performance deu duty 88, compatível com a referência padrão de ~50 °C.
+
+**Daemon fora da sessão gráfica (change `halod-outside-session`, 2026-10-29 e 2026-10-30).** Captura passiva do `DA` como root (`sudo systemd-run --unit=halo-da-capture ... waterforce_da_sniff.py 600 0 --jsonl`), cruzada com o journal do usuário (`halod`, `halod-session`, `dbus.service`) e o do logind. Linger ligado, usuário no `plugdev`. Fan em Performance, bomba em Turbo. Nenhum byte novo: só o `E1`/`E0` do feed.
+
+- **O GNOME derruba o D-Bus da sessão em todo logout.** O `gnome-session-shutdown.target` tem `Wants=gnome-session-restart-dbus.service` (`gnome-session-ctl --restart-dbus`, `StopUnit dbus.service`), uns 5 s depois de o `graphical-session.target` parar. Na primeira rodada do 5.2 (22:41), o `halod` sem reconexão falhou em cada tick com `Broken pipe` e foi morto pelo watchdog às 22:42:11. Com a reconexão, o nome voltou em 14–21 ms em todos os logouts seguintes, no mesmo processo.
+- **A regra nova só vale num nó criado de novo.** Depois de `udevadm trigger --action=change`, o nó era `crw-rw----+ root plugdev` com `group::---` e `mask::rw-`: num arquivo com a ACL da sessão, o `MODE="0660"` vira um `chmod` que muda só a máscara. Depois do boot, `group::rw-` (ver [permissions.md](permissions.md)).
+
+Regra antiga (só `uaccess`), 2026-10-29, `MainPID` 179947 e `NRestarts` 0 nos dois logouts:
+
+| Estado | Janela | Tctl | Duty da fan | Journal |
+|---|---|---|---|---|
+| Sessão ativa | 23:41:45–23:42:26 | 33,8–37,0 °C | 81–83 % | — |
+| Logout: `End()` | 23:42:27,664 → ,713 | 37,6–43,8 °C | 100 % a partir de 23:42:32 | "acesso só pela ACL"; `E0` de 80 °C aceito; guarda parada (,7138) antes do alvo (,7140); fim da sessão no logind às 23:42:33,06 |
+| D-Bus cai e volta | 23:42:33,047 → ,066 | — | — | "caiu; reconectando" e o nome de volta |
+| Tela de login | 23:42:33–23:44:21 | 29,0–46,2 °C | **100 %** | feed pausado, sem watchdog nem restart |
+| Login: E1 e 8 s em 80 °C | 23:44:22,76–23:44:31 | 38,5–50,9 °C | 100 % | "retomando o feed da CPU" |
+| Sessão ativa, com o Tctl | 23:44:33– | 44–51 °C | 88 → 86 % | — |
+
+Boot com a regra nova, 2026-10-30: kernel às 20:34:54; o `halod` sobe às 20:35:08,1 ("acesso pelo grupo plugdev", sem pausa), antes do greeter (20:35:09,7); ~2 min 10 s na tela de login, sem restart (com o feed ativo, o watchdog só é renovado por envios aceitos); login às 20:37:20, com o `Begin()` só respondendo. Não há `DA` dessa tela de login: a captura transitória não sobrevive ao boot.
+
+Regra nova, 2026-10-30, `MainPID` 2025 e `NRestarts` 0 do boot ao fim dos dois logouts:
+
+| Estado | Janela | Tctl | Duty da fan | Journal |
+|---|---|---|---|---|
+| Sessão ativa | 20:42:18–20:43:04 | 35,1–37,6 °C | 82–83 % | — |
+| Logout 1: `End()` | 20:43:04,313 | — | segue o Tctl | "acesso pelo grupo plugdev", sem `E0` de 80 °C |
+| D-Bus cai e volta | 20:43:09,517 → ,538 | — | — | reconexão no mesmo processo |
+| Tela de login 1 | 20:43:09–20:45:24 | 30,4–49,0 °C | **80–87 %** | — |
+| Login 1 | 20:45:26 | 30,6 → 51 °C | 80 → 88 % | `Begin()` só responde: sem E1 nem janela de 8 s |
+| Logout 2 e tela de login 2 | 20:46:59–20:48:04 | 32,0–44,6 °C | 80–85 % | reconexão às 20:46:59,743 → ,779 |
+| Login 2 | 20:48:06 | 32 → 52 °C | 80 → 90 % | `Begin()` só responde |
+
+| Tctl | Duty, sessão ativa | Duty, tela de login |
+|---|---|---|
+| 35 °C | 82 % | 82 % |
+| 36 °C | 82–83 % | 82–83 % |
+| 37 °C | 82–83 % | 83 % |
+
+- Com a regra nova, a tela de login fica como a sessão ativa: o duty segue o Tctl, igual ao da sessão com a mesma CPU, e o LCD mostra a CPU real. Antes, a fan ficava em 100 % a tela de login inteira (tabela de 2026-10-27 acima).
+- Com a regra antiga, o comportamento é o da proteção: `E0` de 80 °C antes de a sessão terminar, pausa sem nenhum Tctl e E1 com 8 s em 80 °C no login.
 
 ## Mouse Logitech G502 SE HERO
 

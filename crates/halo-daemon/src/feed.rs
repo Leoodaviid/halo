@@ -10,6 +10,10 @@
 //! [`SAFE_WINDOW`] em 80 °C antes de usar o Tctl. Sem supervisão do watchdog
 //! (execução manual ou unidade sem `WatchdogSec`), nada é enviado: um `E0`
 //! frio só sai com alguém capaz de proteger depois de uma morte do processo.
+//!
+//! Com o acesso ao Castor3 só pela ACL da sessão, o `Session.End()` do logout
+//! manda a proteção e pausa o feed ([`Feed::pause_session`]) até o
+//! `Session.Begin()` do próximo login, que abre uma sessão lógica nova.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,6 +85,8 @@ struct State {
     supervised: bool,
     sleeping: bool,
     stopping: bool,
+    /// `Session.End()` com acesso só pela ACL: nenhum feed até o `Begin()`.
+    session_paused: bool,
     /// Pedido de sessão nova (resume, salto do relógio).
     reset: bool,
     /// Fim da janela segura da sessão atual; `None` sem sessão.
@@ -95,6 +101,10 @@ struct State {
     pinged_seq: u64,
     /// Modelo sem feed na sessão atual.
     disabled: Option<u8>,
+    /// O último `E0` aceito foi um Tctl, sem `E0` de 80 °C depois. Pausado
+    /// assim (proteção do `End()` na fila ou falhando), o scan não renova o
+    /// watchdog.
+    cold: bool,
 }
 
 /// Estado do feed, compartilhado entre a thread do Waterforce, os ticks e o
@@ -160,6 +170,7 @@ impl Feed {
         s.supervised
             && !s.stopping
             && !s.sleeping
+            && !s.session_paused
             && s.last_data
                 .is_some_and(|t| now.saturating_duration_since(t) <= ACTIVE_MAX_AGE)
     }
@@ -189,7 +200,7 @@ impl Feed {
     pub fn step(&self, backend: &mut dyn WaterforceBackend) {
         let in_window = {
             let mut s = self.state();
-            if !s.supervised || s.stopping || s.sleeping {
+            if !s.supervised || s.stopping || s.sleeping || s.session_paused {
                 return;
             }
             let now = self.clock.now();
@@ -229,6 +240,7 @@ impl Feed {
                 s.last_data = None;
                 s.last_sent = Some(now);
                 s.disabled = None;
+                s.cold = false;
                 s.ok_seq += 1;
             }
             Ok(Fed::Data) => {
@@ -236,6 +248,7 @@ impl Feed {
                     s.last_data = Some(now);
                 }
                 s.last_sent = Some(now);
+                s.cold = !in_window;
                 s.ok_seq += 1;
             }
             Ok(Fed::Disabled(model)) => {
@@ -268,6 +281,7 @@ impl Feed {
                 let now = self.clock.now();
                 let mut s = self.state();
                 s.ok_seq += 1;
+                s.cold = false;
                 // O envio pendente (vencido durante a espera) não sai colado.
                 s.last_sent = Some(now);
             }
@@ -284,7 +298,12 @@ impl Feed {
             return;
         }
         match backend.protect_cpu() {
-            Ok(_) => eprintln!("halod: proteção antes da suspensão enviada"),
+            Ok(p) => {
+                if matches!(p, Protected::Sent(_)) {
+                    self.state().cold = false;
+                }
+                eprintln!("halod: proteção antes da suspensão enviada")
+            }
             Err(e) => eprintln!("halod: proteção antes da suspensão falhou: {e}"),
         }
     }
@@ -305,6 +324,34 @@ impl Feed {
         s.last_data = None;
     }
 
+    /// Logout com acesso só pela ACL: nenhum feed a partir daqui, até
+    /// [`Feed::resume_session`]. Um envio em andamento na thread termina
+    /// antes da proteção que vem depois na mesma thread.
+    pub fn pause_session(&self) {
+        let mut s = self.state();
+        s.session_paused = true;
+        s.window_until = None;
+        s.last_data = None;
+    }
+
+    pub fn session_paused(&self) -> bool {
+        self.state().session_paused
+    }
+
+    /// Login: só com o feed pausado por sessão, abre uma sessão lógica nova
+    /// (`E1` e a janela segura). Devolve se retomou; fora da pausa, nada muda.
+    pub fn resume_session(&self) -> bool {
+        let mut s = self.state();
+        if !s.session_paused {
+            return false;
+        }
+        s.session_paused = false;
+        s.reset = true;
+        s.window_until = None;
+        s.last_data = None;
+        true
+    }
+
     /// SIGTERM: nada mais de feed a partir daqui.
     pub fn begin_stop(&self) {
         let mut s = self.state();
@@ -318,15 +365,32 @@ impl Feed {
         &self,
         backend: &mut dyn WaterforceBackend,
     ) -> Option<Result<Protected, Error>> {
-        self.supervised().then(|| backend.protect_cpu())
+        self.supervised().then(|| {
+            let r = backend.protect_cpu();
+            if let Ok(Protected::Sent(_)) = r {
+                self.state().cold = false;
+            }
+            r
+        })
     }
 
-    /// Progresso para o watchdog: com o Waterforce ausente ou sem feed pelo
-    /// modelo, basta o scan; presente, só um envio aceito novo desde o
-    /// último ping.
+    /// Progresso para o watchdog: com o Waterforce ausente, sem feed pelo
+    /// modelo ou com o feed pausado por sessão, basta o scan; presente, só um
+    /// envio aceito novo desde o último ping. Pausado com um Tctl frio no
+    /// aparelho (a proteção do `End()` ainda não aceita), não há progresso:
+    /// o watchdog mata o processo e o `ExecStopPost` tenta a proteção.
     pub fn progressed(&self, waterforce_present: bool) -> bool {
         let mut s = self.state();
         if !waterforce_present || s.disabled.is_some() {
+            return true;
+        }
+        if s.session_paused {
+            if s.cold {
+                return false;
+            }
+            // A proteção do `End()` não vale como envio novo depois do
+            // `Begin()`.
+            s.pinged_seq = s.ok_seq;
             return true;
         }
         if s.ok_seq > s.pinged_seq {

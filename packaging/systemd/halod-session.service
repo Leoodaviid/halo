@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Guarda da sessão gráfica do halod. O packaging/install.sh troca @BINDIR@
+# pelo diretório dos binários e instala em $XDG_CONFIG_HOME/systemd/user/.
+#
+# O halod.service não segue a sessão gráfica. Quando o acesso ao Castor3 vem
+# só da ACL da sessão (regra udev sem GROUP="plugdev"), ele some no logout, e
+# o X 240 ficaria no último Tctl frio. Esta unidade é a barreira: com After=,
+# ela para antes do graphical-session.target, e o alvo espera o ExecStop
+# terminar. O ExecStop chama Session.End() e espera o halod mandar o E0 de
+# 80 °C e pausar o feed. Com o acesso pelo grupo, o End() responde na hora.
+
+[Unit]
+Description=halo: guarda da sessão gráfica do halod
+Documentation=https://github.com/Leoodaviid/halo
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Session.Begin(): retoma o feed se ele estava pausado pelo logout.
+ExecStart=@BINDIR@/halod --session begin
+# Session.End(), com prazo de 10 s; sem resposta, roda o mesmo helper do
+# ExecStopPost do halod.service e falha.
+ExecStop=@BINDIR@/halod --session end
+# A chamada (10 s) e o helper (18 s, com a espera pelo flock e os 8 s) em
+# sequência, mais 7 s de margem.
+TimeoutStopSec=35s
+
+[Install]
+WantedBy=graphical-session.target

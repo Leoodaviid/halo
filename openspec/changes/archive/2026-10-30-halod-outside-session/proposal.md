@@ -10,6 +10,7 @@ O `halod` para em todo logout, porque a unidade do usuário tem `PartOf=graphica
 - A regra udev do Castor3 (`1044:7a4d`) ganha `GROUP="plugdev", MODE="0660"`, além do `TAG+="uaccess"`. O IT5702 continua só com `uaccess`.
 - Uma unidade nova, `halod-session.service`, presa ao `graphical-session.target`, serve de **barreira** no logout. O `ExecStop` dela chama `Session.End()` no `halod` e espera a resposta. Quando o acesso ao Castor3 depende só da ACL da sessão (linger com a regra antiga), o `halod` envia o `E0` de 80 °C e pausa o feed antes de responder, e a sessão gráfica só termina depois disso. Com o acesso pelo grupo, ele responde sem pausar. A classificação lê a ACL efetiva do nó, e não só os bits do `st_mode`, e qualquer caso não comprovado conta como "só ACL".
 - O `packaging/install.sh` migra a habilitação (o `halod.service` sai de `graphical-session.target.wants` e vai para `default.target.wants`; a `halod-session.service` entra em `graphical-session.target.wants`) e passa a conferir o linger e o grupo `plugdev`. Quando faltar algum, ele mostra os comandos, sem executá-los, como já faz com a regra udev.
+- O `halod` sobrevive ao GNOME parando o D-Bus da sessão no logout (`gnome-session-restart-dbus.service`, medido no ensaio de 2026-10-29): o feed e o watchdog não dependem do barramento, o daemon reconecta no mesmo processo e, sem o nome em 10 s, sai pela proteção. A unidade passa de `Type=dbus` para `Type=notify`, com o `READY=1` depois do nome, porque com `Type=dbus` o systemd para a unidade se o nome não tiver dono quando o barramento volta.
 - A proteção de 80 °C continua em falha, travamento, parada, desligamento e suspensão. Nenhum byte novo vai ao aparelho: os mesmos `E1`/`E0` de hoje (`docs/protocols/castor3.md`).
 
 ## Capabilities
@@ -20,14 +21,14 @@ Nenhuma.
 
 ### Modified Capabilities
 
-- `user-service`: "Daemon sobe com a sessão gráfica" sai, e entra "Daemon independente da sessão gráfica" (boot com linger, logout sem parada, degradação sem linger). "Proteção na unidade de usuário" deixa de citar a parada por `PartOf`. "Watchdog ligado ao progresso" passa a aceitar o scan com o feed pausado por sessão. Entram "Guarda da sessão gráfica" e "Conferência do linger e do grupo" (`plugdev`); a "Conferência da regra udev" não muda, só compara com a regra nova. "Atualização" ganha a migração da habilitação.
+- `user-service`: "Daemon sobe com a sessão gráfica" sai, e entra "Daemon independente da sessão gráfica" (boot com linger, logout sem parada, degradação sem linger). "Proteção na unidade de usuário" deixa de citar a parada por `PartOf`. "Watchdog ligado ao progresso" passa a aceitar o scan com o feed pausado por sessão e troca o `Type=dbus` pelo `Type=notify` com `READY=1`. Entra "D-Bus da sessão que reinicia". Entram "Guarda da sessão gráfica" e "Conferência do linger e do grupo" (`plugdev`); a "Conferência da regra udev" não muda, só compara com a regra nova. "Atualização" ganha a migração da habilitação.
 - `device-permissions`: "Dispositivos cobertos" dá ao Castor3 o grupo `plugdev` com modo `0660`, além do `uaccess`.
 - `daemon-waterforce`: novo requisito "Proteção ao perder o acesso da sessão".
 
 ## Impact
 
 - `packaging/systemd/halod.service`, a nova `packaging/systemd/halod-session.service`, `packaging/udev/70-halo.rules`, `packaging/install.sh`, `packaging/tests/install-test.sh` e `packaging/tests/systemd-harness.sh` (o alvo de teste no lugar do `graphical-session.target`).
-- `crates/halo-daemon`: a interface `io.github.leoodaviid.Halo1.Session` (`Begin`, `End`), o modo `halod --session begin|end`, a classificação do acesso pela ACL efetiva, a leitura do estado inicial da guarda pelo `org.freedesktop.systemd1` e a pausa do feed.
+- `crates/halo-daemon`: a interface `io.github.leoodaviid.Halo1.Session` (`Begin`, `End`), o modo `halod --session begin|end`, a classificação do acesso pela ACL efetiva, a leitura do estado inicial da guarda pelo `org.freedesktop.systemd1`, a pausa do feed, a reconexão ao D-Bus da sessão e o `READY=1`.
 - `docs/permissions.md`, `docs/architecture.md`, `README.md` e `docs/roadmap.md`.
 - Instalação: trocar a regra udev exige `sudo`, rodado pelo usuário a partir dos comandos que o script mostra, como hoje. O `install.sh` continua sem sudo.
 - Segurança: com a regra nova, qualquer processo do grupo `plugdev` abre o Castor3, mesmo fora da sessão. Num PC de um usuário, isso equivale ao acesso de hoje.

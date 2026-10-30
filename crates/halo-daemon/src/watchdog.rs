@@ -41,6 +41,14 @@ impl Notifier for SdNotify {
     }
 }
 
+/// O `READY=1` do `Type=notify`, que só depende do `NOTIFY_SOCKET`: com o
+/// watchdog incompatível, o daemon continua servindo leituras, e a unidade
+/// precisa ficar ativa mesmo assim.
+pub fn ready(get: impl Fn(&str) -> Option<String>) -> Option<io::Result<()>> {
+    let socket = get("NOTIFY_SOCKET").filter(|s| !s.is_empty())?;
+    Some(SdNotify { socket }.notify("READY=1"))
+}
+
 /// Supervisão efetiva do processo.
 pub struct Supervision {
     pub timeout: Duration,

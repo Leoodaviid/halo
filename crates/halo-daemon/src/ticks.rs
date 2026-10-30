@@ -24,6 +24,8 @@ use crate::bus::{
     devices_to_dbus,
 };
 use crate::feed::Feed;
+use crate::link::BusLink;
+use crate::session::AccessProbe;
 use crate::watchdog::Notifier;
 use crate::worker::{FeedSlot, KnownModel, Model, Worker};
 
@@ -175,6 +177,9 @@ pub struct Ticks {
     feed: Feed,
     worker: Option<Worker>,
     watchdog: Option<Arc<dyn Notifier>>,
+    /// Sonda do acesso ao Castor3, para sair da pausa por sessão quando o
+    /// grupo dá acesso ([`crate::session::resume_if_group`]).
+    access: Option<AccessProbe>,
     /// Monotônico e `CLOCK_BOOTTIME` do tick anterior.
     clocks: Mutex<Option<(Instant, Duration)>>,
 }
@@ -188,6 +193,7 @@ impl Ticks {
             model,
             worker: None,
             watchdog: None,
+            access: None,
             clocks: Mutex::new(None),
         }
     }
@@ -207,6 +213,12 @@ impl Ticks {
         }
     }
 
+    /// Com a sonda do acesso ao Castor3, para sair da pausa por sessão.
+    pub fn with_access(mut self, access: AccessProbe) -> Self {
+        self.access = Some(access);
+        self
+    }
+
     /// `true` se o `CLOCK_BOOTTIME` andou [`SUSPEND_JUMP`] além do
     /// monotônico desde o tick anterior.
     fn suspended(&self) -> bool {
@@ -220,19 +232,57 @@ impl Ticks {
     }
 
     /// Lê presença, nomes e telemetria e emite os sinais só do que mudou.
+    /// O envio da CPU e o watchdog não dependem do barramento: com uma
+    /// emissão falhando (o D-Bus da sessão caiu), o tick vai até o fim e
+    /// devolve o primeiro erro.
     pub async fn run_once(&self, conn: &Connection) -> zbus::Result<()> {
-        let server = conn.object_server();
-
         let devices = scan_devices(&self.sys_root, self.model.get());
+        // Suspensão percebida: sessão nova; o envio é o pedido deste tick.
+        if self.worker.is_some() && self.suspended() {
+            eprintln!("halod: suspensão percebida pelo relógio; reiniciando o feed da CPU");
+            self.feed.resume();
+        }
+        let published = self.publish(conn, &devices).await;
+
+        let present = devices.iter().any(|d| d.id == "waterforce" && d.present);
+        if let Some(worker) = &self.worker {
+            // Antes do pedido deste tick: retomando, ele já abre a sessão.
+            if present && let Some(access) = &self.access {
+                crate::session::resume_if_group(worker.feed(), access);
+            }
+            worker.request_feed(FeedSlot::Tick);
+        }
+        if let Some(watchdog) = &self.watchdog
+            && self.feed.progressed(present)
+            && let Err(e) = watchdog.notify("WATCHDOG=1")
+        {
+            eprintln!("halod: aviso: watchdog não notificado: {e}");
+        }
+        published
+    }
+
+    /// Atualiza o estado dos objetos e emite os sinais. Cada emissão é
+    /// tentada mesmo depois de uma falha, e o estado local fica em dia.
+    async fn publish(&self, conn: &Connection, devices: &[Device]) -> zbus::Result<()> {
+        let server = conn.object_server();
+        let mut first = Ok(());
+        let mut keep = |r: zbus::Result<()>| {
+            if first.is_ok() {
+                first = r;
+            }
+        };
+
         let manager = server.interface::<_, Manager>(ROOT_PATH).await?;
         let changed = {
             let mut m = manager.get_mut().await;
             let changed = m.devices != devices;
-            m.devices = devices.clone();
+            m.devices = devices.to_vec();
             changed
         };
         if changed {
-            Manager::devices_changed(manager.signal_emitter(), devices_to_dbus(&devices)).await?;
+            keep(
+                Manager::devices_changed(manager.signal_emitter(), devices_to_dbus(devices)).await,
+            );
         }
 
         let iface = server.interface::<_, Telemetry>(WATERFORCE_PATH).await?;
@@ -245,33 +295,28 @@ impl Ticks {
         let t = iface.get().await;
         let e = iface.signal_emitter();
         if old.available != new.available {
-            t.available_changed(e).await?;
+            keep(t.available_changed(e).await);
         }
         if old.fan_rpm != new.fan_rpm {
-            t.fan_rpm_changed(e).await?;
+            keep(t.fan_rpm_changed(e).await);
         }
         if old.pump_rpm != new.pump_rpm {
-            t.pump_rpm_changed(e).await?;
+            keep(t.pump_rpm_changed(e).await);
         }
         if old.fan_duty != new.fan_duty {
-            t.fan_duty_changed(e).await?;
+            keep(t.fan_duty_changed(e).await);
         }
         if old.pump_duty != new.pump_duty {
-            t.pump_duty_changed(e).await?;
+            keep(t.pump_duty_changed(e).await);
         }
         if old.coolant_millicelsius != new.coolant_millicelsius {
-            t.coolant_milli_celsius_changed(e).await?;
+            keep(t.coolant_milli_celsius_changed(e).await);
         }
         if old.coolant_valid != new.coolant_valid {
-            t.coolant_valid_changed(e).await?;
+            keep(t.coolant_valid_changed(e).await);
         }
         drop(t);
 
-        // Suspensão percebida: sessão nova; o envio é o pedido deste tick.
-        if self.worker.is_some() && self.suspended() {
-            eprintln!("halod: suspensão percebida pelo relógio; reiniciando o feed da CPU");
-            self.feed.resume();
-        }
         let (old, new) = {
             let mut t = iface.get_mut().await;
             let old = t.cpu;
@@ -280,33 +325,27 @@ impl Ticks {
         };
         let t = iface.get().await;
         if old.millicelsius != new.millicelsius {
-            t.cpu_milli_celsius_changed(e).await?;
+            keep(t.cpu_milli_celsius_changed(e).await);
         }
         if old.valid != new.valid {
-            t.cpu_valid_changed(e).await?;
+            keep(t.cpu_valid_changed(e).await);
         }
         if old.feed_active != new.feed_active {
-            t.cpu_feed_active_changed(e).await?;
+            keep(t.cpu_feed_active_changed(e).await);
         }
-
-        if let Some(worker) = &self.worker {
-            worker.request_feed(FeedSlot::Tick);
-        }
-        if let Some(watchdog) = &self.watchdog {
-            let present = devices.iter().any(|d| d.id == "waterforce" && d.present);
-            if self.feed.progressed(present)
-                && let Err(e) = watchdog.notify("WATCHDOG=1")
-            {
-                eprintln!("halod: aviso: watchdog não notificado: {e}");
-            }
-        }
-        Ok(())
+        first
     }
 
     /// Roda a cada [`INTERVAL`] e, fora do ritmo, a cada pedido em `refresh`.
-    pub async fn run(&self, conn: &Connection, refresh: Receiver<()>) {
+    /// A conexão vem de `link` a cada volta: depois de uma reconexão, os
+    /// ticks seguem na nova. Com a conexão fechada, o erro não se repete no
+    /// log a cada tick (a reconexão já registrou a queda).
+    pub async fn run(&self, link: &BusLink, refresh: Receiver<()>) {
         loop {
-            if let Err(e) = self.run_once(conn).await {
+            let conn = link.get();
+            if let Err(e) = self.run_once(&conn).await
+                && !conn.is_closed()
+            {
                 eprintln!("halod: erro nas tarefas periódicas: {e}");
             }
             let timer = async_io::Timer::after(INTERVAL);

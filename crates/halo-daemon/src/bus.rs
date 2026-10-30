@@ -22,6 +22,7 @@ use zbus::zvariant::{OwnedValue, Value};
 use crate::error::Error;
 use crate::led_state::LedState;
 use crate::profiles::{self, ProfileStore};
+use crate::session::{AccessProbe, SessionGuard};
 use crate::worker::Worker;
 
 pub const BUS_NAME: &str = "io.github.leoodaviid.Halo1";
@@ -36,9 +37,11 @@ pub fn serve(
     profiles: ProfileStore,
     led_state: Option<LedState>,
     (devices, telemetry): (Vec<Device>, TelemetryState),
+    access: AccessProbe,
 ) -> zbus::Result<connection::Builder<'static>> {
     builder
         .serve_at(ROOT_PATH, Manager { devices })?
+        .serve_at(ROOT_PATH, SessionGuard::new(worker.clone(), access))?
         .serve_at(ROOT_PATH, Profiles::new(profiles, worker.clone()))?
         .serve_at(WATERFORCE_PATH, Led::new(worker.clone(), led_state))?
         .serve_at(WATERFORCE_PATH, Speed::new(worker))?
@@ -49,6 +52,57 @@ pub fn serve(
                 cpu: CpuState::default(),
             },
         )
+}
+
+/// O estado que só existe em memória nos objetos publicados. Na reconexão
+/// ao D-Bus da sessão, ele sai do `ObjectServer` da conexão antiga, que
+/// continua legível depois da queda, e entra nos objetos da conexão nova.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Carried {
+    devices: Vec<Device>,
+    telemetry: TelemetryState,
+    cpu: CpuState,
+    led: Option<LedRecord>,
+    active: String,
+}
+
+impl Carried {
+    pub async fn take(server: &ObjectServer) -> zbus::Result<Self> {
+        let devices = server.interface::<_, Manager>(ROOT_PATH).await?;
+        let telemetry = server.interface::<_, Telemetry>(WATERFORCE_PATH).await?;
+        let led = server.interface::<_, Led>(WATERFORCE_PATH).await?;
+        let profiles = server.interface::<_, Profiles>(ROOT_PATH).await?;
+        let (state, cpu) = {
+            let t = telemetry.get().await;
+            (t.state, t.cpu)
+        };
+        let devices = devices.get().await.devices.clone();
+        let led = led.get().await.last.lock().unwrap().clone();
+        let active = profiles.get().await.active.lock().unwrap().clone();
+        Ok(Self {
+            devices,
+            telemetry: state,
+            cpu,
+            led,
+            active,
+        })
+    }
+
+    /// Antes do nome: nenhum cliente vê o estado lido do disco.
+    pub async fn restore(&self, server: &ObjectServer) -> zbus::Result<()> {
+        let devices = server.interface::<_, Manager>(ROOT_PATH).await?;
+        devices.get_mut().await.devices = self.devices.clone();
+        let telemetry = server.interface::<_, Telemetry>(WATERFORCE_PATH).await?;
+        let mut t = telemetry.get_mut().await;
+        t.state = self.telemetry;
+        t.cpu = self.cpu;
+        drop(t);
+        let led = server.interface::<_, Led>(WATERFORCE_PATH).await?;
+        *led.get().await.last.lock().unwrap() = self.led.clone();
+        let profiles = server.interface::<_, Profiles>(ROOT_PATH).await?;
+        *profiles.get().await.active.lock().unwrap() = self.active.clone();
+        Ok(())
+    }
 }
 
 /// Pede [`BUS_NAME`] sem tomar o nome de outra instância e sem deixar outra
@@ -1414,6 +1468,31 @@ mod tests {
         assert!(!f.prop::<bool>("CpuFeedActive"));
         assert!(f.prop::<bool>("CpuValid"));
         f.h.backend.hold(false);
+    }
+
+    #[test]
+    fn barramento_que_cai_nao_para_o_feed_nem_o_watchdog() {
+        // Logout no GNOME: o gnome-session para o dbus.service do usuário.
+        // O feed e o watchdog não dependem dele.
+        let mut f = fed(Some(40_500), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        assert_eq!(f.feeds().last(), Some(&Call::Feed(41)));
+        f.h.kill_bus();
+        let (feeds, pings) = (f.feeds().len(), f.notifier.pings());
+        // A CPU muda a cada tick: cada um tenta emitir no barramento morto.
+        for (i, mc) in [47_100, 52_300, 45_000].into_iter().enumerate() {
+            f.sensor.set(Some(mc));
+            let _ = zbus::block_on(f.ticks.run_once(&f.h.server));
+            f.settle();
+            f.clock.advance(PERIOD);
+            assert_eq!(f.feeds().len(), feeds + i + 1);
+        }
+        assert_eq!(f.feeds().last(), Some(&Call::Feed(45)));
+        // Um ping pode cobrir dois envios, quando o worker conclui o do
+        // próprio tick antes do `progressed`; em três ticks, pelo menos dois.
+        assert!(f.notifier.pings() >= pings + 2, "{}", f.notifier.pings());
     }
 
     #[test]

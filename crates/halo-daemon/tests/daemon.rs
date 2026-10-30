@@ -18,6 +18,7 @@ const WATERFORCE: &str = "/io/github/leoodaviid/Halo1/waterforce";
 struct Bus {
     child: Child,
     address: String,
+    config: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -31,13 +32,24 @@ impl Bus {
         std::fs::write(
             &config,
             format!(
-                r#"<busconfig><type>session</type><listen>unix:dir={}</listen>
+                r#"<busconfig><type>session</type><listen>unix:path={}/bus</listen>
 <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>
 "#,
                 dir.path().display()
             ),
         )
         .unwrap();
+        let (child, address) = Self::spawn(&config);
+        Self {
+            child,
+            address,
+            config,
+            _dir: dir,
+        }
+    }
+
+    /// Sem o `guid`, que muda a cada início, como o endereço do usuário.
+    fn spawn(config: &Path) -> (Child, String) {
         let mut child = Command::new("dbus-daemon")
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
@@ -48,11 +60,22 @@ impl Bus {
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut address)
             .unwrap();
-        Self {
-            child,
-            address: address.trim().to_owned(),
-            _dir: dir,
-        }
+        let address = address.trim().split(",guid=").next().unwrap().to_owned();
+        (child, address)
+    }
+
+    /// Para o barramento, como o `gnome-session-restart-dbus.service`.
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(self.config.with_file_name("bus"));
+    }
+
+    /// Outro `dbus-daemon` no mesmo socket.
+    fn restart(&mut self) {
+        let (child, address) = Self::spawn(&self.config);
+        self.child = child;
+        assert_eq!(address, self.address);
     }
 
     fn client(&self) -> Connection {
@@ -477,7 +500,11 @@ fn cpu_feed_watchdog_processo_supervisionado() {
     let mut daemon = Daemon {
         child: Some(cmd.spawn().unwrap()),
     };
+    // Type=notify: o READY=1 vem com o nome já com dono, antes dos pings.
     let mut buf = [0u8; 64];
+    let n = socket.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"READY=1");
+    assert!(has_owner(&bus.client()));
     for _ in 0..2 {
         let n = socket.recv(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"WATCHDOG=1");
@@ -494,10 +521,15 @@ fn cpu_feed_watchdog_processo_ambiente_incompativel() {
     let bus = Bus::start();
     let home = tempfile::tempdir().unwrap();
     let sys = tempfile::tempdir().unwrap();
+    let notify = home.path().join("notify");
+    let socket = std::os::unix::net::UnixDatagram::bind(&notify).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(6)))
+        .unwrap();
     let mut cmd = halod(&bus, home.path(), sys.path(), &[]);
     cmd.env("WATCHDOG_USEC", "20000000")
         .env("WATCHDOG_PID", "1")
-        .env("NOTIFY_SOCKET", "/caminho/que/nao/existe");
+        .env("NOTIFY_SOCKET", &notify);
     let mut daemon = Daemon {
         child: Some(cmd.spawn().unwrap()),
     };
@@ -507,8 +539,16 @@ fn cpu_feed_watchdog_processo_ambiente_incompativel() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Leituras e operações legadas seguem; o feed fica desligado.
+    // Leituras e operações legadas seguem; o feed fica desligado. A unidade
+    // fica pronta (READY=1), sem nenhum ping.
     assert_eq!(version(&client), env!("CARGO_PKG_VERSION"));
+    let mut buf = [0u8; 64];
+    let n = socket.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"READY=1");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert!(socket.recv(&mut buf).is_err(), "ping sem supervisão");
     let (out, _) = sigterm(&mut daemon);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("ambiente do watchdog incompatível"), "{err}");
@@ -653,4 +693,253 @@ fn cpu_feed_stop_post_ocupado() {
     // Nenhum byte escrito.
     assert_eq!(std::fs::read(&node).unwrap().len(), 6147);
     drop(held);
+}
+
+// halod-outside-session
+
+#[test]
+fn sessao_sem_gerenciador_comeca_pausado() {
+    use std::os::unix::net::UnixDatagram;
+    // Supervisionado, com o Castor3 no sysfs e o nó inexistente (só ACL, por
+    // não comprovado) e sem org.freedesktop.systemd1 no barramento: o feed
+    // começa pausado e nada é tentado no aparelho.
+    let bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = sys_with_castor3("hidraw250");
+    let notify = home.path().join("notify");
+    let socket = UnixDatagram::bind(&notify).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(6)))
+        .unwrap();
+    let mut cmd = halod(&bus, home.path(), sys.path(), &[]);
+    cmd.env("WATCHDOG_USEC", "20000000")
+        .env("NOTIFY_SOCKET", &notify)
+        .env("HALOD_TRACE_FEED", "1");
+    let mut daemon = Daemon {
+        child: Some(cmd.spawn().unwrap()),
+    };
+    // A pausa renova o watchdog a cada scan, com o Waterforce presente.
+    let mut buf = [0u8; 64];
+    let n = socket.recv(&mut buf).unwrap();
+    assert_eq!(&buf[..n], b"READY=1");
+    for _ in 0..3 {
+        let n = socket.recv(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"WATCHDOG=1");
+    }
+    let (out, _) = sigterm(&mut daemon);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("estado de halod-session.service desconhecido"),
+        "{err}"
+    );
+    assert!(err.contains("acesso só pela ACL da sessão"), "{err}");
+    assert!(err.contains("feed da CPU pausado até o login"), "{err}");
+    assert!(!err.contains("halod: feed:"), "{err}");
+}
+
+/// Como o `halod` responde ao `Session.End()` num daemon falso.
+#[derive(Clone, Copy)]
+enum FakeEnd {
+    Reply,
+    Delay(u64),
+    Fail,
+}
+
+struct FakeSession(FakeEnd);
+
+#[zbus::interface(name = "io.github.leoodaviid.Halo1.Session")]
+impl FakeSession {
+    async fn begin(&self) {}
+
+    async fn end(&self) -> zbus::fdo::Result<()> {
+        match self.0 {
+            FakeEnd::Reply => Ok(()),
+            FakeEnd::Delay(secs) => {
+                async_io::Timer::after(Duration::from_secs(secs)).await;
+                Ok(())
+            }
+            FakeEnd::Fail => Err(zbus::fdo::Error::Failed("aparelho não protegido".into())),
+        }
+    }
+}
+
+fn fake_daemon(bus: &Bus, end: FakeEnd) -> Connection {
+    Builder::address(bus.address.as_str())
+        .unwrap()
+        .name(BUS_NAME)
+        .unwrap()
+        .serve_at(ROOT, FakeSession(end))
+        .unwrap()
+        .build()
+        .unwrap()
+}
+
+/// `halod --session <step>` no barramento de teste, com o helper sobre `sys`
+/// e, se dado, o nó falso.
+fn session_cmd(bus: &Bus, step: &str, sys: &Path, node: Option<&Path>) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_halod"));
+    cmd.env_clear()
+        .args(["--session", step, "--address", &bus.address])
+        .arg("--sys-root")
+        .arg(sys)
+        .arg("--proc-root")
+        .arg("/caminho/que/nao/existe")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(node) = node {
+        cmd.arg("--hidraw-node").arg(node);
+    }
+    cmd
+}
+
+fn timed(mut cmd: Command) -> (std::process::Output, Duration) {
+    let started = Instant::now();
+    let out = cmd.output().unwrap();
+    (out, started.elapsed())
+}
+
+#[test]
+fn sessao_end_com_resposta() {
+    let bus = Bus::start();
+    let sys = tempfile::tempdir().unwrap();
+    for (end, min, max) in [(FakeEnd::Reply, 0, 2), (FakeEnd::Delay(3), 3, 5)] {
+        let _daemon = fake_daemon(&bus, end);
+        let (out, took) = timed(session_cmd(&bus, "end", sys.path(), None));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        assert!(!err.contains("proteção sem o daemon"), "{err}");
+        assert!(
+            took >= Duration::from_secs(min) && took < Duration::from_secs(max),
+            "{took:?}"
+        );
+    }
+}
+
+#[test]
+fn sessao_end_com_erro_ou_sem_daemon_roda_o_helper() {
+    let bus = Bus::start();
+    let sys = tempfile::tempdir().unwrap();
+    // Sem dono do nome: não sobe o daemon pela ativação e cai no helper.
+    let (out, took) = timed(session_cmd(&bus, "end", sys.path(), None));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("proteção sem o daemon"), "{err}");
+    assert!(err.contains("Waterforce ausente"), "{err}");
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    // Erro do daemon: o mesmo.
+    let _daemon = fake_daemon(&bus, FakeEnd::Fail);
+    let (out, _) = timed(session_cmd(&bus, "end", sys.path(), None));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("aparelho não protegido"), "{err}");
+    assert!(err.contains("Waterforce ausente"), "{err}");
+}
+
+#[test]
+fn sessao_end_sem_resposta_em_10s_e_o_helper_inteiro() {
+    let bus = Bus::start();
+    let _daemon = fake_daemon(&bus, FakeEnd::Delay(30));
+    let sys = sys_with_castor3("hidraw250");
+    let dir = tempfile::tempdir().unwrap();
+    let node = fake_node(dir.path(), 0);
+    let (out, took) = timed(session_cmd(&bus, "end", sys.path(), Some(&node)));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("sem resposta em 10s"), "{err}");
+    // 10 s da chamada, mais o envio e os 8 s do helper, dentro dos 35 s da
+    // guarda.
+    assert!(
+        took >= Duration::from_secs(18) && took < Duration::from_secs(28),
+        "{took:?}"
+    );
+    let packets = written_after_reply(&node);
+    assert_eq!(packets.len(), 2, "{packets:?}");
+    assert_eq!(packets[1][..4], [0x99, 0xE0, 0, 80]);
+}
+
+#[test]
+fn sessao_begin_sem_daemon_nao_falha_a_guarda() {
+    let bus = Bus::start();
+    let sys = tempfile::tempdir().unwrap();
+    let (out, _) = timed(session_cmd(&bus, "begin", sys.path(), None));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("Session.Begin() falhou"), "{err}");
+    assert!(!err.contains("Waterforce"), "{err}");
+    let _daemon = fake_daemon(&bus, FakeEnd::Reply);
+    assert!(
+        session_cmd(&bus, "begin", sys.path(), None)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+// D-Bus da sessão que reinicia (gnome-session-restart-dbus.service no logout).
+
+#[test]
+fn barramento_que_reinicia_o_mesmo_processo_reconecta() {
+    let mut bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = tempfile::tempdir().unwrap();
+    let mut daemon = start(&bus, home.path(), sys.path(), &[]);
+    let pid = daemon.child.as_ref().unwrap().id();
+    bus.kill();
+    std::thread::sleep(Duration::from_millis(1500));
+    bus.restart();
+    let client = bus.client();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !has_owner(&client) {
+        assert!(
+            Instant::now() < deadline,
+            "o halod não voltou ao barramento"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(daemon.child.as_mut().unwrap().try_wait().unwrap().is_none());
+    assert_eq!(daemon.child.as_ref().unwrap().id(), pid);
+    assert_eq!(version(&client), env!("CARGO_PKG_VERSION"));
+    let (out, _) = sigterm(&mut daemon);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.matches("o D-Bus da sessão caiu; reconectando").count(),
+        1,
+        "{err}"
+    );
+    assert_eq!(
+        err.matches("de volta no D-Bus da sessão").count(),
+        1,
+        "{err}"
+    );
+    assert!(!err.contains("erro nas tarefas periódicas"), "{err}");
+}
+
+#[test]
+fn barramento_que_nao_volta_sai_com_falha_em_10s() {
+    let mut bus = Bus::start();
+    let home = tempfile::tempdir().unwrap();
+    let sys = tempfile::tempdir().unwrap();
+    let mut daemon = start(&bus, home.path(), sys.path(), &[]);
+    let started = Instant::now();
+    bus.kill();
+    let mut child = daemon.child.take().unwrap();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "o halod não saiu"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let took = started.elapsed();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!status.success(), "{err}");
+    assert!(
+        took >= Duration::from_secs(10) && took < Duration::from_secs(12),
+        "{took:?}"
+    );
+    assert!(err.contains("saindo pela proteção"), "{err}");
 }
