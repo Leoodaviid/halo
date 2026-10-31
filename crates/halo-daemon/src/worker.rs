@@ -518,6 +518,12 @@ pub(crate) mod fake {
             cond.notify_all();
         }
 
+        /// Esquece a sessão do feed sem `ResetCpu`, como o aparelho
+        /// reconectado (identidade nova): o próximo envio recomeça.
+        pub fn lose_session(&self) {
+            self.script.0.lock().unwrap().feed_session = false;
+        }
+
         pub fn set_model(&self, model: Model) {
             self.script.0.lock().unwrap().model = model;
         }
