@@ -4,20 +4,23 @@
 // prontas, matiz e hex), brilho e velocidade. Só desenha e liga sinais: o que
 // mostrar vem de controlsView (lib/ledState.js), e cada fim de gesto chama
 // commit(setting), que passa pela fila do daemon. Durante o gesto, só
-// draft(setting), que muda a interface e o desenho, sem pedido nenhum.
-// Medidas e estrutura do protótipo (docs/ui/panel-prototype.html: os dois
-// .tile dos controles, .swatches, .hue, .cc).
+// draft(setting), que muda a interface e o desenho, sem pedido nenhum. Acima
+// dos controles, a faixa de erro (lib/feedback.js) com "Tentar de novo", que
+// chama retry(). Medidas e estrutura do protótipo (docs/ui/panel-prototype.html:
+// o .banner, os dois .tile dos controles, .swatches, .hue, .cc).
 
 import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Slider from 'resource:///org/gnome/shell/ui/slider.js';
 
+import {errorView} from './lib/feedback.js';
 import {
     EFFECTS, SWATCHES, controlsView, effectChoice, hueOf, hueToHex, parseHex, withBrightness,
     withColor, withSpeed,
@@ -238,7 +241,7 @@ const HueBar = GObject.registerClass({
 
 export const HaloLedControls = GObject.registerClass(
 class HaloLedControls extends St.BoxLayout {
-    // handlers: { draft(setting), commit(setting) }.
+    // handlers: { draft(setting), commit(setting), retry() }.
     _init(handlers) {
         super._init({
             orientation: Clutter.Orientation.VERTICAL,
@@ -254,6 +257,9 @@ class HaloLedControls extends St.BoxLayout {
         // perda do foco envia (senão um valor que já falhou sairia de novo).
         this._hexDirty = false;
         this._hexSetting = false;
+
+        this._banner = this._buildBanner();
+        this.add_child(this._banner);
 
         this._unknown = this._note('Estado do LED desconhecido',
             'O halod não informou o que está aplicado. Escolha um efeito para começar.');
@@ -376,14 +382,45 @@ class HaloLedControls extends St.BoxLayout {
         this._top = top;
         this._bottom = bottom;
 
-        this._error = label('', 'halo-led-error', {x_expand: true});
-        this._error.clutter_text.line_wrap = true;
-        this.add_child(this._error);
-
         this.connect('destroy', () => {
             this._later.flush();
             this._effectMenu.destroy();
         });
+    }
+
+    // A faixa de erro (o .banner): o ícone, o título, o texto e o botão.
+    _buildBanner() {
+        const banner = new St.BoxLayout({style_class: 'halo-banner', x_expand: true});
+        banner.add_child(new St.Icon({
+            icon_name: 'dialog-warning-symbolic',
+            style_class: 'halo-banner-icon',
+            y_align: Clutter.ActorAlign.START,
+        }));
+        const column = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'halo-banner-body',
+            x_expand: true,
+        });
+        // Numa caixa horizontal, o rótulo só pede a altura das linhas
+        // quebradas sem as reticências.
+        this._bannerTitle = label('', 'halo-banner-title', {x_expand: true});
+        this._bannerText = label('', 'halo-banner-text', {x_expand: true});
+        for (const l of [this._bannerTitle, this._bannerText]) {
+            l.clutter_text.line_wrap = true;
+            l.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        }
+        const retry = new St.Button({
+            label: 'Tentar de novo',
+            style_class: 'halo-text-btn',
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+        });
+        retry.connect('clicked', () => this._handlers.retry?.());
+        column.add_child(this._bannerTitle);
+        column.add_child(this._bannerText);
+        column.add_child(retry);
+        banner.add_child(column);
+        return banner;
     }
 
     _note(title, text) {
@@ -539,8 +576,12 @@ class HaloLedControls extends St.BoxLayout {
             this._speed.opacity = 255;
         }
 
-        this._error.visible = v.error !== null;
-        this._error.text = v.error ? `Não foi possível aplicar: ${v.error}` : '';
+        this._banner.visible = v.error !== null;
+        if (v.error !== null) {
+            const e = errorView(v.error, this._led.failed?.kind === 'activate');
+            this._bannerTitle.text = e.title;
+            this._bannerText.text = e.text;
+        }
     }
 
     // Travado: esmaecido e sem responder a clique, arraste ou teclado.

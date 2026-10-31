@@ -42,7 +42,25 @@
   -halo-slider-fill: #ffffff;
 }
 .halo-led-slider-icon { color: rgba(0, 0, 0, 0.55); }
-.halo-led-error { color: #d70015; }
+
+/* Faixa de erro. */
+.halo-banner { background-color: rgba(255, 59, 48, 0.1); }
+.halo-banner-icon { color: #d70015; }
+.halo-banner-text { color: rgba(0, 0, 0, 0.6); }
+.halo-text-btn {
+  color: rgba(0, 0, 0, 0.86);
+  background-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.14), 0 1px 1.5px rgba(0, 0, 0, 0.08);
+}
+
+/* Botão de perfil e linha de status. */
+.halo-profile-text,
+.halo-profile-icon,
+.halo-status-text,
+.halo-status-icon { color: rgba(0, 0, 0, 0.6); }
+.halo-profile-btn:hover .halo-profile-text,
+.halo-profile-btn:hover .halo-profile-icon { color: rgba(0, 0, 0, 0.86); }
+.halo-status-ok { color: #1f9d47; }
 
 /* Rodapé. */
 .halo-hr { background-color: rgba(0, 0, 0, 0.1); }

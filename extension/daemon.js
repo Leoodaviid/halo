@@ -4,14 +4,16 @@
 // avisa a cada mudança; quem desenha é o indicador. Nenhum proxy ativa o
 // halod: o painel só observa o nome, e iniciar o daemon é sempre um gesto do
 // usuário (spec gnome-panel, "Painel não inicia o daemon sozinho"). O LED só
-// recebe um Led.Apply no fim de um gesto, pela fila de lib/ledState.js.
+// recebe um Led.Apply no fim de um gesto, e um perfil só é ativado por um
+// clique no menu, os dois pela mesma fila de lib/ledState.js.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
 import {journalLines} from './lib/journal.js';
 import {
-    EMPTY as LED_EMPTY, commit, finished, lastAppliedChanged, powerTarget, profileLed,
+    EMPTY as LED_EMPTY, activate, activateFinished, commit, draft, finished, lastAppliedChanged,
+    powerTarget, profileLed, retry,
 } from './lib/ledState.js';
 import {countPresent, devicesFrom, lastAppliedFrom} from './lib/view.js';
 
@@ -55,11 +57,14 @@ const LedProxy = Gio.DBusProxy.makeProxyWrapper(`
   </interface>
 </node>`);
 
-// Só leitura: o perfil ativo e o LED dele, para religar. Activate não é usado.
+// A lista e o LED de cada perfil, o ativo e a ativação. Activate só é
+// chamado por _sendActivate(), com um pedido que saiu da fila.
 const ProfilesProxy = Gio.DBusProxy.makeProxyWrapper(`
 <node>
   <interface name="io.github.leoodaviid.Halo1.Profiles">
+    <method name="List"><arg type="as" direction="out"/></method>
     <method name="Get"><arg type="s" direction="in"/><arg type="a{sv}" direction="out"/></method>
+    <method name="Activate"><arg type="s" direction="in"/><arg type="as" direction="out"/></method>
     <property name="ActiveProfile" type="s" access="read"/>
   </interface>
 </node>`);
@@ -75,6 +80,14 @@ function cancelled(e) {
 function unpackDict(dict) {
     return Object.fromEntries(Object.entries(dict ?? {}).map(
         ([key, value]) => [key, value instanceof GLib.Variant ? value.recursiveUnpack() : value]));
+}
+
+// {name, message} de um erro D-Bus, com o nome completo (ou null sem nome).
+function remoteError(e, method) {
+    const name = Gio.DBusError.get_remote_error(e);
+    Gio.DBusError.strip_remote_error(e);
+    console.warn(`halo: ${method} falhou (${name ?? 'sem nome'}): ${e.message}`);
+    return {name, message: e.message};
 }
 
 function newProxy(Wrapper, path, cancellable) {
@@ -125,6 +138,7 @@ export class HaloDaemon {
         this._connect(this._telemetry, 'notify::g-name-owner', () => this._ownerChanged());
         this._connect(this._telemetry, 'g-properties-changed', () => this._readTelemetry());
         this._connect(this._led, 'g-properties-changed', () => this._readLed());
+        this._connect(this._profiles, 'g-properties-changed', () => this._readProfiles());
         this._devicesSignal = this._manager.connectSignal('DevicesChanged',
             (_proxy, _sender, [devices]) => this._setDevices(devices));
         this._ownerChanged();
@@ -167,10 +181,11 @@ export class HaloDaemon {
         if (owner) {
             this._readTelemetry();
             this._readLed();
+            this._readProfiles();
             this._readDevices();
         } else {
             // O cache de um proxy sem dono não vale.
-            this._set({devices: [], devicesPresent: 0, lastApplied: null});
+            this._set({devices: [], devicesPresent: 0, lastApplied: null, activeProfile: ''});
             this.refreshUnit();
         }
     }
@@ -199,9 +214,15 @@ export class HaloDaemon {
         this._set({lastApplied, led: lastAppliedChanged(this._state.led, lastApplied)});
     }
 
+    _readProfiles() {
+        if (!this._profiles || !this._state.owner)
+            return;
+        this._set({activeProfile: this._profiles.ActiveProfile ?? ''});
+    }
+
     // O rascunho durante um gesto (arraste, matiz): só a interface muda.
     ledDraft(setting) {
-        this._set({led: {...this._state.led, draft: setting}});
+        this._set({led: draft(this._state.led, setting)});
     }
 
     // Fim de um gesto: a fila decide se sai um Apply.
@@ -236,15 +257,57 @@ export class HaloDaemon {
         this.ledCommit(powerTarget(null, profile));
     }
 
-    async _send(request) {
-        const result = await this.apply(request);
-        if (result === null)
+    // Escolha no menu de perfis: a fila decide se a ativação sai.
+    ledActivate(name) {
+        if (!this._state.owner)
             return;
-        const {led, send} = finished(this._state.led, result.ok,
-            result.ok ? null : result.error.message);
+        const {led, send} = activate(this._state.led, name);
         this._set({led});
         if (send)
+            this._sendActivate(send.activate);
+    }
+
+    // "Tentar de novo": o pedido que falhou, um Apply ou uma ativação.
+    ledRetry() {
+        if (!this._state.owner)
+            return;
+        const {led, send} = retry(this._state.led);
+        this._set({led});
+        this._dispatch(send);
+    }
+
+    _dispatch(send) {
+        if (!send)
+            return;
+        if (send.activate !== undefined)
+            this._sendActivate(send.activate);
+        else
             this._send(send);
+    }
+
+    async _send(request) {
+        const owner = this._ownerName;
+        const result = await this.apply(request);
+        // Cancelado, ou a resposta é de um dono anterior: a fila já foi zerada
+        // e pertence ao dono novo.
+        if (result === null || owner !== this._ownerName)
+            return;
+        const {led, send} = finished(this._state.led, result.ok, result.ok ? null : result.error);
+        this._set({led});
+        this._dispatch(send);
+    }
+
+    async _sendActivate(name) {
+        const owner = this._ownerName;
+        const result = await this.activateProfile(name);
+        // Cancelado, ou a resposta é de um dono anterior: a fila já foi zerada
+        // e pertence ao dono novo.
+        if (result === null || owner !== this._ownerName)
+            return;
+        const {led, send} = activateFinished(this._state.led, result.ok,
+            result.ok ? null : result.error);
+        this._set({led});
+        this._dispatch(send);
     }
 
     // Um Led.Apply. Devolve {ok: true}, {ok: false, error: {name, message}} ou
@@ -258,19 +321,38 @@ export class HaloDaemon {
         } catch (e) {
             if (cancelled(e))
                 return null;
-            const name = Gio.DBusError.get_remote_error(e) ?? 'desconhecido';
-            Gio.DBusError.strip_remote_error(e);
-            console.warn(`halo: Led.Apply falhou (${name}): ${e.message}`);
-            return {ok: false, error: {name, message: e.message}};
+            return {ok: false, error: remoteError(e, 'Led.Apply')};
         }
     }
 
-    // O LED do perfil ativo ({effect, colors, brightness, speed}) ou null.
-    // Um erro (perfil apagado, por exemplo) conta como sem perfil.
-    async activeProfileLed() {
-        const name = this._profiles?.ActiveProfile ?? '';
-        if (name === '')
+    // Um Profiles.Activate, com o mesmo retorno do apply().
+    async activateProfile(name) {
+        try {
+            await this._profiles.call('Activate', new GLib.Variant('(s)', [name]),
+                Gio.DBusCallFlags.NO_AUTO_START, -1, this._cancellable);
+            return {ok: true};
+        } catch (e) {
+            if (cancelled(e))
+                return null;
+            return {ok: false, error: remoteError(e, 'Profiles.Activate')};
+        }
+    }
+
+    // Os nomes dos perfis salvos, ou null (falha ou cancelado).
+    async listProfiles() {
+        try {
+            const reply = await this._profiles.call('List', null,
+                Gio.DBusCallFlags.NO_AUTO_START, -1, this._cancellable);
+            return reply.deepUnpack()[0];
+        } catch (e) {
+            if (!cancelled(e))
+                console.warn(`halo: Profiles.List falhou: ${e.message}`);
             return null;
+        }
+    }
+
+    // O LED do perfil (profileLed) ou null, também na falha.
+    async profileEffect(name) {
         try {
             const reply = await this._profiles.call('Get', new GLib.Variant('(s)', [name]),
                 Gio.DBusCallFlags.NO_AUTO_START, -1, this._cancellable);
@@ -281,6 +363,15 @@ export class HaloDaemon {
                 console.warn(`halo: Profiles.Get falhou: ${e.message}`);
             return null;
         }
+    }
+
+    // O LED do perfil ativo ({effect, colors, brightness, speed}) ou null.
+    // Um erro (perfil apagado, por exemplo) conta como sem perfil.
+    async activeProfileLed() {
+        const name = this._profiles?.ActiveProfile ?? '';
+        if (name === '')
+            return null;
+        return this.profileEffect(name);
     }
 
     _setDevices(list) {

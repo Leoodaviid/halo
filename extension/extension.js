@@ -19,6 +19,10 @@ export default class HaloExtension extends Extension {
             ledDraft: s => this._daemon?.ledDraft(s),
             ledCommit: s => this._daemon?.ledCommit(s),
             ledPower: () => this._daemon?.ledPower(),
+            ledActivate: name => this._daemon?.ledActivate(name),
+            ledRetry: () => this._daemon?.ledRetry(),
+            listProfiles: () => this._daemon?.listProfiles() ?? Promise.resolve(null),
+            profileEffect: name => this._daemon?.profileEffect(name) ?? Promise.resolve(null),
             prefs: () => this.openPreferences(),
         }, this._settings.get_string('temperature-source'));
         // A troca da fonte vale na hora, sem reabrir o painel.
