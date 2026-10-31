@@ -834,6 +834,36 @@ Regra nova, 2026-10-30, `MainPID` 2025 e `NRestarts` 0 do boot ao fim dos dois l
 - Com a regra nova, a tela de login fica como a sessão ativa: o duty segue o Tctl, igual ao da sessão com a mesma CPU, e o LCD mostra a CPU real. Antes, a fan ficava em 100 % a tela de login inteira (tabela de 2026-10-27 acima).
 - Com a regra antiga, o comportamento é o da proteção: `E0` de 80 °C antes de a sessão terminar, pausa sem nenhum Tctl e E1 com 8 s em 80 °C no login.
 
+### Lock externo e o Apply do painel: conferência 4.3 da `gnome-panel-profiles` (2026-10-31)
+
+Com o `halod` da sessão (feed da CPU ativo) e a extensão instalada, o usuário
+segurou o nó do Castor3 com `flock -x /dev/hidraw2 sleep 10`, que só abre o nó
+e não envia nada, e escolheu um efeito no painel. Os horários vêm de um
+`dbus-monitor` só de leitura (chamadas de `Led.Apply`, respostas e erros do
+`halod`) e do journal da unidade.
+
+- **O worker atende um pedido por vez, e o feed costuma estar na frente.** Com
+  o lock externo, o tick do feed (a cada 2 s) entra no worker e espera o
+  `flock`. Ele desiste com `Busy` depois de 5 s e tenta o `E0` de 80 °C, que
+  também espera. Um `Apply` pedido nesse meio-tempo fica na fila e só começa a
+  contar os 5 s dele depois. Na rodada das 10:40, o `Apply(static)` saiu às
+  10:40:00,7, o feed registrou `Busy` às 10:40:02, o lock soltou por volta das
+  10:40:07, a proteção foi aceita, e o `Apply` respondeu **com sucesso** às
+  10:40:07,7, depois de 7 s na fila. Na rodada das 10:32, foi igual: 6,6 s e
+  sucesso. Nenhum dos dois recebeu `Busy`.
+- **O `Busy` só chega ao painel se o `Apply` passar à frente do feed.** Numa
+  rodada sem o monitor, entre 10:01 e 10:08, o `Apply` chegou ao worker antes
+  do tick, e o painel mostrou a faixa "O aparelho está em uso por outro
+  processo", com os controles de volta ao estado aplicado. Com um lock de 10 s,
+  isso depende de frações de segundo. Forçar o `Busy` pediria um lock de 15 a
+  18 s, o feed e a proteção esperando antes do `Apply`, o que encosta no
+  `WatchdogSec=20s` da unidade.
+- **Não é uma falha do halod nem do painel.** Cada efeito escolhido virou um
+  único `Apply` com um `99 B6`, mesmo esperando o lock. O "Tentar de novo"
+  depois de um `Busy` real não foi observado isolado no aparelho. Numa rodada,
+  ele caiu num segundo `flock` rodado logo em seguida. Ele foi conferido no
+  Shell aninhado, com um único `Led.Apply` por clique.
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.

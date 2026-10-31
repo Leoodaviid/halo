@@ -28,6 +28,43 @@
   spacing: 8px;
 }
 
+/* Botão de perfil (o .profile-btn) e as dicas do menu de perfis. */
+.halo-profile-box {
+  spacing: 3px;
+}
+
+.halo-profile-text {
+  font-size: 11px;
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-profile-icon {
+  icon-size: 9px;
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-profile-hint {
+  font-size: 11px;
+}
+
+/* Linha de status (o .status). */
+.halo-status {
+  height: 22px;
+  padding: 0 8px;
+  spacing: 6px;
+}
+
+.halo-status-text {
+  font-size: 11px;
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-status-icon {
+  width: 11px;
+  height: 11px;
+  color: rgba(127, 127, 127, 1);
+}
+
 /* Rodapé: o .foot, o .hr e o .menu-row do protótipo. */
 .halo-foot {
   spacing: 2px;
@@ -330,14 +367,47 @@
   font-weight: 600;
 }
 
-.halo-led-note-text,
-.halo-led-error {
+.halo-led-note-text {
   color: rgba(127, 127, 127, 1);
 }
 
-.halo-led-error {
-  padding: 0 4px;
-  font-size: 11px;
+/* Faixa de erro: o .banner e o .text-btn do protótipo. */
+.halo-banner {
+  padding: 10px 12px;
+  spacing: 10px;
+  border-radius: 12px;
+  background-color: rgba(255, 59, 48, 0.12);
+}
+
+.halo-banner-icon {
+  icon-size: 16px;
+  margin-top: 1px;
+  color: #d70015;
+}
+
+.halo-banner-body {
+  spacing: 3px;
+}
+
+.halo-banner-title {
+  font-weight: 600;
+}
+
+.halo-banner-text {
+  color: rgba(127, 127, 127, 1);
+}
+
+.halo-text-btn {
+  height: 24px;
+  margin-top: 3px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-weight: 500;
+  background-color: rgba(127, 127, 127, 0.2);
+}
+
+.halo-text-btn:focus {
+  box-shadow: 0 0 0 2px -st-accent-color;
 }
 
 .halo-empty {

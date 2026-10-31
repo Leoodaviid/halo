@@ -2,7 +2,7 @@
 //
 // Estado do LED do Waterforce no painel, sem St: o catálogo de efeitos, o que
 // os controles mostram, o que vai em cada Led.Apply, a fila (um pedido em voo
-// e só o último pendente) e o religar. Cada Apply termina com 99 B6, que grava
+// e só o último pendente, com a ativação de perfil no mesmo lugar) e o religar. Cada Apply termina com 99 B6, que grava
 // no aparelho, então toda regra que decide se um pedido sai fica aqui, testada.
 //
 // Um ajuste é {effect, colors: ['rrggbb'], brightness, speed}. O estado:
@@ -12,7 +12,11 @@
 //   inFlight  o ajuste do Apply em andamento
 //   pending   só o último ajuste esperando
 //   powering  lendo o perfil ativo para religar
-//   error     texto da última falha
+//   activating o nome do perfil em ativação (Profiles.Activate em andamento)
+//   editing   um gesto em andamento: o rascunho mudou e o commit ainda não veio
+//   error     a última falha, {name, message}, com o nome do erro D-Bus
+//   failed    o pedido que falhou, para o "Tentar de novo": {kind: 'apply',
+//             setting} ou {kind: 'activate', name}
 // Os nulos querem dizer desconhecido ou nenhum.
 
 // Os nove efeitos de uma cor, na ordem do protótipo e com os nomes de
@@ -53,7 +57,7 @@ const CYCLE = Object.freeze({effect: 'cycle', colors: [], brightness: DEFAULT_BR
 
 export const EMPTY = Object.freeze({
     applied: null, draft: null, lastOn: null, inFlight: null, pending: null,
-    powering: false, error: null,
+    powering: false, activating: null, editing: false, error: null, failed: null,
 });
 
 export function isPalette(effect) {
@@ -244,10 +248,21 @@ function remember(lastOn, applied) {
     return applied && applied.effect !== 'off' ? applied : lastOn;
 }
 
-// Fim de um gesto. Devolve o estado novo e o pedido a enviar, ou null.
+// Durante um gesto (arraste, matiz): só o rascunho muda, e o LastApplied que
+// chegar não o troca até o commit.
+export function draft(led, setting) {
+    return {...led, draft: setting, editing: true};
+}
+
+function busy(led) {
+    return led.inFlight !== null || led.pending !== null || led.activating !== null;
+}
+
+// Fim de um gesto. Devolve o estado novo e o pedido a enviar, ou null. Com um
+// Apply ou uma ativação em andamento, o ajuste espera.
 export function commit(led, setting) {
-    const next = {...led, draft: setting, error: null};
-    if (led.inFlight !== null)
+    const next = {...led, draft: setting, editing: false, error: null, failed: null};
+    if (led.inFlight !== null || led.activating !== null)
         return {led: {...next, pending: setting}, send: null};
     if (sameEffective(setting, led.applied))
         return {led: next, send: null};
@@ -261,7 +276,8 @@ export function finished(led, ok, error = null) {
         return {led, send: null};
     if (!ok) {
         return {
-            led: {...led, inFlight: null, pending: null, draft: led.applied, error},
+            led: {...led, inFlight: null, pending: null, draft: led.applied, error,
+                failed: {kind: 'apply', setting: led.inFlight}},
             send: null,
         };
     }
@@ -274,14 +290,57 @@ export function finished(led, ok, error = null) {
     return {led: base, send: null};
 }
 
+// Pede a ativação de um perfil, só com a fila vazia. Devolve o estado novo e
+// {activate: name}, ou send: null sem mudar nada.
+export function activate(led, name) {
+    if (busy(led))
+        return {led, send: null};
+    return {led: {...led, activating: name, error: null, failed: null}, send: {activate: name}};
+}
+
+// Resposta do Profiles.Activate. Na falha, como a de um Apply. No sucesso, o
+// pendente sai sem comparar com o aplicado, que pode ainda ser o de antes do
+// perfil (a resposta pode chegar antes do LastApplied); sem pendente e sem
+// gesto, o rascunho passa ao aplicado, que o daemon pode já ter trocado pelo
+// LED do perfil antes de responder.
+export function activateFinished(led, ok, error = null) {
+    if (led.activating === null)
+        return {led, send: null};
+    const base = {...led, activating: null};
+    if (!ok) {
+        return {
+            led: {...base, pending: null, draft: led.applied, error,
+                failed: {kind: 'activate', name: led.activating}},
+            send: null,
+        };
+    }
+    const p = led.pending;
+    if (p !== null)
+        return {led: {...base, pending: null, inFlight: p}, send: request(p)};
+    if (!led.editing)
+        base.draft = led.applied;
+    return {led: base, send: null};
+}
+
+// "Tentar de novo": o pedido que falhou, uma vez. O commit e o activate limpam
+// failed, e um segundo clique não envia nada. Uma ativação com a fila ocupada
+// não sai e guarda failed para depois.
+export function retry(led) {
+    const f = led.failed;
+    if (f === null)
+        return {led, send: null};
+    return f.kind === 'activate' ? activate(led, f.name) : commit(led, f.setting);
+}
+
 // Um LastApplied novo do daemon (rec já normalizado por lastAppliedFrom). Sem
-// nada em voo nem pendente, a interface passa a mostrá-lo.
+// nada em voo nem pendente e sem gesto, a interface passa a mostrá-lo, também
+// durante uma ativação.
 export function lastAppliedChanged(led, rec) {
     const s = fromLastApplied(rec);
     if (s === null)
         return led;
     const next = {...led, applied: s, lastOn: remember(led.lastOn, s)};
-    if (led.inFlight === null && led.pending === null)
+    if (led.inFlight === null && led.pending === null && !led.editing)
         next.draft = s;
     return next;
 }

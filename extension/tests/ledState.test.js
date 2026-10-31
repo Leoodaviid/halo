@@ -2,7 +2,8 @@
 
 import {test, ok, equal, deepEqual, run} from './assert.js';
 import {
-    EFFECTS, EMPTY, SWATCHES, controlsView, effectChoice, finished, fromLastApplied,
+    EFFECTS, EMPTY, SWATCHES, activate, activateFinished, controlsView, draft, effectChoice,
+    finished, fromLastApplied, retry,
     hueOf, hueToHex, isPalette, lastAppliedChanged, paletteShown, parseHex, powerTarget,
     profileLed, request, sameEffective, commit, usesSpeed, withBrightness, withColor,
     withSpeed,
@@ -383,6 +384,161 @@ test('Religar após login com off guardado e sem perfil: pede cycle', () => {
     ok(!controlsView(led).power.on);
     deepEqual(commit(led, powerTarget(led.lastOn, null)).send,
         {effect: 'cycle', colors: [], brightness: 10, speed: 5});
+});
+
+// ---- Perfis: a ativação na fila do LED ----
+
+const noite = {effect: 'static', colors: ['5c9fee'], brightness: 10, speed: 5};
+const noiteRec = {...noite};
+const roxo = {...pulse, colors: ['aa7cd8']};
+const busyErr = {name: 'io.github.leoodaviid.Halo1.Error.Busy', message: 'aparelho ocupado'};
+
+// Os passos de play() e mais os da ativação; devolve o estado e os pedidos.
+function playAll(led, steps) {
+    const sent = [];
+    for (const [kind, arg] of steps) {
+        let r;
+        if (kind === 'commit')
+            r = commit(led, arg);
+        else if (kind === 'draft')
+            r = {led: draft(led, arg), send: null};
+        else if (kind === 'activate')
+            r = activate(led, arg);
+        else if (kind === 'activated')
+            r = activateFinished(led, true);
+        else if (kind === 'activateFail')
+            r = activateFinished(led, false, arg);
+        else if (kind === 'last')
+            r = {led: lastAppliedChanged(led, arg), send: null};
+        else if (kind === 'retry')
+            r = retry(led);
+        else if (kind === 'ok')
+            r = finished(led, true);
+        else
+            r = finished(led, false, arg);
+        led = r.led;
+        if (r.send)
+            sent.push(r.send);
+    }
+    return {led, sent};
+}
+
+test('Ativar perfil: sai {activate: noite}, e o LastApplied do perfil vira o rascunho', () => {
+    const {led, sent} = playAll(shown(pulse), [['activate', 'noite'], ['last', noiteRec], ['activated']]);
+    deepEqual(sent, [{activate: 'noite'}]);
+    equal(led.activating, null);
+    deepEqual(led.draft, noite);
+    deepEqual(led.applied, noite);
+});
+
+for (const [order, steps] of [
+    ['LastApplied antes da resposta', [['activate', 'noite'], ['last', noiteRec], ['activated']]],
+    ['LastApplied depois da resposta', [['activate', 'noite'], ['activated'], ['last', noiteRec]]],
+]) {
+    test(`Controles depois da ativação (${order}): LED do perfil, e o brilho leva efeito e cor dele`, () => {
+        const {led} = playAll(shown(pulse), steps);
+        deepEqual(led.draft, noite);
+        const r = commit(led, withBrightness(led, 4));
+        deepEqual(r.send, {effect: 'static', colors: ['5c9fee'], brightness: 4, speed: 0});
+    });
+}
+
+for (const [order, steps] of [
+    ['LastApplied antes da resposta', [['last', noiteRec], ['activated']]],
+    ['LastApplied depois da resposta', [['activated'], ['last', noiteRec]]],
+]) {
+    test(`Gesto durante a ativação (${order}): o rascunho fica com o brilho do gesto`, () => {
+        let led = activate(shown(pulse), 'noite').led;
+        const gesture = withBrightness(led, 3);
+        const r = playAll(led, [['draft', gesture], ...steps]);
+        led = r.led;
+        deepEqual(led.draft, gesture);
+        equal(led.draft.brightness, 3);
+        const c = commit(led, led.draft);
+        deepEqual(c.send, request(gesture));
+    });
+}
+
+test('LastApplied de outro cliente durante um gesto: o rascunho não muda', () => {
+    const led = shown(pulse);
+    const gesture = withBrightness(led, 3);
+    const other = {effect: 'cycle', colors: [], brightness: 4, speed: 3};
+    const end = lastAppliedChanged(draft(led, gesture), other);
+    deepEqual(end.draft, gesture);
+    deepEqual(end.applied, other);
+    // o commit envia o gesto
+    deepEqual(commit(end, end.draft).send, request(gesture));
+});
+
+test('Ativação em andamento: o commit vira pendente e sai depois da resposta', () => {
+    const {led, sent} = playAll(shown(pulse),
+        [['activate', 'noite'], ['commit', roxo], ['last', noiteRec], ['activated']]);
+    deepEqual(sent, [{activate: 'noite'}, request(roxo)]);
+    deepEqual(led.inFlight, roxo);
+    equal(led.pending, null);
+});
+
+test('Ativação em andamento: pendente igual ao aplicado antigo sai mesmo assim', () => {
+    const old = {...pulse, brightness: 5};
+    const profile = {...pulse, colors: ['5c9fee'], brightness: 10};
+    // A resposta chega antes do LastApplied: o applied ainda é o antigo.
+    const {sent} = playAll(shown(old),
+        [['activate', 'noite'], ['commit', {...old}], ['activated'], ['last', profile]]);
+    deepEqual(sent, [{activate: 'noite'}, request(old)]);
+    equal(sent[1].brightness, 5);
+});
+
+test('Pedido do LED pendente: activate com inFlight ou pending não envia nada', () => {
+    const flying = commit(shown(pulse), roxo).led;
+    const r1 = activate(flying, 'noite');
+    equal(r1.send, null);
+    equal(r1.led, flying);
+    const waiting = commit(flying, {...pulse, colors: ['00ff00']}).led;
+    equal(activate(waiting, 'noite').send, null);
+    const activating = activate(shown(pulse), 'noite').led;
+    equal(activate(activating, 'jogo').send, null);
+});
+
+test('Ativação que falha: o rascunho volta ao aplicado, e failed guarda o nome', () => {
+    const {led} = playAll(shown(pulse),
+        [['activate', 'jogo'], ['commit', roxo], ['activateFail', busyErr]]);
+    deepEqual(led.draft, pulse);
+    equal(led.pending, null);
+    equal(led.activating, null);
+    deepEqual(led.failed, {kind: 'activate', name: 'jogo'});
+    deepEqual(led.error, busyErr);
+});
+
+test('Tentar de novo: um único pedido com a cor roxa', () => {
+    const {led, sent} = playAll(shown(pulse), [['commit', roxo], ['fail', busyErr]]);
+    deepEqual(led.failed, {kind: 'apply', setting: roxo});
+    const r = playAll(led, [['retry'], ['retry']]);
+    deepEqual(r.sent, [request(roxo)]);
+    equal(r.led.error, null);
+    equal(r.led.failed, null);
+    equal(sent.length, 1);
+    // a mensagem some quando ele dá certo
+    const end = finished(r.led, true).led;
+    equal(end.error, null);
+    deepEqual(end.applied, roxo);
+});
+
+test('Ativação de perfil que falha: o retry pede activate, não Apply', () => {
+    const {led} = playAll(shown(pulse), [['activate', 'noite'], ['activateFail', busyErr]]);
+    const r = playAll(led, [['retry'], ['retry']]);
+    deepEqual(r.sent, [{activate: 'noite'}]);
+    equal(r.led.activating, 'noite');
+});
+
+test('Mensagem some no pedido seguinte: no commit e no activate', () => {
+    const {led} = playAll(shown(pulse), [['commit', roxo], ['fail', busyErr]]);
+    ok(led.error !== null);
+    const c = commit(led, {...pulse, colors: ['00ff00']}).led;
+    equal(c.error, null);
+    equal(c.failed, null);
+    const a = activate(led, 'noite').led;
+    equal(a.error, null);
+    equal(a.failed, null);
 });
 
 run();

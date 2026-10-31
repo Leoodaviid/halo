@@ -3,18 +3,22 @@
 // Indicador na barra e painel mínimo. Só desenha: o que mostrar vem das
 // funções puras de lib/, a partir do estado recebido em update().
 
+import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';
+import Graphene from 'gi://Graphene';
 import Pango from 'gi://Pango';
 import St from 'gi://St';
 
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {HaloCarousel} from './carousel.js';
 import {HaloLedControls} from './ledControls.js';
 import {ledPaint} from './lib/art.js';
+import {profileHint, profileLabel, statusView} from './lib/feedback.js';
 import {EMPTY as LED_EMPTY, controlsView} from './lib/ledState.js';
 import {lockedText} from './lib/carousel.js';
 import {journalText} from './lib/journal.js';
@@ -34,6 +38,13 @@ const DISABLED_OPACITY = 102;
 const PANEL_STYLE = 'width: 304px; padding: 8px; spacing: 8px; font-size: 13px;';
 const ITEM_STYLE = 'padding: 0; spacing: 0;';
 const HEADER_STYLE = 'padding: 4px 4px 2px 6px; spacing: 0;';
+// O .menu-list e o .menu-item do protótipo, para o menu de perfis.
+const PROFILE_MENU_STYLE = 'min-width: 180px; padding: 5px; border-radius: 10px;';
+const PROFILE_ITEM_STYLE = 'height: 24px; min-height: 24px; padding: 0 10px 0 6px; spacing: 6px; ' +
+    'border-radius: 5px; font-size: 13px;';
+const HINT_OPACITY = 178;
+// Uma volta do spinner da linha de status, como o .spin do protótipo (.8 s).
+const SPIN_MS = 800;
 
 // Estado antes de qualquer resposta do D-Bus.
 export const INITIAL_STATE = Object.freeze({
@@ -42,9 +53,55 @@ export const INITIAL_STATE = Object.freeze({
     devicesPresent: 0,
     devices: [],
     lastApplied: null,
+    activeProfile: '',
     led: LED_EMPTY,
     unit: 'unknown',
     journal: null,
+});
+
+// Os ícones da linha de status, desenhados na cor do texto (sem depender do
+// tema de ícones): o .spin do protótipo, um anel claro com um quarto na cor
+// do texto, que gira; e o CHECK dele, no viewBox de 12 px.
+const StatusIcon = GObject.registerClass(
+class StatusIcon extends St.DrawingArea {
+    _init(kind, styleClass) {
+        super._init({
+            style_class: `halo-status-icon ${styleClass}`,
+            y_align: Clutter.ActorAlign.CENTER,
+            pivot_point: new Graphene.Point({x: 0.5, y: 0.5}),
+        });
+        this._kind = kind;
+    }
+
+    vfunc_repaint() {
+        const cr = this.get_context();
+        const [w, h] = this.get_surface_size();
+        const c = this.get_theme_node().get_foreground_color();
+        const rgba = alpha => cr.setSourceRGBA(c.red / 255, c.green / 255, c.blue / 255,
+            c.alpha / 255 * alpha);
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        if (this._kind === 'spinner') {
+            const line = 1.6;
+            const r = Math.min(w, h) / 2 - line / 2;
+            cr.setLineWidth(line);
+            rgba(0.4);
+            cr.arc(w / 2, h / 2, r, 0, 2 * Math.PI);
+            cr.stroke();
+            rgba(1);
+            cr.arc(w / 2, h / 2, r, -Math.PI / 2, 0);
+            cr.stroke();
+        } else {
+            cr.scale(w / 12, h / 12);
+            cr.setLineWidth(1.8);
+            cr.setLineJoin(Cairo.LineJoin.ROUND);
+            rgba(1);
+            cr.moveTo(2.5, 6.3);
+            cr.lineTo(4.8, 8.6);
+            cr.lineTo(9.5, 3.5);
+            cr.stroke();
+        }
+        cr.$dispose();
+    }
 });
 
 function hasLed(device) {
@@ -65,14 +122,20 @@ function button(label, onClick) {
 export const HaloIndicator = GObject.registerClass(
 class HaloIndicator extends PanelMenu.Button {
     // handlers: { start(), journal(), back(), ledDraft(s), ledCommit(s),
-    // ledPower(), prefs() }, chamados pelos botões e controles do painel. Sem eles,
-    // nada acontece. source: a fonte da temperatura na barra (COOLANT ou CPU).
+    // ledPower(), ledActivate(name), ledRetry(), listProfiles(),
+    // profileEffect(name), prefs() }, chamados pelos botões e controles do
+    // painel; listProfiles e profileEffect devolvem promessas. Sem eles, nada
+    // acontece. source: a fonte da temperatura na barra (COOLANT ou CPU).
     _init(extension, handlers = {}, source = COOLANT) {
         super._init(0.5, 'halo');
         this._handlers = handlers;
         this._source = source;
         this._state = INITIAL_STATE;
         this._ledControls = null;
+        // Cada abertura do menu de perfis tem um número: respostas de uma
+        // abertura anterior são ignoradas.
+        this._profileRequest = 0;
+        this._profileItems = [];
 
         const box = new St.BoxLayout({style_class: 'panel-status-indicators-box halo-indicator'});
         const gicon = Gio.FileIcon.new(
@@ -94,6 +157,7 @@ class HaloIndicator extends PanelMenu.Button {
         this._destroyed = false;
         this.connect('destroy', () => {
             this._destroyed = true;
+            this._profileMenu.destroy();
         });
         this.update(INITIAL_STATE);
     }
@@ -106,12 +170,34 @@ class HaloIndicator extends PanelMenu.Button {
             reactive: false, can_focus: false, style_class: 'halo-item halo-header',
         });
         header.style = HEADER_STYLE;
-        header.add_child(new St.Label({
-            text: 'halo',
-            style_class: 'halo-title',
+        // O título e, abaixo, o botão do perfil ativo (o .profile-btn).
+        const brand = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
+        });
+        brand.add_child(new St.Label({text: 'halo', style_class: 'halo-title'}));
+        const profileBox = new St.BoxLayout({style_class: 'halo-profile-box'});
+        this._profileLabel = new St.Label({
+            style_class: 'halo-profile-text',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        profileBox.add_child(this._profileLabel);
+        profileBox.add_child(new St.Icon({
+            icon_name: 'pan-down-symbolic',
+            style_class: 'halo-profile-icon',
+            y_align: Clutter.ActorAlign.CENTER,
         }));
+        this._profileButton = new St.Button({
+            style_class: 'halo-profile-btn',
+            child: profileBox,
+            can_focus: true,
+            x_align: Clutter.ActorAlign.START,
+            accessible_name: 'Perfil',
+        });
+        this._profileButton.connect('clicked', () => this._toggleProfiles());
+        brand.add_child(this._profileButton);
+        header.add_child(brand);
         this._power = new PopupMenu.Switch(false);
         this._power.reactive = false;
         this._powerButton = new St.Button({
@@ -124,6 +210,7 @@ class HaloIndicator extends PanelMenu.Button {
         this._powerButton.connect('clicked', () => this._handlers.ledPower?.());
         header.add_child(this._powerButton);
         this.menu.addMenuItem(header);
+        this._buildProfileMenu();
 
         // Com o daemon no ar: o carrossel e, abaixo, o corpo do aparelho.
         this._carouselItem = new PopupMenu.PopupBaseMenuItem({
@@ -165,6 +252,19 @@ class HaloIndicator extends PanelMenu.Button {
             style_class: 'halo-foot',
             x_expand: true,
         });
+        // Linha de status (o .status): só no aparelho com LED.
+        this._status = new St.BoxLayout({style_class: 'halo-status', x_expand: true});
+        this._statusSpinner = new StatusIcon('spinner', 'halo-status-spinner');
+        this._statusCheck = new StatusIcon('check', 'halo-status-ok');
+        this._statusText = new St.Label({
+            style_class: 'halo-status-text',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._status.add_child(this._statusSpinner);
+        this._status.add_child(this._statusCheck);
+        this._status.add_child(this._statusText);
+        foot.add_child(this._status);
         foot.add_child(new St.Widget({style_class: 'halo-hr', x_expand: true}));
         const prefs = new St.Button({
             style_class: 'halo-menu-row',
@@ -205,6 +305,7 @@ class HaloIndicator extends PanelMenu.Button {
         body.destroy_all_children();
         this._ledControls = null;
         this._renderPower();
+        this._renderStatus();
         if (!device)
             return;
         // O único LED no D-Bus do halod é o do Waterforce.
@@ -212,6 +313,7 @@ class HaloIndicator extends PanelMenu.Button {
             this._ledControls = new HaloLedControls({
                 draft: s => this._handlers.ledDraft?.(s),
                 commit: s => this._handlers.ledCommit?.(s),
+                retry: () => this._handlers.ledRetry?.(),
             });
             this._ledControls.update(this._state.led, this._state.owner);
             body.add_child(this._ledControls);
@@ -238,6 +340,107 @@ class HaloIndicator extends PanelMenu.Button {
         if (center)
             label.clutter_text.line_alignment = Pango.Alignment.CENTER;
         return label;
+    }
+
+    // Menu de perfis, no padrão do menu de efeitos (ledControls.js): um
+    // PopupMenu preso ao botão, com gerenciador próprio, no Main.uiGroup.
+    _buildProfileMenu() {
+        this._profileMenu = new PopupMenu.PopupMenu(this._profileButton, 0.0, St.Side.TOP);
+        this._profileMenu.actor.add_style_class_name('halo-profile-menu');
+        this._profileMenu.box.style = PROFILE_MENU_STYLE;
+        this._profileMenuManager = new PopupMenu.PopupMenuManager(this._profileButton);
+        this._profileMenuManager.addMenu(this._profileMenu);
+        Main.uiGroup.add_child(this._profileMenu.actor);
+        this._profileMenu.actor.hide();
+        // Fechar o painel fecha o menu de perfis.
+        this.menu.connect('open-state-changed', (_m, open) => {
+            if (!open)
+                this._profileMenu.close();
+        });
+    }
+
+    // A lista é lida de novo a cada abertura (o Save não emite sinal). O menu
+    // abre com a lista, e o efeito de cada perfil chega depois.
+    async _toggleProfiles() {
+        if (this._profileMenu.isOpen) {
+            this._profileMenu.close();
+            return;
+        }
+        if (!this._state.owner)
+            return;
+        const request = ++this._profileRequest;
+        const names = await this._handlers.listProfiles?.();
+        if (this._destroyed || request !== this._profileRequest || !this._state.owner || !names)
+            return;
+        this._profileMenu.removeAll();
+        this._profileItems = [];
+        if (names.length === 0) {
+            const empty = new PopupMenu.PopupMenuItem('Nenhum perfil salvo', {reactive: false});
+            empty.style = PROFILE_ITEM_STYLE;
+            this._profileMenu.addMenuItem(empty);
+        }
+        for (const name of names) {
+            const item = new PopupMenu.PopupMenuItem(name);
+            item.style = PROFILE_ITEM_STYLE;
+            item.label.x_expand = true;
+            // O .hint do protótipo: 11 px, com opacidade .7.
+            const hint = new St.Label({
+                style_class: 'halo-profile-hint',
+                y_align: Clutter.ActorAlign.CENTER,
+                opacity: HINT_OPACITY,
+            });
+            item.add_child(hint);
+            item.connect('activate', () => this._handlers.ledActivate?.(name));
+            this._profileItems.push({name, item});
+            this._profileMenu.addMenuItem(item);
+            this._handlers.profileEffect?.(name).then(led => {
+                if (!this._destroyed && request === this._profileRequest)
+                    hint.text = profileHint(led);
+            });
+        }
+        this._renderProfiles();
+        this._profileMenu.open();
+    }
+
+    // O botão e as linhas do menu: o ativo marcado, e nenhuma linha clicável
+    // com a fila ocupada.
+    _renderProfiles() {
+        const {owner, led, activeProfile} = this._state;
+        this._profileLabel.text = profileLabel(owner, led.activating, activeProfile);
+        this._profileButton.reactive = owner;
+        this._profileButton.can_focus = owner;
+        if (!owner)
+            this._profileMenu.close();
+        const busy = led.inFlight !== null || led.pending !== null || led.activating !== null;
+        for (const {name, item} of this._profileItems) {
+            item.setOrnament(name === activeProfile
+                ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
+            item.setSensitive(!busy);
+        }
+    }
+
+    // A linha de status do aparelho atual, só com o daemon no ar e LED.
+    _renderStatus() {
+        const device = this._carousel.device;
+        const shown = this._state.owner && hasLed(device);
+        this._status.visible = shown;
+        const view = shown ? statusView(this._state.led, device.name) : {icon: null, text: ''};
+        this._statusText.text = view.text;
+        this._statusCheck.visible = view.icon === 'check';
+        const spinning = view.icon === 'spinner';
+        this._statusSpinner.visible = spinning;
+        if (spinning && !this._statusSpinner.get_transition('spin')) {
+            const t = new Clutter.PropertyTransition({
+                property_name: 'rotation-angle-z',
+                duration: SPIN_MS,
+                repeat_count: -1,
+            });
+            t.set_from(0);
+            t.set_to(360);
+            this._statusSpinner.add_transition('spin', t);
+        } else if (!spinning) {
+            this._statusSpinner.remove_transition('spin');
+        }
     }
 
     // O liga/desliga segue o LED do aparelho atual.
@@ -297,6 +500,8 @@ class HaloIndicator extends PanelMenu.Button {
             this._ledControls?.update(state.led, state.owner);
         }
         this._renderPower();
+        this._renderProfiles();
+        this._renderStatus();
         this._reason.visible = down && view.reason !== null;
         this._reason.label.text = down && view.reason ? view.reason : '';
         this._actions.visible = down;
