@@ -32,6 +32,8 @@ loginctl enable-linger "$(id -un)"
 
 Sem o grupo, o `halod` não alcança o Castor3 fora da sessão e, no logout, manda o `E0` de 80 °C e pausa a CPU até o próximo login (ver "Guarda da sessão gráfica" em [architecture.md](architecture.md)). Sem o linger, o `halod` para no logout, como antes.
 
+Sem o grupo, a **troca de usuário** ("Trocar de usuário" com a sessão aberta) deixa o Castor3 sem proteção. O logind passa a ACL do nó para a outra sessão, mas a sessão gráfica do primeiro usuário continua, então não há `End()`. Os envios do `halod` passam a falhar, o watchdog o mata e o `halod --waterforce-cpu-safe` também recebe acesso negado: o aparelho fica no último Tctl, que pode ser frio. Reagir à troca de sessão não resolve, porque o envio pode chegar depois de a ACL sair (a mesma corrida que levou à guarda). Com o grupo `plugdev` e a regra atual, o acesso não depende de qual sessão está ativa, e a troca de usuário não muda nada.
+
 ## Verificar
 
 ```sh

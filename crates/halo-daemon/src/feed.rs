@@ -107,6 +107,18 @@ struct State {
     cold: bool,
 }
 
+impl State {
+    /// `E1` e `E0` de 80 °C aceitos: sessão nova, com a janela segura.
+    fn started(&mut self, now: Instant) {
+        self.window_until = Some(now + SAFE_WINDOW);
+        self.last_data = None;
+        self.last_sent = Some(now);
+        self.disabled = None;
+        self.cold = false;
+        self.ok_seq += 1;
+    }
+}
+
 /// Estado do feed, compartilhado entre a thread do Waterforce, os ticks e o
 /// D-Bus. Clonar compartilha o mesmo estado.
 #[derive(Clone)]
@@ -235,14 +247,7 @@ impl Feed {
         let now = self.clock.now();
         let mut s = self.state();
         match result {
-            Ok(Fed::Started(_)) => {
-                s.window_until = Some(now + SAFE_WINDOW);
-                s.last_data = None;
-                s.last_sent = Some(now);
-                s.disabled = None;
-                s.cold = false;
-                s.ok_seq += 1;
-            }
+            Ok(Fed::Started(_)) => s.started(now),
             Ok(Fed::Data) => {
                 if !in_window {
                     s.last_data = Some(now);
@@ -272,6 +277,14 @@ impl Feed {
                 self.recover(backend);
             }
         }
+    }
+
+    /// Uma sessão nova que o próprio feed não abriu (o `E0` do
+    /// `SetFanCurve` com o aparelho reconectado): a janela segura conta a
+    /// partir dela, como num tick.
+    pub fn note_started(&self) {
+        let now = self.clock.now();
+        self.state().started(now);
     }
 
     fn recover(&self, backend: &mut dyn WaterforceBackend) {

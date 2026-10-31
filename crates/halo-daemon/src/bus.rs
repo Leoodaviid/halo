@@ -408,10 +408,18 @@ impl Speed {
             .run_speed(move |b| {
                 feed.curve_allowed()?;
                 let celsius = cpu_feed::wire_celsius(feed.read_cpu().ok());
-                if b.feed_cpu(celsius)? != Fed::Data {
-                    return Err(Error::Device(
-                        "a sessão do feed da CPU recomeçou; a curva não foi gravada".into(),
-                    ));
+                match b.feed_cpu(celsius)? {
+                    Fed::Data => {}
+                    started => {
+                        // Aparelho reconectado: o E0 abriu uma sessão nova,
+                        // com 80 °C, e a janela segura começa agora.
+                        if let Fed::Started(_) = started {
+                            feed.note_started();
+                        }
+                        return Err(Error::Device(
+                            "a sessão do feed da CPU recomeçou; a curva não foi gravada".into(),
+                        ));
+                    }
                 }
                 b.set_curve(&request)
             })
@@ -1493,6 +1501,29 @@ mod tests {
         // Um ping pode cobrir dois envios, quando o worker conclui o do
         // próprio tick antes do `progressed`; em três ticks, pelo menos dois.
         assert!(f.notifier.pings() >= pings + 2, "{}", f.notifier.pings());
+    }
+
+    #[test]
+    fn curva_que_encontra_sessao_nova_abre_a_janela() {
+        // Achado do cross-review: o aparelho reconectado entre dois ticks faz
+        // o E0 do SetFanCurve abrir uma sessão nova (E0 de 80 °C). O feed
+        // precisa contar a janela de 8 s a partir dela.
+        let f = fed(Some(40_500), true);
+        for _ in 0..6 {
+            f.tick();
+        }
+        assert_eq!(f.feeds().last(), Some(&Call::Feed(41)));
+        f.h.backend.lose_session();
+        assert!(f.fan_curve(&STEPS).is_err());
+        // O E0 da curva foi o primeiro 80 °C; o tick logo depois respeita o
+        // intervalo mínimo, e os três seguintes, até os 8 s, também são 80.
+        let from = f.feeds().len();
+        for _ in 0..4 {
+            f.tick();
+        }
+        assert_eq!(f.feeds()[from..], vec![Call::Feed(80); 3]);
+        f.tick();
+        assert_eq!(f.feeds().last(), Some(&Call::Feed(41)));
     }
 
     #[test]
