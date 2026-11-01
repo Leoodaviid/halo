@@ -12,7 +12,10 @@ Fase de análise concluída em 2026-10-20. Já existem ferramentas que só leem,
 cargo run -q -p halo-cli -- probe it5702 --raw          # placa-mãe
 cargo run -q -p halo-cli -- telemetry waterforce         # fan, bomba e líquido
 cargo run -q -p halo-cli -- probe waterforce --raw      # leituras do Waterforce
+cargo run -q -p halo-cli -- probe ram --raw             # SPD dos pentes (exige o lax)
 ```
+
+O `halo probe ram` só lê o arquivo `eeprom` que o driver `ee1004` do kernel publica no sysfs: não abre `/dev/i2c-*` e não precisa de root nem do grupo `i2c`. O barramento só existe com o parâmetro de boot `acpi_enforce_resources=lax` (ver "RAM Kingston DDR4" em [docs/hardware.md](docs/hardware.md)). Para cada pente, mostra o tipo, o fabricante, o part number e se o RGB é do tipo que o FURY CTRL controla (bytes 330, 359 e 360 do SPD). Sem o adaptador ou sem o `ee1004`, sai com código 3.
 
 A telemetria lê o hwmon do driver `gigabyte_waterforce`, sem abrir o aparelho. Uma temperatura do líquido acima de 100 °C aparece como `Líquido:  inválido (o aparelho informou 224 °C)`, e uma nota no stderr explica o caso. O Castor3 já informou valores assim, e eles só voltaram ao normal depois de desligar o PC com corte de energia (ver "Bomba plana e temperatura errada no `DA`" em [docs/hardware.md](docs/hardware.md)). Fan e bomba continuam sendo mostradas, e o código de saída continua 0.
 
@@ -266,4 +269,4 @@ Veja:
 | AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo analisado no GCC, implementação pendente |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |
-| RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; controlador em `0x27` (protocolo do HyperX, segundo o FURY CTRL); falta saber pelo SPD se o pente tem RGB | Adiado: SMBus bloqueado pelo ACPI; estudo do firmware em `docs/hardware.md` |
+| RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; controlador em `0x27` (protocolo do HyperX, segundo o FURY CTRL) | SPD lido pelo `halo probe ram`, só com o `acpi_enforce_resources=lax`: Fury Beast Refresh, suportado pelo FURY CTRL. Controle em `0x27` pendente, numa decisão à parte |

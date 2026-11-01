@@ -42,9 +42,12 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 1. Mouse G502 SE HERO.
 2. Teclado Redragon (só efeitos e brilho do LED vermelho). Alto risco: só depois de analisar o software oficial da Redragon com o REA. Ver `hardware.md`.
 
-## Fase 5: RAM (decisão pendente)
+## Fase 5: RAM
 
-Só se decidirmos liberar o SMBus com `acpi_enforce_resources=lax`. Kingston DDR4 (`KF3200C16D4/16GX`), controlada, segundo o software oficial (FURY CTRL), pelo controlador em `0x27` com os registradores do HyperX. Com o lax ligado em 2026-10-31 (e a regra `72-halo-smbus-no-uaccess.rules`), o SPD dos dois pentes (`0x52`, `0x53`) diz `F`/modelo 4/`0x23`: Kingston Fury Beast Refresh, suportado pelo FURY CTRL. Próximo passo: uma ferramenta do halo que só lê o SPD pelo `ee1004` e, numa decisão à parte, o controle em `0x27`. O estudo do SMM do BIOS (F21/F20g) mostrou que o firmware só usa o SMBus em Sx, reset e botão de energia. Em 2026-10-31, o estudo do firmware (só leitura) mapeou quem usa o SMBus no AML e as transações da detecção do OpenRGB, e recomendou um go condicional, só para leitura do SPD pelo `ee1004`. Ver "RAM Kingston DDR4" em [hardware.md](hardware.md).
+O SMBus foi liberado com `acpi_enforce_resources=lax` em 2026-10-31. Kingston DDR4 (`KF3200C16D4/16GX`), controlada, segundo o software oficial (FURY CTRL), pelo controlador em `0x27` com os registradores do HyperX. Com o lax (e a regra `72-halo-smbus-no-uaccess.rules`), o SPD dos dois pentes (`0x52`, `0x53`) diz `F`/modelo 4/`0x23`: Kingston Fury Beast Refresh, suportado pelo FURY CTRL. O estudo do SMM do BIOS (F21/F20g) mostrou que o firmware só usa o SMBus em Sx, reset e botão de energia. Em 2026-10-31, o estudo do firmware (só leitura) mapeou quem usa o SMBus no AML e as transações da detecção do OpenRGB, e recomendou um go condicional, só para leitura do SPD pelo `ee1004`. Ver "RAM Kingston DDR4" em [hardware.md](hardware.md).
+
+1. ~~Ferramenta que só lê o SPD.~~ Feito em 2026-11-01 (change `ram-spd-probe`): `halo probe ram`, que lê só o `eeprom` do `ee1004` no sysfs, acha o barramento pelo nome do adaptador e aplica o critério do FURY CTRL.
+2. Controle do RGB em `0x27` (registradores do HyperX), numa decisão à parte.
 
 ## Perguntas em aberto
 

@@ -37,6 +37,7 @@ fn ajuda_dos_comandos() {
         &["probe", "it5702", "--help"][..],
         &["probe", "waterforce", "--help"],
         &["telemetry", "waterforce", "--help"],
+        &["probe", "ram", "--help"],
     ] {
         let out = halo().args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}");
@@ -126,4 +127,169 @@ fn telemetria_recusa_intervalo_curto() {
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("mínimo é 2 segundos"), "{err}");
+}
+
+#[test]
+fn ajuda_da_ram_diz_que_so_le_o_sysfs() {
+    let out = halo().args(["probe", "ram", "--help"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("ee1004"), "{text}");
+    assert!(text.contains("não abre /dev/i2c"), "{text}");
+}
+
+/// SPD de 512 bytes com os bytes lidos em 2026-10-31 e o resto zerado.
+fn spd_kingston() -> Vec<u8> {
+    let mut spd = vec![0u8; 512];
+    spd[2] = 0x0C;
+    spd[320] = 0x01;
+    spd[321] = 0x98;
+    spd[329..349].copy_from_slice(b"KF3200C16D4/16GX    ");
+    spd[359] = 0x04;
+    spd[360] = 0x23;
+    spd
+}
+
+/// sysfs falso com o adaptador PIIX4 e um `ee1004` por item de `eeproms`.
+fn sys_with_ram(eeproms: &[(&str, &[u8])]) -> tempfile::TempDir {
+    let sys = tempfile::tempdir().unwrap();
+    let adapter = sys.path().join("bus/i2c/devices/i2c-0");
+    fs::create_dir_all(&adapter).unwrap();
+    fs::write(adapter.join("name"), "SMBus PIIX4 adapter port 0 at 0b00\n").unwrap();
+    for (instance, bytes) in eeproms {
+        let dir = adapter.join(instance);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("name"), "ee1004\n").unwrap();
+        fs::write(dir.join("eeprom"), bytes).unwrap();
+    }
+    sys
+}
+
+#[test]
+fn ram_dois_pentes() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0052", &spd), ("0-0053", &spd)]);
+    let out = run(&["probe", "ram"], sys.path());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("0-0052 em SMBus PIIX4 adapter port 0 at 0b00"),
+        "{text}"
+    );
+    assert!(
+        text.contains("0-0053 em SMBus PIIX4 adapter port 0 at 0b00"),
+        "{text}"
+    );
+    assert!(text.contains("SPD:          0x52 (slot 2)"), "{text}");
+    assert!(text.contains("Tipo:         DDR4"), "{text}");
+    assert!(text.contains("Fabricante:   Kingston [01 98]"), "{text}");
+    assert!(text.contains("Part number:  KF3200C16D4/16GX\n"), "{text}");
+    assert_eq!(text.matches("Fury Beast Refresh").count(), 2, "{text}");
+    assert!(!text.contains("Bytes brutos"), "{text}");
+}
+
+#[test]
+fn ram_sem_adaptador() {
+    let sys = sys_with_other_device();
+    let out = run(&["probe", "ram"], sys.path());
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("acpi_enforce_resources=lax"), "{err}");
+    assert!(err.contains("docs/hardware.md"), "{err}");
+}
+
+#[test]
+fn ram_adaptador_sem_ee1004() {
+    let sys = sys_with_ram(&[]);
+    let out = run(&["probe", "ram"], sys.path());
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("ee1004"), "{err}");
+}
+
+#[test]
+fn ram_spd_curto_ao_lado_de_um_bom() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0052", &spd), ("0-0053", &spd[..256])]);
+    let out = run(&["probe", "ram"], sys.path());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    let short = text.split("0-0053 em").nth(1).unwrap();
+    assert!(short.contains("256 bytes"), "{text}");
+    assert!(!short.contains("Part number"), "{text}");
+}
+
+#[test]
+fn ram_so_spd_curto() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0053", &spd[..256])]);
+    let out = run(&["probe", "ram"], sys.path());
+    assert_eq!(out.status.code(), Some(5));
+}
+
+/// Tira a leitura do `eeprom`. Devolve falso quando o modo não bloqueia
+/// (rodando como root).
+fn deny(sys: &Path, instance: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let eeprom = sys
+        .join("bus/i2c/devices/i2c-0")
+        .join(instance)
+        .join("eeprom");
+    fs::set_permissions(&eeprom, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&eeprom).is_ok() {
+        eprintln!("aviso: o modo 000 não bloqueia a leitura (root?); teste pulado");
+        return false;
+    }
+    true
+}
+
+#[test]
+fn ram_sem_permissao_ao_lado_de_um_bom() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0052", &spd), ("0-0053", &spd)]);
+    if !deny(sys.path(), "0-0053") {
+        return;
+    }
+    let out = run(&["probe", "ram"], sys.path());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(text.contains("sem permissão"), "{text}");
+    assert!(text.contains("Fury Beast Refresh"), "{text}");
+}
+
+#[test]
+fn ram_so_sem_permissao() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0053", &spd)]);
+    if !deny(sys.path(), "0-0053") {
+        return;
+    }
+    let out = run(&["probe", "ram"], sys.path());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(4), "{text}");
+    assert!(text.contains("sem permissão"), "{text}");
+}
+
+#[test]
+fn ram_bytes_brutos() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0052", &spd)]);
+    let out = run(&["probe", "ram", "--raw"], sys.path());
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let rows: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.contains("Bytes brutos:"))
+        .skip(1)
+        .collect();
+    assert_eq!(rows.len(), 32, "{text}");
+    assert!(rows[0].starts_with("    000: 00 00 0c 00"), "{text}");
+    assert!(rows[31].starts_with("    1f0: "), "{text}");
+    for row in &rows {
+        assert_eq!(
+            row.split_once(": ").unwrap().1.split(' ').count(),
+            16,
+            "{row}"
+        );
+    }
+    assert!(text.contains("    140: 01 98"), "{text}");
 }

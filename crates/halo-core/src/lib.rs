@@ -5,4 +5,5 @@
 pub mod g502;
 pub mod hid;
 pub mod it5702;
+pub mod ram;
 pub mod waterforce;
