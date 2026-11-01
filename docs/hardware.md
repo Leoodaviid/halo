@@ -1059,6 +1059,21 @@ O lax foi ligado a pedido do usuário. Antes do boot, ele instalou `/etc/udev/ru
 
 Pelo critério do FURY CTRL, os dois pentes são **KingstonFury_Beast_Refresh** e são suportados: marca `F`, modelo 4 e byte 360 = `0x23`. O `0x23` também é o `FURY_MODEL_BEAST_DDR4` que o OpenRGB lê no reg `0x06` do controlador. Os pentes estão nos slots de SPD `0x52` e `0x53` (índices 2 e 3). O byte 364 é o único que difere entre os dois (`C`/`B`), e o significado dele não foi confirmado. Os bytes 368–375 trazem 8 dígitos ASCII diferentes em cada pente.
 
+### Atualização da BIOS para a F22d (2026-11-01)
+
+O usuário atualizou a BIOS para a **F22d** (18/08/2026). O zip oficial `mb_bios_b550m-aorus-elite_8arnr013_f22d.zip` (sha256 `84197d4c…3377`) está em `tools/samples/gigabyte-b550m-aorus-elite-bios/` e foi extraído com o UEFIExtract em `extracted/uefi-f22d/`. Tudo abaixo foi conferido só lendo a máquina e a imagem:
+
+- **Máquina:** o lax continua no `/proc/cmdline`, o GRUB não foi afetado, e os avisos do kernel, os barramentos `i2c-0..2`, as instâncias do `ee1004` (`0-0052`, `0-0053`, `2-0051`) e as permissões (`root:i2c 660`, sem ACL do usuário) estão iguais. O SPD dos dois pentes não mudou (bytes 330, 359 e 360 = `F`, `0x04`, `0x23`).
+- **ACPI (tabelas tiradas da imagem):** os quatro DSDT da F22d são idênticos aos do F21. A SSDT `GSWApp` cresceu de 47.058 para 47.688 bytes:
+  - métodos novos `EM02`–`EM05` (formatação de texto), `EZW9`, `EZWA` e `MEMF`, e saíram o `EZW7` e o `EZW8`;
+  - um comando novo no `WMBB` (`0x96`);
+  - a `PFMH` (pentes) e a `GSAT` (VRM e DACs) não mudaram.
+
+  O `aml_field_callers.py` dá o mesmo grafo nas duas versões (116 métodos, 25 raízes, os mesmos caminhos de `_PTS`, `_WAK` e `WMBB` até a `SMBI`), e nenhum método novo chega à região.
+- **SMM:** o `smm_triage.py` dá a mesma lista no F21 e na F22d. O `GbtCrbSmm`, o `IT8297LedSmm` e o `ResetSmi`, os únicos que usam o protocolo de SMBus, são idênticos byte a byte aos do F21. Só o `SmBusSmm` mudou de hash, e ele continua sem registrar tratador nenhum.
+
+As conclusões das seções "Quem usa o SMBus no firmware" e "SMM do BIOS" valem para a F22d. A diferença é que agora elas se apoiam na imagem da mesma versão que está instalada, e não num vizinho. As tabelas que rodam na máquina (`acpidump`) não foram tiradas de novo; o kernel, porém, dá os mesmos avisos e as mesmas regiões (`\GSA1.SMBI` e `\GSA1.SMG0`).
+
 ## Referências
 
 - Código do OpenRGB clonado em `/mnt/workspace/tools/repos/openrgb` (commit `72262b8`). Arquivos relevantes em `Controllers/`:
