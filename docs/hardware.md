@@ -1074,6 +1074,20 @@ O usuário atualizou a BIOS para a **F22d** (18/08/2026). O zip oficial `mb_bios
 
 As conclusões das seções "Quem usa o SMBus no firmware" e "SMM do BIOS" valem para a F22d. A diferença é que agora elas se apoiam na imagem da mesma versão que está instalada, e não num vizinho. As tabelas que rodam na máquina (`acpidump`) não foram tiradas de novo; o kernel, porém, dá os mesmos avisos e as mesmas regiões (`\GSA1.SMBI` e `\GSA1.SMG0`).
 
+### Primeira execução do `halo probe ram` (2026-11-01)
+
+O usuário rodou, no terminal dele e sem sudo, `target/debug/halo probe ram`, `halo probe ram --raw` e `strace -f -e trace=openat target/debug/halo probe ram`, com a BIOS F22d e o lax ligado. O halo não mandou nada ao barramento: só leu o sysfs, e a troca de página foi feita pelo kernel.
+
+| Instância | Adaptador | Resultado |
+|---|---|---|
+| `0-0052` (SPD `0x52`, slot 2) | `SMBus PIIX4 adapter port 0 at 0b00` | DDR4 `0x0C`, Kingston `01 98`, `KF3200C16D4/16GX`, suportado pelo FURY CTRL: Fury Beast Refresh (marca `F`, modelo 4, byte 360 = `0x23`) |
+| `0-0053` (SPD `0x53`, slot 3) | `SMBus PIIX4 adapter port 0 at 0b00` | Igual ao `0-0052` |
+| `2-0051` (SPD `0x51`) | `SMBus PIIX4 adapter port 1 at 0b20` (ASF) | Sem resposta (`ENXIO`), como em 2026-10-31 |
+
+- **Código de saída:** 0.
+- **`strace`:** só aparecem `openat` em `/sys/bus/i2c/devices`: os diretórios, os arquivos `name` de todos os adaptadores e dos filhos de `i2c-0` e `i2c-2` (inclusive as instâncias `dummy` em `0x36`/`0x37`, descartadas pelo nome) e os três `eeprom`, todos com `O_RDONLY`. Nenhum `/dev/i2c-*` foi aberto. O `i2c-1` (porta 2) não tem filhos.
+- **SPD bruto:** os dois pentes só diferem nos bytes 324–328 (fim da data de fabricação e número de série), 352 e 364 (`C`/`B` nos dois) e 370–376, os dígitos ASCII que começam no 369 (e não no 368, como dizia a seção de 2026-10-31). O dump não fica no repositório por causa do número de série.
+
 ## Referências
 
 - Código do OpenRGB clonado em `/mnt/workspace/tools/repos/openrgb` (commit `72262b8`). Arquivos relevantes em `Controllers/`:

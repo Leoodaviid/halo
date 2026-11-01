@@ -9,6 +9,7 @@ use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 use clap::{ArgGroup, Parser, Subcommand};
 use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
+use halo_core::ram;
 use halo_core::waterforce::curve::Curve;
 use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
 use halo_core::waterforce::probe::{
@@ -159,6 +160,14 @@ enum ProbeDevice {
         #[arg(long)]
         raw: bool,
     },
+    /// Pentes DDR4 no SMBus da placa. Só lê o arquivo eeprom que o driver ee1004
+    /// do kernel publica no sysfs; não abre /dev/i2c. Exige o
+    /// acpi_enforce_resources=lax.
+    Ram {
+        /// Mostra também os 512 bytes do SPD de cada pente.
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -203,6 +212,9 @@ fn main() -> ExitCode {
             }
             Err(e) => fail(&e, waterforce_probe_exit_code(&e)),
         },
+        Command::Probe {
+            device: ProbeDevice::Ram { raw },
+        } => probe_ram(sys, raw),
         Command::Telemetry {
             device: TelemetryDevice::Waterforce { watch },
         } => {
@@ -537,6 +549,150 @@ fn waterforce_probe_exit_code(err: &wf_probe::ProbeError) -> u8 {
         wf_probe::ProbeError::Open(OpenError::PermissionDenied(_)) => EXIT_PERMISSION,
         _ => EXIT_FAILURE,
     }
+}
+
+/// O que aconteceu com uma instância do `ee1004`, para o código de saída.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RamOutcome {
+    Decoded,
+    /// SPD sem 512 bytes.
+    Short,
+    PermissionDenied,
+    NoResponse,
+    Failed,
+}
+
+/// `0` com algum SPD decodificado; senão `4` com algum `EACCES`, ou `5`. A
+/// falta de adaptador ou de `ee1004` (código 3) é tratada antes.
+fn ram_exit_code(outcomes: &[RamOutcome]) -> u8 {
+    if outcomes.contains(&RamOutcome::Decoded) {
+        0
+    } else if outcomes.contains(&RamOutcome::PermissionDenied) {
+        EXIT_PERMISSION
+    } else {
+        EXIT_FAILURE
+    }
+}
+
+const RAM_DOC: &str = "Veja \"RAM Kingston DDR4\" em docs/hardware.md.";
+
+fn ram_find_message(err: &ram::FindError) -> String {
+    match err {
+        ram::FindError::NoAdapter => format!(
+            "o SMBus da placa não está registrado: nenhum adaptador \"{}\" no sysfs. \
+             O kernel só o cria com o parâmetro de boot acpi_enforce_resources=lax. {RAM_DOC}",
+            ram::ADAPTER_PREFIX
+        ),
+        ram::FindError::NoEe1004 { adapters } => format!(
+            "o SMBus está registrado ({}), mas o driver ee1004 não tem nenhuma instância nele: \
+             o módulo não está carregado ou o kernel não achou pentes. Não é falta do \
+             acpi_enforce_resources=lax, que já criou o adaptador. {RAM_DOC}",
+            adapters.join(", ")
+        ),
+        ram::FindError::Io(_) => err.to_string(),
+    }
+}
+
+fn probe_ram(sys: &Path, raw: bool) -> ExitCode {
+    let slots = match ram::find(sys) {
+        Ok(s) => s,
+        Err(e @ ram::FindError::Io(_)) => return fail(&e, EXIT_FAILURE),
+        Err(e) => return fail(&ram_find_message(&e), EXIT_NOT_FOUND),
+    };
+    let (text, outcomes) = format_ram(&slots, raw);
+    print!("{text}");
+    ExitCode::from(ram_exit_code(&outcomes))
+}
+
+fn format_ram(slots: &[ram::SpdSlot], raw: bool) -> (String, Vec<RamOutcome>) {
+    let mut out = String::new();
+    let mut outcomes = Vec::new();
+    for (i, s) in slots.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let _ = writeln!(out, "{} em {}", s.instance, s.adapter);
+        let _ = writeln!(
+            out,
+            "  SPD:          0x{:02x} (slot {})",
+            s.address,
+            s.slot()
+        );
+        let bytes = match &s.read {
+            ram::SpdRead::Bytes(b) => b,
+            ram::SpdRead::NoResponse => {
+                let _ = writeln!(out, "  Leitura:      sem resposta (ENXIO)");
+                outcomes.push(RamOutcome::NoResponse);
+                continue;
+            }
+            ram::SpdRead::PermissionDenied => {
+                let _ = writeln!(out, "  Leitura:      sem permissão (EACCES)");
+                outcomes.push(RamOutcome::PermissionDenied);
+                continue;
+            }
+            ram::SpdRead::Failed(e) => {
+                let _ = writeln!(out, "  Leitura:      erro: {e}");
+                outcomes.push(RamOutcome::Failed);
+                continue;
+            }
+        };
+        let info = match ram::decode(bytes) {
+            Ok(info) => info,
+            Err(e) => {
+                let _ = writeln!(out, "  Leitura:      erro: {e}");
+                outcomes.push(RamOutcome::Short);
+                continue;
+            }
+        };
+        outcomes.push(RamOutcome::Decoded);
+        out.push_str(&format_spd(&info));
+        if raw {
+            let _ = writeln!(out, "  Bytes brutos:");
+            for (row, chunk) in bytes.chunks(16).enumerate() {
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+                let _ = writeln!(out, "    {:03x}: {}", row * 16, hex.join(" "));
+            }
+        }
+    }
+    (out, outcomes)
+}
+
+fn format_spd(info: &ram::SpdInfo) -> String {
+    let mut out = String::new();
+    let kind = if info.is_ddr4() {
+        format!("DDR4 [0x{:02X}]", info.memory_type)
+    } else {
+        format!("0x{:02X} (não é DDR4)", info.memory_type)
+    };
+    let [m0, m1] = info.manufacturer;
+    let maker = if info.is_kingston() {
+        format!("Kingston [{m0:02x} {m1:02x}]")
+    } else {
+        format!("{m0:02x} {m1:02x}")
+    };
+    let _ = writeln!(out, "  Tipo:         {kind}");
+    let _ = writeln!(out, "  Fabricante:   {maker}");
+    let _ = writeln!(out, "  Part number:  {}", info.part_number);
+    let verdict = match info.verdict {
+        ram::Verdict::NotDdr4 => "sem veredito (não é DDR4)".to_owned(),
+        ram::Verdict::NotKingston => "não é Kingston, sem veredito".to_owned(),
+        ram::Verdict::Supported { brand, model, name } => {
+            let detail = format!(
+                "marca {}, modelo {model}, byte 360 = 0x{:02X}",
+                brand.letter(),
+                info.rgb_type
+            );
+            match name {
+                Some(name) => format!("suportado pelo FURY CTRL: {name} ({detail})"),
+                None => format!(
+                    "suportado pelo FURY CTRL: modelo desconhecido 0x{model:02X} ({detail})"
+                ),
+            }
+        }
+        ram::Verdict::NotSupported { reason } => format!("não suportado: {reason}"),
+    };
+    let _ = writeln!(out, "  RGB:          {verdict}");
+    out
 }
 
 fn telemetry_exit_code(err: &TelemetryError) -> u8 {
@@ -968,6 +1124,38 @@ mod tests {
                 "{msg}"
             );
             assert!(!msg.contains("udev"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn codigos_de_saida_da_ram() {
+        use RamOutcome::*;
+        assert_eq!(ram_exit_code(&[Decoded, PermissionDenied]), 0);
+        assert_eq!(ram_exit_code(&[NoResponse, Decoded]), 0);
+        assert_eq!(
+            ram_exit_code(&[PermissionDenied, NoResponse]),
+            EXIT_PERMISSION
+        );
+        assert_eq!(ram_exit_code(&[NoResponse, Short]), EXIT_FAILURE);
+        assert_eq!(ram_exit_code(&[Failed]), EXIT_FAILURE);
+    }
+
+    #[test]
+    fn mensagens_da_ram_sem_barramento() {
+        let none = ram_find_message(&ram::FindError::NoAdapter);
+        assert!(none.contains("acpi_enforce_resources=lax"), "{none}");
+        assert!(none.contains("docs/hardware.md"), "{none}");
+        let no_ee = ram_find_message(&ram::FindError::NoEe1004 {
+            adapters: vec!["SMBus PIIX4 adapter port 0 at 0b00".into()],
+        });
+        assert!(no_ee.contains("ee1004"), "{no_ee}");
+        assert!(no_ee.contains("acpi_enforce_resources=lax"), "{no_ee}");
+        assert!(no_ee.contains("docs/hardware.md"), "{no_ee}");
+        for msg in [none, no_ee] {
+            assert!(
+                !msg.contains("i2cset") && !msg.contains("modprobe"),
+                "{msg}"
+            );
         }
     }
 
