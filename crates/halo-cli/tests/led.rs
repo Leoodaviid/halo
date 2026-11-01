@@ -307,10 +307,233 @@ fn ram_ajuda_lista_os_comandos() {
     let out = halo().args(["led", "ram", "--help"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    for name in ["off", "on", "default", "static", "--color", "--brightness"] {
+    for name in [
+        "off",
+        "on",
+        "default",
+        "static",
+        "restore",
+        "suspend",
+        "--color",
+        "--brightness",
+    ] {
         assert!(text.contains(name), "{name}: {text}");
     }
     assert!(text.contains("0 a 100"), "{text}");
     assert!(text.contains("Não lê os pentes"), "{text}");
     assert!(!text.contains("--sys-root"), "{text}");
+}
+
+/// Acrescenta ao sysfs falso de `ram_fake` o SPD `instance` do Beast Refresh.
+fn add_spd(sys: &Path, instance: &str) {
+    let dir = sys.join("bus/i2c/devices/i2c-0").join(instance);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("name"), "ee1004\n").unwrap();
+    fs::write(dir.join("eeprom"), spd_beast_refresh()).unwrap();
+}
+
+/// Diretório do estado em `0755`: o `tempdir` segue o umask, e um diretório
+/// gravável pelo grupo seria recusado pelo restore.
+fn state_dir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// Grava `text` como estado em `dir`, com o modo dado.
+fn write_state(dir: &Path, text: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = dir.join("ram-led");
+    fs::write(&file, text).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn run_ram_state(args: &[&str], sys: &Path, dev: &Path, state: &Path) -> std::process::Output {
+    halo()
+        .args(args)
+        .arg("--state-dir")
+        .arg(state)
+        .arg("--sys-root")
+        .arg(sys)
+        .arg("--dev-root")
+        .arg(dev)
+        .output()
+        .unwrap()
+}
+
+const WHITE_ON: &str =
+    "version=1\neffect=static\ncolor=ffffff\nbrightness=80\npower=on\nspd=0-0052,0-0053\n";
+
+#[test]
+fn ram_estado_nao_e_gravado_sem_aplicar() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o644);
+    let state = state_dir();
+    let out = run_ram_state(
+        &["led", "ram", "static", "--color", "ffffff", "--dry-run"],
+        sys.path(),
+        &dev,
+        state.path(),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!state.path().join("ram-led").exists());
+    // Nó que é um arquivo comum: o ioctl falha e nada é aplicado.
+    let out = run_ram_state(
+        &["led", "ram", "static", "--color", "ffffff"],
+        sys.path(),
+        &dev,
+        state.path(),
+    );
+    assert_eq!(out.status.code(), Some(5));
+    assert!(!state.path().join("ram-led").exists());
+}
+
+#[test]
+fn ram_restore_e_suspend_sem_estado() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o000);
+    let state = state_dir();
+    for action in ["restore", "suspend"] {
+        let out = run_ram_state(&["led", "ram", action], sys.path(), &dev, state.path());
+        assert_eq!(out.status.code(), Some(0), "{action}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("nenhum estado salvo"), "{action}: {text}");
+    }
+}
+
+#[test]
+fn ram_restore_recusa_estado_gravavel_por_outros() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o000);
+    let state = state_dir();
+    write_state(state.path(), WHITE_ON, 0o666);
+    for action in ["restore", "suspend"] {
+        let out = run_ram_state(&["led", "ram", action], sys.path(), &dev, state.path());
+        assert_eq!(out.status.code(), Some(5), "{action}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("outros usuários"), "{action}: {err}");
+    }
+    write_state(
+        state.path(),
+        &WHITE_ON.replace("version=1", "version=2"),
+        0o644,
+    );
+    let out = run_ram_state(&["led", "ram", "restore"], sys.path(), &dev, state.path());
+    assert_eq!(out.status.code(), Some(5));
+}
+
+#[test]
+fn ram_restore_simulacao() {
+    let empty = tempfile::tempdir().unwrap();
+    let state = state_dir();
+    write_state(state.path(), WHITE_ON, 0o644);
+    let out = run_ram_state(
+        &["led", "ram", "restore", "--dry-run"],
+        empty.path(),
+        empty.path(),
+        state.path(),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("static ffffff, brilho 80, ligado"), "{text}");
+    for a in ["0x5a", "0x5b"] {
+        assert!(
+            text.contains(&format!("{a}  escreve 0x31 = 0xFF")),
+            "{text}"
+        );
+    }
+    assert!(!text.contains("0x20 = 0x00"), "{text}");
+    assert_eq!(text.matches("escreve").count(), 30, "{text}");
+
+    write_state(
+        state.path(),
+        &WHITE_ON
+            .replace("ffffff", "ff0000")
+            .replace("power=on", "power=off"),
+        0o644,
+    );
+    let out = run_ram_state(
+        &["led", "ram", "restore", "--dry-run"],
+        empty.path(),
+        empty.path(),
+        state.path(),
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    // As duas molduras do estático e, depois, a do off.
+    assert_eq!(text.matches("escreve").count(), 30 + 8, "{text}");
+    let last_color = text.rfind("0x31 = 0xFF").unwrap();
+    let off = text.rfind("0x20 = 0x00").unwrap();
+    assert!(off > last_color, "{text}");
+
+    let out = run_ram_state(
+        &["led", "ram", "suspend", "--dry-run"],
+        empty.path(),
+        empty.path(),
+        state.path(),
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.matches("escreve").count(), 8, "{text}");
+    assert!(text.contains("0x5a  escreve 0x20 = 0x00"), "{text}");
+    // Nenhum dos dois grava o estado.
+    let saved = fs::read_to_string(state.path().join("ram-led")).unwrap();
+    assert!(
+        saved.contains("power=off") && saved.contains("ff0000"),
+        "{saved}"
+    );
+}
+
+#[test]
+fn ram_restore_espera_os_pentes_salvos() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o644);
+    let state = state_dir();
+    write_state(state.path(), WHITE_ON, 0o644);
+    let out = run_ram_state(
+        &["led", "ram", "restore", "--wait-ms", "300"],
+        sys.path(),
+        &dev,
+        state.path(),
+    );
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Faltam: 0-0053"), "{err}");
+
+    // O 0-0053 aparece 200 ms depois do início: o restore passa da espera e
+    // chega ao nó (um arquivo comum, onde o ioctl falha com 5).
+    let start = std::time::Instant::now();
+    let child = halo()
+        .args(["led", "ram", "restore", "--wait-ms", "5000", "--state-dir"])
+        .arg(state.path())
+        .arg("--sys-root")
+        .arg(sys.path())
+        .arg("--dev-root")
+        .arg(&dev)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    add_spd(sys.path(), "0-0053");
+    let out = child.wait_with_output().unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(4));
+    assert_eq!(out.status.code(), Some(5));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("Faltam"), "{err}");
+    assert!(!state.path().join("ram-led.tmp").exists());
+}
+
+#[test]
+fn ram_restore_recusa_cor() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o000);
+    let state = state_dir();
+    write_state(state.path(), WHITE_ON, 0o666);
+    // Com o estado 0666, ler daria 5; o 2 prova que o estado não foi lido.
+    for args in [
+        &["led", "ram", "restore", "--color", "0000ff"][..],
+        &["led", "ram", "suspend", "--brightness", "10"][..],
+    ] {
+        let out = run_ram_state(args, sys.path(), &dev, state.path());
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+    }
 }

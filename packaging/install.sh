@@ -6,11 +6,14 @@
 # gráfica) e a ativação pelo D-Bus, e sobe o daemon. Instala também a
 # extensão do GNOME Shell e a habilita pelo gsettings. Com --uninstall,
 # remove só o que instalou e mantém perfis e snapshots. A regra udev, o
-# linger e o grupo plugdev são só conferidos: os comandos que os resolvem
-# são mostrados, nunca executados.
+# linger, o grupo plugdev e as peças de sistema da RAM (a cópia do halo do
+# root e as unidades que reaplicam a RAM no boot e ao acordar) são só
+# conferidos: os comandos que os resolvem são mostrados, nunca executados.
 #
 # Caminhos (para testes): BINDIR, XDG_CONFIG_HOME, XDG_DATA_HOME,
-# XDG_STATE_HOME, CARGO_TARGET_DIR, HALO_UDEV_RULES_DIR, HALO_EXTENSION_SRC
+# XDG_STATE_HOME, CARGO_TARGET_DIR, HALO_UDEV_RULES_DIR, HALO_LIBEXEC_DIR (a
+# cópia do root; padrão /usr/local/libexec/halo), HALO_SYSTEM_UNIT_DIR (padrão
+# /etc/systemd/system), HALO_EXTENSION_SRC
 # (a pasta da extensão a instalar; padrão extension/ do repositório) e
 # HALO_GLIB_COMPILE_SCHEMAS (o compilador de schemas; padrão
 # glib-compile-schemas).
@@ -21,6 +24,7 @@ UNIT=halod.service
 GUARD=halod-session.service
 BUS_NAME=io.github.leoodaviid.Halo1
 RULE=70-halo.rules
+RAM_UNITS="halo-ram-restore.service halo-ram-sleep.service"
 UUID=halo@leoodaviid.github.io
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -41,7 +45,9 @@ e habilita e (re)inicia o $UNIT, que sobe com o gerenciador do usuário
 (com o linger, também fora da sessão), e habilita a $GUARD, que segue a
 sessão gráfica. A extensão do GNOME é habilitada pelo
 gsettings e carrega depois de sair e entrar na sessão. Nada é escrito fora
-do \$HOME.
+do \$HOME. A regra udev e as peças de sistema da RAM ($RAM_UNITS
+e a cópia do halo em /usr/local/libexec/halo) são conferidas, e os comandos
+com sudo que faltam são mostrados, nunca executados.
 
   --uninstall  para e desabilita o daemon e a guarda, desabilita a extensão
                e remove os arquivos acima. Perfis e snapshots ficam.
@@ -66,6 +72,8 @@ STATE_HOME=$(xdg "${XDG_STATE_HOME:-}" "$HOME/.local/state")
 BINDIR=${BINDIR:-$HOME/.local/bin}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 UDEV_DIR=${HALO_UDEV_RULES_DIR:-/etc/udev/rules.d}
+LIBEXEC_DIR=${HALO_LIBEXEC_DIR:-/usr/local/libexec/halo}
+SYS_UNIT_DIR=${HALO_SYSTEM_UNIT_DIR:-/etc/systemd/system}
 EXT_SRC=${HALO_EXTENSION_SRC:-$ROOT/extension}
 COMPILE_SCHEMAS=${HALO_GLIB_COMPILE_SCHEMAS:-glib-compile-schemas}
 
@@ -120,6 +128,65 @@ check_udev() {
     # máscara da ACL, e a entrada do grupo fica como estava (group::---).
     say "Depois, reinicie o PC: o grupo plugdev do Castor3 só vale num nó criado"
     say "de novo. Até lá, o halod continua com acesso só pela ACL da sessão."
+}
+
+# As unidades de sistema da RAM executam só a cópia do halo do root, nunca a
+# do $BINDIR, que é do usuário (docs/permissions.md). Confere as três peças e
+# mostra os comandos com sudo que faltam.
+check_ram_system() {
+    bin_src=$TARGET_DIR/release/halo
+    bin=$LIBEXEC_DIR/halo
+    stale_bin=0
+    stale_units=
+    present=0
+    cmp -s "$bin_src" "$bin" || stale_bin=1
+    [ -e "$bin" ] && present=1
+    for u in $RAM_UNITS; do
+        [ -e "$SYS_UNIT_DIR/$u" ] && present=1
+        cmp -s "$ROOT/packaging/systemd/system/$u" "$SYS_UNIT_DIR/$u" ||
+            stale_units="$stale_units $u"
+    done
+    if [ "$stale_bin" = 0 ] && [ -z "$stale_units" ]; then
+        say "peças de sistema da RAM em dia ($bin e $SYS_UNIT_DIR)"
+        return
+    fi
+    if [ "$present" = 0 ]; then
+        say "aviso: as peças de sistema da RAM não estão instaladas."
+        say "Sem elas, a RAM não volta ao estado salvo no boot nem ao acordar,"
+        say "e os pentes ficam acesos com o PC suspenso."
+    else
+        [ "$stale_bin" = 1 ] && say "aviso: a cópia do root $bin está desatualizada em relação ao halo compilado."
+        for u in $stale_units; do
+            say "aviso: $SYS_UNIT_DIR/$u está desatualizada ou falta."
+        done
+    fi
+    say "Para instalar, rode (pede a sua senha):"
+    printf '\n'
+    [ "$stale_bin" = 1 ] && printf '  sudo install -D -m 755 %s %s\n' "$bin_src" "$bin"
+    if [ -n "$stale_units" ]; then
+        for u in $stale_units; do
+            printf '  sudo install -m 644 %s %s/\n' "$ROOT/packaging/systemd/system/$u" "$SYS_UNIT_DIR"
+        done
+        printf '  sudo systemctl daemon-reload\n'
+        printf '  sudo systemctl enable %s\n' "$RAM_UNITS"
+    fi
+    printf '\n'
+}
+
+# Na desinstalação, só mostra como desabilitar e remover as peças de sistema
+# da RAM. O estado salvo em /var/lib/halo fica.
+show_ram_system_removal() {
+    files=
+    for u in $RAM_UNITS; do
+        [ -e "$SYS_UNIT_DIR/$u" ] && files="$files $SYS_UNIT_DIR/$u"
+    done
+    [ -e "$LIBEXEC_DIR/halo" ] && files="$files $LIBEXEC_DIR/halo"
+    [ -n "$files" ] || return 0
+    say "as peças de sistema da RAM continuam instaladas. Para removê-las, rode:"
+    printf '\n  sudo systemctl disable %s\n' "$RAM_UNITS"
+    printf '  sudo rm -f%s\n' "$files"
+    printf '  sudo systemctl daemon-reload\n\n'
+    say "o estado salvo da RAM continua em /var/lib/halo; apague à mão se quiser"
 }
 
 # Com o linger, o gerenciador do usuário (e o halod) sobe no boot e continua
@@ -341,6 +408,7 @@ do_install() {
     check_udev
     check_linger
     check_group
+    check_ram_system
     say "pronto"
 }
 
@@ -393,6 +461,7 @@ do_uninstall() {
         say "removido $EXT_DIR"
         ext_removed=1
     fi
+    show_ram_system_removal
     if [ "$removed" = 0 ] && [ "$ext_removed" = 0 ]; then
         say "o halo não estava instalado; nada a remover"
         return

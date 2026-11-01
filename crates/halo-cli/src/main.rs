@@ -149,11 +149,14 @@ enum LedDevice {
     /// Pentes Kingston Fury DDR4 da API v2 (0x58 + slot do SPD), pela moldura do
     /// FURY CTRL. off apaga (brilho 0), on reacende com o brilho padrão (80) sem
     /// mudar o efeito, default volta ao efeito padrão (rainbow), static põe uma
-    /// cor fixa (--color, em duas molduras, como o applyDRAMLEDmode). Não lê os
-    /// pentes, só escreve. Abre /dev/i2c-N e precisa de sudo.
+    /// cor fixa (--color, em duas molduras, como o applyDRAMLEDmode). Cada um
+    /// grava o estado em /var/lib/halo/ram-led. restore reaplica o estado salvo
+    /// (no boot e ao acordar) e suspend apaga os pentes sem gravar (ao
+    /// suspender), como o FURY CTRL. Não lê os pentes, só escreve. Abre
+    /// /dev/i2c-N e precisa de sudo.
     Ram {
-        /// off, on, default ou static.
-        #[arg(value_parser = PossibleValuesParser::new(controller::RamCommand::NAMES))]
+        /// off, on, default, static, restore ou suspend.
+        #[arg(value_parser = PossibleValuesParser::new(RAM_ACTIONS))]
         command: String,
         /// Cor RRGGBB do static (obrigatória nele, recusada nos outros).
         #[arg(long, value_name = "RRGGBB", value_parser = parse_color)]
@@ -164,8 +167,18 @@ enum LedDevice {
         /// Mostra as transações sem ler o sysfs nem abrir o nó.
         #[arg(long)]
         dry_run: bool,
+        /// Diretório do estado. Só para testes.
+        #[arg(long, hide = true, default_value = ram::state::DEFAULT_DIR)]
+        state_dir: PathBuf,
+        /// Prazo do restore para os pentes salvos aparecerem. Só para testes.
+        #[arg(long, hide = true, default_value_t = 30_000)]
+        wait_ms: u64,
     },
 }
+
+/// Os comandos do `led ram`: os que escrevem e gravam o estado, e os dois que
+/// leem o estado.
+const RAM_ACTIONS: [&str; 6] = ["off", "on", "default", "static", "restore", "suspend"];
 
 #[derive(Subcommand)]
 enum ProbeDevice {
@@ -306,11 +319,28 @@ fn main() -> ExitCode {
                     color,
                     brightness,
                     dry_run,
+                    state_dir,
+                    wait_ms,
                 },
-        } => match ram_command(&command, color, brightness) {
-            Ok(command) => led_ram(sys, &cli.dev_root, command, dry_run),
-            Err(e) => fail(&e, EXIT_USAGE),
-        },
+        } => {
+            let paths = RamPaths {
+                sys,
+                dev: &cli.dev_root,
+                state: &state_dir,
+            };
+            match command.as_str() {
+                "restore" | "suspend" if color.is_some() || brightness.is_some() => fail(
+                    &format!("--color e --brightness só valem com static, não com {command}"),
+                    EXIT_USAGE,
+                ),
+                "restore" => ram_from_state(&paths, StateAction::Restore, wait_ms, dry_run),
+                "suspend" => ram_from_state(&paths, StateAction::Suspend, wait_ms, dry_run),
+                _ => match ram_command(&command, color, brightness) {
+                    Ok(command) => led_ram(&paths, command, dry_run),
+                    Err(e) => fail(&e, EXIT_USAGE),
+                },
+            }
+        }
     }
 }
 
@@ -749,54 +779,236 @@ fn ram_command(
     name: &str,
     color: Option<Rgb>,
     brightness: Option<u8>,
-) -> Result<controller::RamCommand, String> {
-    if name == "static" {
-        let color = color.ok_or("o static precisa de --color RRGGBB")?;
-        let brightness = match brightness {
-            Some(b) => controller::RamBrightness::new(b)
-                .ok_or_else(|| format!("brilho {b} fora da faixa de 0 a 100"))?,
-            None => controller::RamBrightness::default(),
-        };
-        return Ok(controller::RamCommand::Static { color, brightness });
-    }
-    if color.is_some() || brightness.is_some() {
-        return Err(format!(
-            "--color e --brightness só valem com static, não com {name}"
-        ));
-    }
-    controller::RamCommand::from_name(name).ok_or_else(|| format!("comando desconhecido: {name}"))
+) -> Result<controller::RamCommand, controller::CommandError> {
+    controller::RamCommand::build(name, color, brightness)
 }
 
-fn led_ram(sys: &Path, dev: &Path, command: controller::RamCommand, dry_run: bool) -> ExitCode {
-    if dry_run {
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "Simulação de \"{}\" nos pentes 0x5a e 0x5b (nada é aberto):",
-            command.label()
-        );
+/// Caminhos do `led ram`: sysfs, `/dev` e o diretório do estado.
+struct RamPaths<'a> {
+    sys: &'a Path,
+    dev: &'a Path,
+    state: &'a Path,
+}
+
+fn print_dry_run(title: &str, commands: &[controller::RamCommand]) {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Simulação de \"{title}\" nos pentes 0x5a e 0x5b (nada é aberto):"
+    );
+    for &command in commands {
         for step in controller::dry_run_lines(command) {
             let _ = writeln!(out, "  {step}");
         }
-        print!("{out}");
+    }
+    print!("{out}");
+}
+
+fn module_list(target: &controller::Target) -> String {
+    target
+        .modules
+        .iter()
+        .map(|m| format!("{} (0x{:02x})", m.instance, m.controller.address()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Aplica `commands`, um plano depois do outro, nos pentes de `target`.
+/// Devolve o nó aberto, com o `flock`: quem grava o estado o segura até
+/// terminar, para dois `halo led ram` não gravarem fora de ordem.
+fn apply_commands(
+    target: &controller::Target,
+    commands: &[controller::RamCommand],
+) -> Result<controller::I2cDev, ExitCode> {
+    let addrs: Vec<controller::Controller> = target.modules.iter().map(|m| m.controller).collect();
+    let mut bus = controller::I2cDev::open(&target.node, &addrs).map_err(|e| {
+        let e = ControllerError::Open(e);
+        fail(&controller_message(&e), controller_exit_code(&e))
+    })?;
+    for &command in commands {
+        controller::apply(&mut bus, &controller::plan(command, &addrs))
+            .map_err(|e| fail(&e, apply_exit_code(&e)))?;
+    }
+    Ok(bus)
+}
+
+fn led_ram(paths: &RamPaths, command: controller::RamCommand, dry_run: bool) -> ExitCode {
+    if dry_run {
+        print_dry_run(&command.label(), &[command]);
         return ExitCode::SUCCESS;
     }
-    let (target, mut bus) = match open_controllers(sys, dev) {
-        Ok(v) => v,
-        Err(e) => return fail(&controller_message(&e), controller_exit_code(&e)),
+    let target = match controller::locate(paths.sys, paths.dev) {
+        Ok(t) => t,
+        Err(e) => {
+            let e = ControllerError::Locate(e);
+            return fail(&controller_message(&e), controller_exit_code(&e));
+        }
     };
-    let addrs: Vec<controller::Controller> = target.modules.iter().map(|m| m.controller).collect();
-    match controller::apply(&mut bus, &controller::plan(command, &addrs)) {
+    // O lock do nó fica até o estado ser gravado.
+    let _bus = match apply_commands(&target, &[command]) {
+        Ok(bus) => bus,
+        Err(code) => return code,
+    };
+    println!("{} aplicado em {}", command.label(), module_list(&target));
+    save_ram_state(paths.state, &target, command)
+}
+
+/// Grava o estado depois de um comando aplicado. O estado anterior só serve
+/// para manter o efeito no `off` e no `on`; inválido, conta como ausente.
+fn save_ram_state(
+    dir: &Path,
+    target: &controller::Target,
+    command: controller::RamCommand,
+) -> ExitCode {
+    let previous = match ram::state::load(dir) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("halo: aviso: estado anterior ignorado: {e}");
+            None
+        }
+    };
+    let spd = target.modules.iter().map(|m| m.instance.clone()).collect();
+    let state = ram::state::SavedState::after(previous.as_ref(), command, spd);
+    match ram::state::save(dir, &state) {
         Ok(()) => {
-            let list: Vec<String> = target
-                .modules
-                .iter()
-                .map(|m| format!("{} (0x{:02x})", m.instance, m.controller.address()))
-                .collect();
-            println!("{} aplicado em {}", command.label(), list.join(", "));
+            println!(
+                "estado salvo em {} ({})",
+                dir.join(ram::state::FILE_NAME).display(),
+                state.label()
+            );
             ExitCode::SUCCESS
         }
-        Err(e) => fail(&e, apply_exit_code(&e)),
+        Err(ram::state::SaveError::NotSaved(e)) => fail(
+            &format!(
+                "os pentes foram alterados, mas o estado não foi salvo em {}: {e}. \
+                 O restore no boot e ao acordar vai usar o estado anterior",
+                dir.display()
+            ),
+            EXIT_FAILURE,
+        ),
+        Err(e @ ram::state::SaveError::NotDurable(_)) => fail(
+            &format!(
+                "o estado novo foi gravado em {} ({}), mas pode não sobreviver a um \
+                 corte de energia: {e}",
+                dir.join(ram::state::FILE_NAME).display(),
+                state.label()
+            ),
+            EXIT_FAILURE,
+        ),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateAction {
+    /// Reaplica o estado salvo (boot e ao acordar).
+    Restore,
+    /// Apaga ao suspender (`setDRAMDDR5_AllOff`), sem gravar.
+    Suspend,
+}
+
+/// `restore` e `suspend`: leem o estado e nunca o gravam.
+fn ram_from_state(paths: &RamPaths, action: StateAction, wait_ms: u64, dry_run: bool) -> ExitCode {
+    let file = paths.state.join(ram::state::FILE_NAME);
+    let state = match ram::state::load(paths.state) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            println!("nenhum estado salvo em {}; nada a fazer", file.display());
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => return fail(&e, EXIT_FAILURE),
+    };
+    let (name, commands) = match action {
+        StateAction::Restore => ("restore", state.restore_commands()),
+        StateAction::Suspend => ("suspend", vec![controller::RamCommand::Off]),
+    };
+    let title = format!("{name} ({})", state.label());
+    if dry_run {
+        print_dry_run(&title, &commands);
+        return ExitCode::SUCCESS;
+    }
+    let target = match action {
+        StateAction::Restore => match wait_for_modules(paths, &state.spd, wait_ms) {
+            Ok(t) => t,
+            Err(code) => return code,
+        },
+        StateAction::Suspend => match controller::locate(paths.sys, paths.dev) {
+            Ok(t) => t,
+            Err(e) => {
+                let e = ControllerError::Locate(e);
+                return fail(&controller_message(&e), controller_exit_code(&e));
+            }
+        },
+    };
+    if let Err(code) = apply_commands(&target, &commands) {
+        return code;
+    }
+    println!("{title} aplicado em {}", module_list(&target));
+    ExitCode::SUCCESS
+}
+
+/// Espera até `wait_ms` que os pentes controláveis sejam exatamente `saved`,
+/// consultando o sysfs a cada 500 ms, sem abrir o nó.
+fn wait_for_modules(
+    paths: &RamPaths,
+    saved: &[String],
+    wait_ms: u64,
+) -> Result<controller::Target, ExitCode> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(wait_ms);
+    let mut want: Vec<String> = saved.to_vec();
+    want.sort_unstable();
+    let sorted = |t: &controller::Target| {
+        let mut v: Vec<String> = t.modules.iter().map(|m| m.instance.clone()).collect();
+        v.sort_unstable();
+        v
+    };
+    loop {
+        let found = match controller::locate(paths.sys, paths.dev) {
+            Ok(t) if sorted(&t) == want => return Ok(t),
+            other => other,
+        };
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(match found {
+                Ok(t) => {
+                    let have = sorted(&t);
+                    let missing: Vec<&str> = want
+                        .iter()
+                        .filter(|w| !have.contains(w))
+                        .map(String::as_str)
+                        .collect();
+                    let extra: Vec<&str> = have
+                        .iter()
+                        .filter(|h| !want.contains(h))
+                        .map(String::as_str)
+                        .collect();
+                    let mut msg = format!(
+                        "os pentes não batem com o estado salvo depois de {} ms; nada foi escrito.",
+                        wait_ms
+                    );
+                    if !missing.is_empty() {
+                        msg.push_str(&format!(" Faltam: {}.", missing.join(", ")));
+                    }
+                    if !extra.is_empty() {
+                        msg.push_str(&format!(" Sobram: {}.", extra.join(", ")));
+                    }
+                    msg.push_str(" Um novo halo led ram grava o conjunto atual.");
+                    fail(&msg, EXIT_NOT_FOUND)
+                }
+                Err(e) => {
+                    let e = ControllerError::Locate(e);
+                    fail(
+                        &format!(
+                            "os pentes salvos ({}) não apareceram em {} ms; nada foi escrito: {}",
+                            saved.join(", "),
+                            wait_ms,
+                            controller_message(&e)
+                        ),
+                        controller_exit_code(&e),
+                    )
+                }
+            });
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(500)));
     }
 }
 

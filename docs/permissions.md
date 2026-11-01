@@ -82,6 +82,24 @@ O halo não instala regra udev para esse nó e não pede para pôr o usuário no
 
 O `halo probe ram`, que só lê o SPD pelo sysfs, não precisa de `sudo`.
 
+### Reaplicar a RAM no boot e ao acordar: a cópia do root
+
+O pente não guarda o que recebe depois de um corte de energia, e numa suspensão S3 fica aceso. Duas unidades do systemd de sistema, `halo-ram-restore.service` (no boot) e `halo-ram-sleep.service` (presa ao `sleep.target`), rodam como root o `halo led ram restore` e o `halo led ram suspend`. Elas executam só `/usr/local/libexec/halo/halo`, uma cópia do `halo` que pertence ao root, e **nunca** o `~/.local/bin/halo`. Aquele arquivo é do usuário: qualquer processo dele (um navegador, um AppImage) poderia trocá-lo e ganharia root no boot seguinte.
+
+O estado que elas reaplicam fica em `/var/lib/halo/ram-led`, gravado pelo próprio `sudo halo led ram …` a cada comando que dá certo (arquivo `0644`, diretório `0755`, gravação atômica). Como ele é lido por root, o `restore` e o `suspend` recusam o arquivo, sem tocar no barramento, se ele ou o diretório não forem do usuário efetivo (o root, nas unidades), se o grupo ou outros puderem gravar neles, se ele for um link ou se uma linha não passar na validação.
+
+O `packaging/install.sh` nunca usa `sudo`: ele compara a cópia do root com o `halo` compilado e as unidades com as do repositório, e mostra os comandos que faltam:
+
+```sh
+sudo install -D -m 755 target/release/halo /usr/local/libexec/halo/halo
+sudo install -m 644 packaging/systemd/system/halo-ram-restore.service /etc/systemd/system/
+sudo install -m 644 packaging/systemd/system/halo-ram-sleep.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable halo-ram-restore.service halo-ram-sleep.service
+```
+
+Depois de atualizar o halo, a cópia do root precisa ser trocada de novo, e o script avisa quando ela está diferente. O `--uninstall` só mostra os comandos para desabilitar e remover as três peças; o estado em `/var/lib/halo` fica.
+
 ## Regras do OpenRGB
 
 O `/etc/udev/rules.d/60-openrgb.rules`, instalado com o OpenRGB, também libera o IT5702 e o mouse, além de todos os `/dev/i2c-*`. O halo não depende dele. Removê-lo é uma decisão à parte: o mouse (`046d:c08b`) perde o acesso até o halo ter uma regra para ele.

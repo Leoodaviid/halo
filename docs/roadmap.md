@@ -51,7 +51,8 @@ O SMBus foi liberado com `acpi_enforce_resources=lax` em 2026-10-31. Kingston DD
 
 1. ~~Ferramenta que só lê o SPD.~~ Feito em 2026-11-01 (change `ram-spd-probe`): `halo probe ram`, que lê só o `eeprom` do `ee1004` no sysfs, acha o barramento pelo nome do adaptador e aplica o critério do FURY CTRL.
 2. Controle do RGB pela API v2 (change `ram-hyperx-default-modes`, o nome é do plano antigo em `0x27`): `halo probe ram-controller` lê o índice de posição, o estilo e a velocidade dos controladores (confirmado no aparelho em 2026-11-01: rainbow, velocidade 25), e `halo led ram off|on|default` aplica as escritas mínimas do FURY CTRL, com `sudo`. O estado não sobrevive a um corte de energia (cada boot volta ao rainbow).
-3. Cor estática (change `ram-static-color`): `halo led ram static --color RRGGBB [--brightness 0-100]`, com a sequência do modo estático do FURY CTRL em duas molduras. O modo independente (uma cor por LED), os outros efeitos, a reaplicação no boot pelo `halod` e o acesso sem root ficam pendentes.
+3. Cor estática (change `ram-static-color`): `halo led ram static --color RRGGBB [--brightness 0-100]`, com a sequência do modo estático do FURY CTRL em duas molduras.
+4. Reaplicar no boot e ao acordar (change `ram-apply-on-boot`): cada comando grava o estado em `/var/lib/halo/ram-led`, e duas unidades de sistema (`halo-ram-restore.service` e `halo-ram-sleep.service`) chamam o `halo led ram restore` no boot e ao acordar e o `halo led ram suspend` ao suspender, como o FURY CTRL. O modo independente (uma cor por LED), os outros efeitos, o acesso sem root (helper), a RAM no `halod` e no painel ficam pendentes.
 
 ## Perguntas em aberto
 

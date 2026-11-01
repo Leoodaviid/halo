@@ -140,6 +140,8 @@ export XDG_STATE_HOME="$T/home/.local/state"
 export BINDIR="$T/home/.local/bin"
 export CARGO_TARGET_DIR="$T/target"
 export HALO_UDEV_RULES_DIR="$T/udev"
+export HALO_LIBEXEC_DIR="$T/libexec/halo"
+export HALO_SYSTEM_UNIT_DIR="$T/system-units"
 export HALO_EXTENSION_SRC="$EXT_SRC"
 export FAKE_GSETTINGS_DIR="$T/gsettings"
 export FAKE_LOG="$T/calls.log"
@@ -242,6 +244,14 @@ check "unidade com o watchdog e o limite de inícios" \
     sh -c "grep -qxF 'WatchdogSec=20s' '$UNIT_FILE' && grep -qxF 'WatchdogSignal=SIGKILL' '$UNIT_FILE' && grep -qxF 'StartLimitIntervalSec=180s' '$UNIT_FILE'"
 check "regra ausente: avisa e mostra os comandos" \
     out_has_all "a regra udev não está instalada" "sudo udevadm control --reload"
+check "RAM sem as peças de sistema: avisa e mostra os comandos" \
+    out_has_all "as peças de sistema da RAM não estão instaladas" \
+    "sudo install -D -m 755 $CARGO_TARGET_DIR/release/halo $HALO_LIBEXEC_DIR/halo" \
+    "sudo install -m 644 $ROOT/packaging/systemd/system/halo-ram-restore.service $HALO_SYSTEM_UNIT_DIR/" \
+    "sudo install -m 644 $ROOT/packaging/systemd/system/halo-ram-sleep.service $HALO_SYSTEM_UNIT_DIR/" \
+    "sudo systemctl daemon-reload" \
+    "sudo systemctl enable halo-ram-restore.service halo-ram-sleep.service"
+check "RAM: o script não cria as peças de sistema" missing_all "$HALO_LIBEXEC_DIR" "$HALO_SYSTEM_UNIT_DIR"
 check "avisa que o BINDIR não está no PATH" out_has "não está no PATH"
 check "nenhum .new sobrando" \
     sh -c "! find '$HOME' -name '*.new' | grep -q ."
@@ -266,7 +276,7 @@ systemctl --user is-active graphical-session.target"
 check "reinstalação: links da versão nova" links_ok
 check "o stop roda com o halod antigo ainda instalado" grep -qxF 'helper: # halod 1' "$FAKE_LOG"
 check "o halod instalado tem o modo de proteção" sh -c "'$BINDIR/halod' --help | grep -q -- --waterforce-cpu-safe"
-check "regra em dia: nenhum comando com sudo" sh -c "! grep -q sudo '$T/out'"
+check "regra em dia: nenhum comando com sudo para a regra" sh -c "! grep -qE 'sudo (udevadm|install -m 644 [^ ]*70-halo.rules)' '$T/out'"
 check "BINDIR no PATH: sem aviso" sh -c "! grep -q 'não está no PATH' '$T/out'"
 check "extensão igual: não pede para sair e entrar na sessão" sh -c "! grep -qF '$RELOGIN' '$T/out'"
 check "extensão igual: nenhum .new sobrando" missing_all "$EXT_DIR.new"
@@ -398,6 +408,23 @@ cp "$T/ext-before/extension.js" "$EXT_SRC/extension.js"
 check "perfis e snapshots iguais depois das instalações" \
     [ "$(user_data_sum)" = "$DATA_BEFORE" ]
 
+# Peças de sistema da RAM em dia e, depois, só a cópia do root velha.
+mkdir -p "$HALO_LIBEXEC_DIR" "$HALO_SYSTEM_UNIT_DIR"
+run
+cp "$CARGO_TARGET_DIR/release/halo" "$HALO_LIBEXEC_DIR/halo"
+cp "$ROOT"/packaging/systemd/system/halo-ram-*.service "$HALO_SYSTEM_UNIT_DIR/"
+run
+check "RAM em dia: avisa que estão em dia" out_has "peças de sistema da RAM em dia"
+check "RAM em dia: nenhum comando com sudo da RAM" \
+    sh -c "! grep -qE 'sudo (install -D|systemctl)|system-units/' '$T/out'"
+echo '# velho' >> "$HALO_LIBEXEC_DIR/halo"
+run
+check "cópia do root diferente: avisa e mostra só a troca dela" \
+    out_has_all "está desatualizada em relação ao halo compilado" \
+    "sudo install -D -m 755 $CARGO_TARGET_DIR/release/halo $HALO_LIBEXEC_DIR/halo"
+check "cópia do root diferente: sem os comandos das unidades" \
+    sh -c "! grep -qE 'sudo systemctl|system-units/' '$T/out'"
+
 # Desinstalação, com outras extensões na lista.
 set_enabled "['user-theme@x', '$UUID', 'blur@y']"
 run --uninstall
@@ -415,6 +442,13 @@ check "desinstalação informa onde ficaram os dados" \
     out_has_all "perfis mantidos em $XDG_CONFIG_HOME/halo" "snapshots em $XDG_STATE_HOME/halo"
 check "desinstalação remove a pasta da extensão" missing_all "$EXT_DIR"
 check "desinstalação tira o UUID e mantém as outras" enabled_is "['user-theme@x', 'blur@y']"
+check "desinstalação mostra como remover as peças de sistema da RAM" \
+    out_has_all "sudo systemctl disable halo-ram-restore.service halo-ram-sleep.service" \
+    "sudo rm -f $HALO_SYSTEM_UNIT_DIR/halo-ram-restore.service $HALO_SYSTEM_UNIT_DIR/halo-ram-sleep.service $HALO_LIBEXEC_DIR/halo" \
+    "continua em /var/lib/halo"
+check "desinstalação não remove as peças de sistema" \
+    exist_all "$HALO_LIBEXEC_DIR/halo" "$HALO_SYSTEM_UNIT_DIR/halo-ram-restore.service" "$HALO_SYSTEM_UNIT_DIR/halo-ram-sleep.service"
+rm -rf "$T/libexec" "$HALO_SYSTEM_UNIT_DIR"
 
 # Desinstalar de novo, sem nada instalado.
 run --uninstall

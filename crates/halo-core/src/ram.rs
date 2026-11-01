@@ -24,6 +24,7 @@ use std::io;
 use std::path::Path;
 
 pub mod controller;
+pub mod state;
 
 /// Tamanho do SPD de um DDR4 (duas páginas de 256 bytes).
 pub const SPD_SIZE: usize = 512;

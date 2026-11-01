@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Unidade do systemd de sistema que apaga a RAM ao suspender e reaplica o
+# estado salvo ao acordar, como o OnPowerEvent do FURY CTRL 2.0.66.0
+# (setDRAMDDR5_AllOff ao suspender; applyDRAMLEDmode(bResume: true) ao
+# retomar). Em S3 o pente continua alimentado e ficaria aceso com o PC
+# dormindo.
+#
+# Puxada pelo sleep.target (suspensão, hibernação e híbrido): o ExecStart roda
+# antes de dormir. Com StopWhenUnneeded, ela para quando o sleep.target para,
+# ao acordar, e o ExecStop reaplica o estado. O suspend não grava o estado,
+# para o restore não reaplicar o apagado.
+#
+# Executa só a cópia do halo que pertence ao root (ver halo-ram-restore.service).
+
+[Unit]
+Description=halo: apaga a RAM ao suspender e reaplica o estado ao acordar
+Documentation=https://github.com/Leoodaviid/halo
+Before=sleep.target
+StopWhenUnneeded=yes
+ConditionPathExists=/var/lib/halo/ram-led
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# O "-" faz o systemd ignorar uma falha do suspend: a unidade fica ativa, e o
+# ExecStop (o restore) roda ao acordar mesmo se só parte dos pentes apagou. Sem
+# ele, o systemd não rodaria o ExecStop de uma unidade que falhou ao subir. A
+# falha continua no journal.
+ExecStart=-/usr/local/libexec/halo/halo led ram suspend
+ExecStop=/usr/local/libexec/halo/halo led ram restore
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=sleep.target
