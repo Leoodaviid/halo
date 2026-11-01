@@ -13,9 +13,15 @@ cargo run -q -p halo-cli -- probe it5702 --raw          # placa-mãe
 cargo run -q -p halo-cli -- telemetry waterforce         # fan, bomba e líquido
 cargo run -q -p halo-cli -- probe waterforce --raw      # leituras do Waterforce
 cargo run -q -p halo-cli -- probe ram --raw             # SPD dos pentes (exige o lax)
+sudo target/debug/halo probe ram-controller            # controladores RGB da RAM (root)
+sudo target/debug/halo led ram off                     # apaga a RAM; on reacende, default volta ao padrão
 ```
 
 O `halo probe ram` só lê o arquivo `eeprom` que o driver `ee1004` do kernel publica no sysfs: não abre `/dev/i2c-*` e não precisa de root nem do grupo `i2c`. O barramento só existe com o parâmetro de boot `acpi_enforce_resources=lax` (ver "RAM Kingston DDR4" em [docs/hardware.md](docs/hardware.md)). Para cada pente, mostra o tipo, o fabricante, o part number e se o RGB é do tipo que o FURY CTRL controla (bytes 330, 359 e 360 do SPD). Sem o adaptador ou sem o `ee1004`, sai com código 3.
+
+O `halo probe ram-controller` lê o controlador RGB de cada pente Fury DDR4 da API v2 do FURY CTRL (Beast SE, Beast Refresh, Renegade Refresh), em `0x58` + slot do SPD: o índice de posição (`0x0B`), o estilo (`0x09`) e a velocidade (`0x0E`). Não escreve nada. Ele abre o `/dev/i2c-N` e por isso roda com `sudo`; o halo não pede o grupo `i2c` (ver "SMBus da RAM" em [docs/permissions.md](docs/permissions.md)). Sem pente da API v2, não abre o nó e sai com código 3. Se nada responder, também sai com 3; outra falha da transação sai com 5.
+
+O `halo led ram off` apaga os pentes (brilho `0x20` = 0, como o `setDRAMDDR5_AllOff` do FURY CTRL), o `on` reacende com o brilho padrão do FURY CTRL (80) sem mudar o efeito, e o `default` volta ao efeito padrão (rainbow com velocidade 25, o `setDRAMDDR5_DefaultRainbow`), que é o de fábrica destes pentes. Os três não leem os pentes: só escrevem, dentro da moldura do FURY CTRL (`0x08` = `0x53` … `0x44`), com o índice de posição de cada pente (`0x0B`) calculado pelos slots. Séries de leituras com o efeito animando já travaram o rainbow, por isso o `probe ram-controller` também não deve ser rodado em sequência (ver "Teste de controle" em [docs/hardware.md](docs/hardware.md)). O `--dry-run` mostra as transações sem abrir nada. Se uma escrita falhar nas 30 tentativas, as seguintes não saem e a mensagem manda repetir o comando, que refaz a moldura inteira.
 
 A telemetria lê o hwmon do driver `gigabyte_waterforce`, sem abrir o aparelho. Uma temperatura do líquido acima de 100 °C aparece como `Líquido:  inválido (o aparelho informou 224 °C)`, e uma nota no stderr explica o caso. O Castor3 já informou valores assim, e eles só voltaram ao normal depois de desligar o PC com corte de energia (ver "Bomba plana e temperatura errada no `DA`" em [docs/hardware.md](docs/hardware.md)). Fan e bomba continuam sendo mostradas, e o código de saída continua 0.
 
@@ -269,4 +275,4 @@ Veja:
 | AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo analisado no GCC, implementação pendente |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |
-| RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; controlador em `0x27` (protocolo do HyperX, segundo o FURY CTRL) | SPD lido pelo `halo probe ram`, só com o `acpi_enforce_resources=lax`: Fury Beast Refresh, suportado pelo FURY CTRL. Controle em `0x27` pendente, numa decisão à parte |
+| RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; um controlador por pente em `0x58` + slot (API v2 do FURY CTRL, registradores do `KingstonFuryDRAMController`) | Só com o `acpi_enforce_resources=lax`. SPD pelo `halo probe ram` (Fury Beast Refresh); controladores pelo `halo probe ram-controller` e `halo led ram off`/`on`/`default`, com `sudo`. Outros efeitos e cores pendentes |

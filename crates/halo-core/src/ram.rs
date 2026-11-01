@@ -23,6 +23,8 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+pub mod controller;
+
 /// Tamanho do SPD de um DDR4 (duas páginas de 256 bytes).
 pub const SPD_SIZE: usize = 512;
 /// Byte 2 do SPD: tipo de memória.
@@ -281,6 +283,9 @@ impl SpdRead {
 pub struct SpdSlot {
     /// `name` do adaptador, por exemplo `SMBus PIIX4 adapter port 0 at 0b00`.
     pub adapter: String,
+    /// Número do adaptador (`N` em `i2c-N`). Muda com o lax; só serve para
+    /// abrir o nó do mesmo adaptador, nunca para escolher o barramento.
+    pub bus: u32,
     /// Nome da instância, `<barramento>-<endereço>`, por exemplo `0-0052`.
     pub instance: String,
     /// Endereço de 7 bits do SPD (`0x50`–`0x57`).
@@ -372,7 +377,7 @@ pub fn find(sys_root: &Path) -> Result<Vec<SpdSlot>, FindError> {
     adapters.sort_by_key(|(n, _, _)| *n);
 
     let mut slots = Vec::new();
-    for (_, adapter, path) in &adapters {
+    for (bus, adapter, path) in &adapters {
         let mut children: Vec<(String, u8, std::path::PathBuf)> = Vec::new();
         for entry in fs::read_dir(path).map_err(FindError::Io)? {
             let entry = entry.map_err(FindError::Io)?;
@@ -393,6 +398,7 @@ pub fn find(sys_root: &Path) -> Result<Vec<SpdSlot>, FindError> {
         for (instance, address, eeprom) in children {
             slots.push(SpdSlot {
                 adapter: adapter.clone(),
+                bus: *bus,
                 instance,
                 address,
                 read: SpdRead::of(fs::read(&eeprom)),
@@ -570,6 +576,7 @@ mod tests {
         let names: Vec<&str> = slots.iter().map(|s| s.instance.as_str()).collect();
         assert_eq!(names, ["7-0052", "7-0053"]);
         assert_eq!(slots[0].address, 0x52);
+        assert_eq!(slots[0].bus, 7);
         assert_eq!(slots[0].slot(), 2);
         assert_eq!(slots[0].adapter, "SMBus PIIX4 adapter port 0 at 0b00");
         assert!(matches!(&slots[1].read, SpdRead::Bytes(b) if b.len() == SPD_SIZE));

@@ -9,6 +9,9 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 1. ~~Criar o workspace Rust e decidir a licença.~~ Feito em 2026-10-20: workspace `crates/halo-core` + `crates/halo-cli`, GPL-2.0-or-later.
 2. ~~Ferramenta só de leitura (`CC 60`).~~ Feito em 2026-10-20: `halo probe it5702 --raw`. Valores lidos em [hardware.md](hardware.md).
 3. Cor estática por zona (`D_LED1`, `D_LED2`, `LED_C1`, `LED_CPU`, `LED_C2`) e ligar/desligar.
+   - **Validado no aparelho em 2026-11-01** (fita ARGB no `D_LED1`): `CC 32 00` → `CC 25` (estático, `zone0` = `0x20`, `color0` = `B G R 00`) → `CC 28` (`zone_sel0` = `0x20`). O vermelho e o branco saíram certos. Bytes e detalhes em [hardware.md](hardware.md#fita-argb-no-d_led1-2026-11-01).
+   - Para implementar (`halo led it5702`): mesmo transporte do `probe it5702` (feature report `0xCC` de 64 bytes, achado por `048d:5702` + usage page `0xFF89`, com `flock`). Zona → índice do OpenRGB: `LED_C1` = 2 (`CC 22`), `LED_CPU` = 3 (`CC 23`), `LED_C2` = 4 (`CC 24`), `D_LED1` = 5 (`CC 25`), `D_LED2` = 6 (`CC 26`); `zone0`/`zone_sel0` = `1 << índice`. O `CC 32` é uma máscara de efeitos **desligados** para todas as fitas (bit `0x01` = `D_LED1`, `0x02` = `D_LED2`), então é preciso guardar o valor anterior para não religar ou desligar a outra fita. Desligar = estático com brilho `0` ou cor `000000` (a conferir). Gravar na flash (`CC 47 01` + `CC 5E 00`) só com pedido. As zonas de 12 V (`LED_C1/C2`, `LED_CPU`) ainda não foram testadas e não há nada ligado nelas.
+   - Fonte: `Controllers/GigabyteRGBFusion2USBController` do OpenRGB (`72262b8`), funções `SetStripBuiltinEffectState`, `SetLEDEffect`, `ApplyEffect` e `PktEffect::Init`. Script provisório usado no teste: [`scripts/dev/it5702-dled1-color.py`](../scripts/dev/it5702-dled1-color.py).
 4. Efeitos nativos do controlador.
 
 ## Fase 2: daemon e interface
@@ -44,14 +47,14 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 
 ## Fase 5: RAM
 
-O SMBus foi liberado com `acpi_enforce_resources=lax` em 2026-10-31. Kingston DDR4 (`KF3200C16D4/16GX`), controlada, segundo o software oficial (FURY CTRL), pelo controlador em `0x27` com os registradores do HyperX. Com o lax (e a regra `72-halo-smbus-no-uaccess.rules`), o SPD dos dois pentes (`0x52`, `0x53`) diz `F`/modelo 4/`0x23`: Kingston Fury Beast Refresh, suportado pelo FURY CTRL. O estudo do SMM do BIOS (F21/F20g) mostrou que o firmware só usa o SMBus em Sx, reset e botão de energia. Em 2026-10-31, o estudo do firmware (só leitura) mapeou quem usa o SMBus no AML e as transações da detecção do OpenRGB, e recomendou um go condicional, só para leitura do SPD pelo `ee1004`. Ver "RAM Kingston DDR4" em [hardware.md](hardware.md).
+O SMBus foi liberado com `acpi_enforce_resources=lax` em 2026-10-31. Kingston DDR4 (`KF3200C16D4/16GX`), controlada, segundo o software oficial (FURY CTRL), pela API v2: um controlador por pente em `0x58` + slot do SPD (aqui `0x5A` e `0x5B`), com os registradores do `KingstonFuryDRAMController` do OpenRGB. O `0x27` (API v1) não responde nesta máquina. Com o lax (e a regra `72-halo-smbus-no-uaccess.rules`), o SPD dos dois pentes (`0x52`, `0x53`) diz `F`/modelo 4/`0x23`: Kingston Fury Beast Refresh, suportado pelo FURY CTRL. O estudo do SMM do BIOS (F21/F20g) mostrou que o firmware só usa o SMBus em Sx, reset e botão de energia. Em 2026-10-31, o estudo do firmware (só leitura) mapeou quem usa o SMBus no AML e as transações da detecção do OpenRGB, e recomendou um go condicional, só para leitura do SPD pelo `ee1004`. Ver "RAM Kingston DDR4" em [hardware.md](hardware.md).
 
 1. ~~Ferramenta que só lê o SPD.~~ Feito em 2026-11-01 (change `ram-spd-probe`): `halo probe ram`, que lê só o `eeprom` do `ee1004` no sysfs, acha o barramento pelo nome do adaptador e aplica o critério do FURY CTRL.
-2. Controle do RGB em `0x27` (registradores do HyperX), numa decisão à parte.
+2. Controle do RGB pela API v2 (change `ram-hyperx-default-modes`, o nome é do plano antigo em `0x27`): `halo probe ram-controller` lê o índice de posição, o estilo e a velocidade dos controladores (confirmado no aparelho em 2026-11-01: rainbow, velocidade 25), e `halo led ram off|on|default` aplica as escritas mínimas do FURY CTRL, com `sudo`. O estado não sobrevive a um corte de energia (cada boot volta ao rainbow). Os outros efeitos, as cores, a reaplicação no boot pelo `halod` e o acesso sem root ficam pendentes.
 
 ## Perguntas em aberto
 
-- A placa não tem nenhuma fita RGB conectada. Como validar visualmente os comandos de cor da Fase 1 (itens 3 e 4)?
+- ~~A placa não tem nenhuma fita RGB conectada. Como validar visualmente os comandos de cor da Fase 1 (itens 3 e 4)?~~ Em 2026-11-01, o usuário ligou uma fita ARGB no `D_LED1`. As zonas de 12 V continuam sem nada ligado.
 - ~~O Waterforce é um X II 240 ou um Waterforce X 240?~~ É um **Waterforce X** (primeira geração): o GCC registra `1044_7A4D` como `GP-AORUS WATERFORCE X` (ver [hardware.md](hardware.md)).
 
 - Quais efeitos do RGB Fusion 2.0 são indispensáveis?
