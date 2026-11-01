@@ -1205,7 +1205,88 @@ Com o plano corrigido (nenhuma leitura; índice `0x0B` calculado pelos slots: `0
 - **`strace` do `off`:** só o `/dev/i2c-0` aberto; `I2C_SLAVE` (`0x703`) só com `0x5a` e `0x5b`; exatamente 8 `I2C_SMBUS` (`0x720`), todos escritas, nenhuma leitura, na ordem do plano (`0x5B` início, `0x5A` início, índice e brilho, `0x5B` índice e brilho, `0x5A` fim, `0x5B` fim).
 - **Persistência:** com os pentes em `off`, depois de um desligamento com corte de energia, eles acenderam de novo em rainbow. O estado escrito pelo halo não fica guardado no pente: cada boot volta ao padrão de fábrica. É o mesmo comportamento que explica o FURY CTRL reaplicar o perfil no boot e ao retomar; um controle que dure além do boot precisa que alguém (por exemplo o `halod`) reaplique o estado.
 
+### Modo estático: sequência e proveniência (2026-11-01)
+
+Estudo só de leitura de código para a change `ram-static-color`; nada foi enviado ao hardware. Fontes: `ilspy-FuryControllerService/FuryControllerService/` (`.cs`), o `FuryCTRL.dll` decompilado pelo Ghidra via REA (`analysis/decomp-FuryCTRL/functions/<endereço>.c`) e o `Controllers/KingstonFuryDRAMController/` do OpenRGB.
+
+**Fluxo.** O estático (`DDR5LEDmode.static_color`, `ctrl_mode` = `ctrl_color`) só é enviado pelo `applyDRAMLEDmode` (`KSDRAMSMBusCtrlObj.cs:145`), que usa **duas molduras**. É diferente do `setDRAMDDR5_AllOff`, de onde vieram o `off` e o `on`, que usa uma só:
+
+- moldura 1 (L221–290): `CommandStart` → por slot, `SetKingstonFuryDDR5MasterSlaveRole(índice guardado)` (L280) → `CommandDoneAndRun` (L290). O `IRTransConfig` (L256) só entra nas APIs 4 a 6;
+- moldura 2 (L291–415): `CommandStart` → por slot, `ddr5_static_color_mode.set` (L308) → `CommandDoneAndRun` (L415).
+
+O `CommandStart` (L670) escreve nos slots em ordem decrescente e espera 50 ms; o `CommandDoneAndRun` (L695) escreve em ordem crescente e espera 50 ms. Dentro da moldura 2, os slots vão em ordem crescente.
+
+**Sequência para os pentes desta máquina** (`0x5A` com índice 1, `0x5B` com índice 0), com cor `R G B` e brilho `b`:
+
+```
+moldura 1:  0x5B 08=53, 0x5A 08=53, 50 ms
+            0x5A 0B=01, 0x5B 0B=00
+            0x5A 08=44, 0x5B 08=44, 50 ms
+moldura 2:  0x5B 08=53, 0x5A 08=53, 50 ms
+            0x5A 09=00 0C=01 0D=00 0E=00 30=01 27=02 20=b, 10 ms, 31=R 32=G 33=B
+            0x5B 09=00 0C=01 0D=00 0E=00 30=01 27=02 20=b, 10 ms, 31=R 32=G 33=B
+            0x5A 08=44, 0x5B 08=44, 50 ms
+```
+
+São 30 escritas (write byte data) e nenhuma leitura. No DLL, cada setter escreve no endereço de 8 bits `param_1 * 2`, com até 30 tentativas (`0x1E`), e espera 5 ms no fim. O `ColorIndex` espera 5 ms só depois das três escritas, e o serviço espera 10 ms antes de cada cor (`Miscellaneous.cs:862`).
+
+| Registrador | Valor | Serviço (`.cs`) | `FuryCTRL.dll` | OpenRGB |
+|---|---|---|---|---|
+| `0x08` | `0x53` / `0x44` | `KSDRAMSMBusCtrlObj.cs:676`, `:701` | `SetKingstonFuryDDR5CmdStart@0x100187b0`, `CmdDone@0x100188c0` | `FURY_REG_APPLY`, `FURY_BEGIN_TRNSFER` / `FURY_END_TRNSFER` |
+| `0x0B` | índice de posição | `KSDRAMSMBusCtrlObj.cs:280` | `MasterSlaveRole@0x100192f0` | `FURY_REG_INDEX` |
+| `0x09` | `0` (estático) | `ddr5_static_color_mode.cs:33` | `Style@0x10018f30` | `FURY_REG_MODE`, `FURY_MODE_STATIC` |
+| `0x0C` | `1` | `ddr5_static_color_mode.cs:7`, `:36` | `Direction@0x10019410` | `FURY_REG_DIRECTION`, `FURY_DIR_BOTTOM_TO_TOP` (`RGBController_KingstonFuryDRAM.cpp:449`) |
+| `0x0D` | `0` | `:9`, `:40` | `IRDelay@0x10019530` | `FURY_REG_DELAY` (`:450`) |
+| `0x0E` | `0` | `:11`, `:44` | `Speed@0x10019650` | `FURY_REG_SPEED` (`:451`) |
+| `0x30` | `1` | `:15`, `:48` | `SelectColor@0x1001ad60` | `FURY_REG_NUM_COLORS` |
+| `0x27` | número de pentes (2) | `:50` (`CheckValueRange(iNumDimm, 4, 1, 4)`), `KSDRAMSMBusCtrlObj.cs:308` (`dDRAMInfos.Count`) | `NumDimm@0x1001a800` | `FURY_REG_NUM_SLOTS` |
+| `0x20` | 0–100 | `:63`, `Miscellaneous.cs:941` | `Brightness@0x1001a2a0` | `FURY_REG_BRIGHTNESS` (`Static.brightness_max = 100`) |
+| `0x31 + 3i`, `0x32 + 3i`, `0x33 + 3i` | R, G, B da cor `i` | `Miscellaneous.cs:855` (`setDDR5ColorsTable`) | `ColorIndex@0x1001ae80`: `param_2 *= 3`, registradores `'1' + param_2`, `'2' + param_2`, `'3' + param_2` com `r`, `g`, `b` | `FURY_REG_MODE_BASE_RED/GREEN/BLUE + idx * 3` (`KingstonFuryDRAMController.cpp:290`) |
+
+**Respostas:**
+
+- **O `0x27` é um registrador da API v2** (`NumDimm`, `FURY_REG_NUM_SLOTS`), e não o endereço do controlador da API v1. O número coincide por acaso.
+- **Faixas.** O brilho vai de 0 a 100. Fora disso, o FURY CTRL troca o valor por 80 sem avisar (`CheckValueRange(_obj.brightness, 80)`). Com `power_saving`, o brilho vai para 10. A cor vai crua para o registrador (`(byte)`), sem escala nem limite. A regra "acima de 26, divide por 10" só existe no `setDDR5BackgroundColor` (`Miscellaneous.cs:825`), que o estático não usa.
+- **Leituras:** nenhuma. As condições do `set` (`_mode[]`, `_brightness[]`, `ddr5_color_table_cache`) comparam com caches em memória. O cache das cores é salvo em disco (`SaveDDR5ColorCache`) e recarregado na partida (`FURYController_Service.cs:1555`), e o FURY CTRL só escreve o que mudou. Sem cache, o halo escreve a sequência inteira, que é o caminho da primeira aplicação.
+- **Cor 0 de fábrica:** vermelho (`ddr5_color_table_default["0"][0]` = `{255, 0, 0}`, `Miscellaneous.cs:14`). Um estático cujas escritas de cor falharam aparece vermelho. Por isso a checagem visual não pode começar pelo `ff0000`: a ordem é `0000ff`, `00ff00` e depois `ff0000`, e o par azul/vermelho mostra se o R e o B estão trocados.
+
+**Divergências entre o FURY CTRL e o OpenRGB** (vale o FURY CTRL):
+
+- **Ordem:** o FURY escreve todos os registradores de um pente e depois do outro. O OpenRGB escreve cada registrador em todos os pentes (`SetRegister`).
+- **Início da moldura:** em ordem decrescente de slot no FURY, crescente no OpenRGB (`SendBegin`).
+- **Índice `0x0B`:** o FURY o escreve numa moldura própria a cada aplicação. O OpenRGB só o escreve no `SendPreamble` e, sem o `FURY_SYNC`, com o valor 0.
+- **Moldura 2:** no OpenRGB, ela vai na ordem modo, direção, atraso, velocidade, número de cores, cor, brilho, número de pentes. No FURY, o brilho e o número de pentes vêm antes da cor.
+- **Pausas:** o OpenRGB usa `FURY_DELAY` = 10 ms depois de cada registrador. As do FURY estão acima.
+
+### Primeiro ensaio do estático (2026-11-01)
+
+No terminal do usuário, com `sudo`, na branch `feat/ram-static-color` (change `ram-static-color`, tarefa 3.1), sem nenhum probe entre os comandos e nesta ordem:
+
+```
+sudo target/debug/halo led ram static --color 0000ff
+sudo target/debug/halo led ram static --color 00ff00
+sudo target/debug/halo led ram static --color ff0000
+sudo target/debug/halo led ram static --color 0000ff --brightness 20
+sudo strace -f -e trace=openat,ioctl target/debug/halo led ram static --color 0000ff
+sudo target/debug/halo led ram default
+```
+
+- **Visual:** o usuário conferiu tudo como esperado:
+  - azul, verde e vermelho, estáticos nos dois pentes;
+  - o azul com brilho 20, mais fraco;
+  - o `default` trazendo o rainbow de volta.
+
+  O azul e o verde provam que a cor 0 foi escrita, porque a de fábrica é vermelho. O par azul/vermelho mostra que `0x31` é o R e `0x33` é o B. A sequência e os registradores de "Modo estático: sequência e proveniência" valem neste pente.
+- **Códigos de saída:** 0 nos seis comandos, sem nenhuma escrita repetida. Cada um terminou com `static <cor>, brilho <n> aplicado em 0-0052 (0x5a), 0-0053 (0x5b)`, e o último com `default aplicado em …`.
+- **`strace`:**
+  - o único nó aberto foi o `/dev/i2c-0` (`O_RDWR`); o resto foram leituras do sysfs (nomes dos adaptadores e os `eeprom` de `0-0052`, `0-0053` e `2-0051`);
+  - os `I2C_SLAVE` (`0x703`) só tiveram `0x5a` e `0x5b`: um de cada na abertura e depois só nas trocas de controlador;
+  - houve exatamente 30 `I2C_SMBUS` (`0x720`), com estas trocas de endereço: `0x5B` (1), `0x5A` (2), `0x5B` (1), `0x5A` (1), `0x5B` (2), `0x5A` (11), `0x5B` (10), `0x5A` (1), `0x5B` (1). É a ordem do `--dry-run`: início no `0x5B` e no `0x5A`, os índices, os fins, o início da segunda moldura, as 10 escritas de cada pente e os fins.
+
+  O `strace` não decodifica a direção do `I2C_SMBUS`, que fica dentro da struct. Que são todas escritas vem do código (o `apply` não tem caminho de leitura) e do teste golden `ram_estatico_sequencia_exata`.
+
 ## Referências
+
 
 - Código do OpenRGB clonado em `/mnt/workspace/tools/repos/openrgb` (commit `72262b8`). Arquivos relevantes em `Controllers/`:
   - `GigabyteRGBFusion2USBController/`: placa-mãe. Layout da B550M em `GigabyteFusion2USB_Devices.cpp`.

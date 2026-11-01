@@ -195,6 +195,86 @@ fn ram_comando_invalido() {
 }
 
 #[test]
+fn ram_simulacao_do_estatico() {
+    let empty = tempfile::tempdir().unwrap();
+    let out = run_ram(
+        &[
+            "led",
+            "ram",
+            "static",
+            "--color",
+            "12ab34",
+            "--brightness",
+            "50",
+            "--dry-run",
+        ],
+        empty.path(),
+        empty.path(),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("static 12ab34, brilho 50"), "{text}");
+    assert!(!text.contains("lê"), "{text}");
+    for a in ["0x5a", "0x5b"] {
+        for reg in [
+            "0x0B = 0x0",
+            "0x20 = 0x32",
+            "0x31 = 0x12",
+            "0x32 = 0xAB",
+            "0x33 = 0x34",
+        ] {
+            let line = format!("{a}  escreve {reg}");
+            assert!(text.contains(&line), "{line}: {text}");
+        }
+    }
+    // Duas molduras: dois 0x53 e dois 0x44 por pente.
+    assert_eq!(text.matches("escreve 0x08 = 0x53").count(), 4, "{text}");
+    assert_eq!(text.matches("escreve 0x08 = 0x44").count(), 4, "{text}");
+    assert_eq!(text.matches("escreve").count(), 30, "{text}");
+}
+
+/// Entrada inválida sai com 2 sem abrir o nó: com SPD suportado e o nó em modo
+/// `000`, abrir daria 4 (ou passaria do open, como root, e daria 5).
+#[test]
+fn ram_estatico_recusa_entrada_antes_de_abrir() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o000);
+    for args in [
+        &[
+            "led",
+            "ram",
+            "static",
+            "--color",
+            "0000ff",
+            "--brightness",
+            "101",
+        ][..],
+        &["led", "ram", "static", "--color", "00ff0"][..],
+        &["led", "ram", "static"][..],
+        &["led", "ram", "static", "--brightness", "50"][..],
+        &["led", "ram", "off", "--color", "0000ff"][..],
+        &["led", "ram", "on", "--brightness", "50"][..],
+        &["led", "ram", "default", "--color", "0000ff", "--dry-run"][..],
+    ] {
+        let out = run_ram(args, sys.path(), &dev);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn ram_estatico_sem_pente_suportado_nao_abre_o_no() {
+    let mut spd = spd_beast_refresh();
+    spd[360] = 0x00;
+    let (sys, dev) = ram_fake(&spd, 0o000);
+    let out = run_ram(
+        &["led", "ram", "static", "--color", "0000ff"],
+        sys.path(),
+        &dev,
+    );
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
 fn ram_sem_pente_suportado_nao_abre_o_no() {
     let mut spd = spd_beast_refresh();
     spd[360] = 0x00;
@@ -227,9 +307,10 @@ fn ram_ajuda_lista_os_comandos() {
     let out = halo().args(["led", "ram", "--help"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    for name in ["off", "on", "default"] {
+    for name in ["off", "on", "default", "static", "--color", "--brightness"] {
         assert!(text.contains(name), "{name}: {text}");
     }
+    assert!(text.contains("0 a 100"), "{text}");
     assert!(text.contains("Não lê os pentes"), "{text}");
     assert!(!text.contains("--sys-root"), "{text}");
 }
