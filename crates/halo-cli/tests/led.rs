@@ -125,3 +125,111 @@ fn entradas_invalidas_saem_com_2() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no máximo 8"));
 }
+
+/// SPD do Fury Beast Refresh desta máquina, com o resto zerado.
+fn spd_beast_refresh() -> Vec<u8> {
+    let mut spd = vec![0u8; 512];
+    spd[2] = 0x0C;
+    spd[320] = 0x01;
+    spd[321] = 0x98;
+    spd[329..349].copy_from_slice(b"KF3200C16D4/16GX    ");
+    spd[359] = 0x04;
+    spd[360] = 0x23;
+    spd
+}
+
+/// sysfs falso com o PIIX4 em `i2c-0`, o `i2c-dev` dele e o SPD dado, e um
+/// `/dev` com o nó `i2c-0` como arquivo comum no modo dado.
+fn ram_fake(spd: &[u8], node_mode: u32) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let sys = tempfile::tempdir().unwrap();
+    let adapter = sys.path().join("bus/i2c/devices/i2c-0");
+    fs::create_dir_all(adapter.join("i2c-dev/i2c-0")).unwrap();
+    fs::write(adapter.join("name"), "SMBus PIIX4 adapter port 0 at 0b00\n").unwrap();
+    let dir = adapter.join("0-0052");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("name"), "ee1004\n").unwrap();
+    fs::write(dir.join("eeprom"), spd).unwrap();
+    let dev = sys.path().join("fake-dev");
+    fs::create_dir_all(&dev).unwrap();
+    let node = dev.join("i2c-0");
+    fs::write(&node, "").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(node_mode)).unwrap();
+    (sys, dev)
+}
+
+fn run_ram(args: &[&str], sys: &Path, dev: &Path) -> std::process::Output {
+    halo()
+        .args(args)
+        .arg("--sys-root")
+        .arg(sys)
+        .arg("--dev-root")
+        .arg(dev)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn ram_simulacao_sem_sysfs() {
+    let empty = tempfile::tempdir().unwrap();
+    let out = run_ram(
+        &["led", "ram", "off", "--dry-run"],
+        empty.path(),
+        empty.path(),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("0x5a  escreve 0x0B = 0x01"), "{text}");
+    assert!(text.contains("0x5b  escreve 0x0B = 0x00"), "{text}");
+    assert!(!text.contains("lê"), "{text}");
+    assert!(text.contains("0x5b  escreve 0x08 = 0x53"), "{text}");
+    assert!(text.contains("0x5a  escreve 0x20 = 0x00"), "{text}");
+    assert!(text.contains("0x5b  escreve 0x08 = 0x44"), "{text}");
+}
+
+#[test]
+fn ram_comando_invalido() {
+    let empty = tempfile::tempdir().unwrap();
+    let out = run_ram(&["led", "ram", "purple"], empty.path(), empty.path());
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn ram_sem_pente_suportado_nao_abre_o_no() {
+    let mut spd = spd_beast_refresh();
+    spd[360] = 0x00;
+    // Nó em modo 000: abrir daria 4; o 3 prova que ele não foi aberto.
+    let (sys, dev) = ram_fake(&spd, 0o000);
+    let out = run_ram(&["led", "ram", "off"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn ram_sem_permissao_pede_sudo() {
+    let (sys, dev) = ram_fake(&spd_beast_refresh(), 0o000);
+    if fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dev.join("i2c-0"))
+        .is_ok()
+    {
+        eprintln!("aviso: o modo 000 não bloqueia a abertura (root?); teste pulado");
+        return;
+    }
+    let out = run_ram(&["led", "ram", "off"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(4));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("sudo"), "{err}");
+}
+
+#[test]
+fn ram_ajuda_lista_os_comandos() {
+    let out = halo().args(["led", "ram", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for name in ["off", "on", "default"] {
+        assert!(text.contains(name), "{name}: {text}");
+    }
+    assert!(text.contains("Não lê os pentes"), "{text}");
+    assert!(!text.contains("--sys-root"), "{text}");
+}

@@ -84,6 +84,20 @@ Comando enviado: só `CC 60` + 62 zeros (set feature report de 64 bytes), seguid
 
 As cores das fitas de 12 V provavelmente usam a ordem `BGR` (`rgb_cali`) e as ARGB a ordem `GRB` (`cal_strip0/1`). A tabela do OpenRGB sugere isso, mas não foi confirmado na prática porque não há nada conectado.
 
+### Fita ARGB no `D_LED1` (2026-11-01)
+
+O usuário ligou uma fita ARGB no `D_LED1`. O `CC 60` lido com a fita conectada é **idêntico byte a byte** ao de 2026-10-20: `strip_detect` continua `0x07` e as contagens continuam `0x00`. Ou seja, o `CC 60` não indica se há uma fita nem em qual porta.
+
+Cor estática enviada pelo script provisório [`scripts/dev/it5702-dled1-color.py`](../scripts/dev/it5702-dled1-color.py), com os pacotes do caminho de efeito de hardware do OpenRGB (`SetStripBuiltinEffectState`, `SetLEDEffect` e `ApplyEffect`):
+
+| Pacote | Bytes (o resto é zero) |
+|---|---|
+| `CC 32` | `cc 32 00`: máscara de efeitos desligados = 0, bit `0x01` = `D_LED1` |
+| `CC 25` | `cc 25` + `zone0` = `0x20` (u32 LE) + `zone1` = 0 + reservado + tipo `01` (estático) + brilho máx. `ff` + mín. `00` + `color0` nos bytes 14–17 = `B G R 00` |
+| `CC 28` | `cc 28` + `zone_sel0` = `0x20` (u32 LE) |
+
+Resultado visual, confirmado pelo usuário: `ff0000` deixou a fita **vermelha** e `ffffff` deixou a fita **branca**. A ordem `R G B` pedida no `color0` sai certa na fita, e o firmware aplica sozinho a calibração `GRB`. Depois de enviar, o `CC 60` continuou respondendo normalmente. Nada foi gravado na flash (nem `CC 47` nem `CC 5E`), então a cor não deve sobreviver a um desligamento.
+
 ## AORUS Waterforce X 240 (Castor3)
 
 | Item | Valor |
@@ -914,7 +928,7 @@ O halo tem uma regra própria, [`packaging/udev/70-halo.rules`](../packaging/ude
 | Item | Valor |
 |---|---|
 | Modelo | Kingston `KF3200C16D4/16GX` (fabricante JEDEC Bank 2, `0x98`) |
-| Protocolo | Pelo software oficial (FURY CTRL 2.0.66.0), todo DDR4 RGB da Kingston, HyperX ou Fury, é controlado pelo controlador em `0x27` (os registradores do `HyperXDRAMController` do OpenRGB). O OpenRGB também tem o `KingstonFuryDRAMController` (`0x58` + slot), que o software oficial não usa no DDR4. Se este pente tem RGB, só os bytes 330, 359 e 360 do SPD dizem (ver "Software oficial") |
+| Protocolo | Depende do modelo (ver "Protocolo do Beast Refresh: `0x58` + slot", 2026-11-01). No FURY CTRL 2.0.66.0, o HyperX Predator e Fury, o Fury Renegade e o Fury Beast usam a API v1, no controlador em `0x27` (registradores do `HyperXDRAMController` do OpenRGB). O Fury Beast SE, o Fury Beast Refresh (estes pentes) e o Renegade Refresh usam a API v2, um controlador por pente em `0x58` + slot, a assinatura do `KingstonFuryDRAMController` do OpenRGB. Neste PC, nada responde em `0x27` |
 | Barramento | SMBus do AMD FCH (`1022:790b` rev `51`, PCI `00:14.0`), base `0xB00` |
 
 O SMBus não está disponível: o módulo `i2c_piix4` carrega, mas o kernel registra `ACPI Warning: SystemIO range 0x0B00-0x0B08 conflicts with OpRegion 0x0B00-0x0B0F (\GSA1.SMBI)` e `ACPI: OSL: Resource conflict; ACPI support missing from driver?`, e não cria o barramento. Os únicos barramentos I2C existentes (`/dev/i2c-0` a `i2c-8`) são da GPU. O OpenRGB também não achou nenhuma memória.
@@ -1006,8 +1020,8 @@ Isso bate com o `HYPERX_REG_APPLY = 0xE1` (1, 2, 3) e os registradores `0xD1`–
 
 Consequências para o halo:
 - **Dá para decidir sem escrever no controlador.** Com o lax, basta ler os bytes 330, 359 e 360 do SPD pelo sysfs do `ee1004`. Se o byte 360 não for `0x10`, `0x20`, `0x22` ou `0x23`, o pente não tem RGB controlável e a Fase 5 acaba aí.
-- **O protocolo a seguir é o do `0x27`**, com o conjunto de registradores do HyperX, e não a assinatura `FURY` em `0x58`. Os valores de cada modo ficam nos `*_mode.cs` do serviço (`ilspy-FuryControllerService/`).
-- A assinatura da Fury em `0x58`, com duas escritas por slot, deixa de ser necessária.
+- ~~**O protocolo a seguir é o do `0x27`**, com o conjunto de registradores do HyperX, e não a assinatura `FURY` em `0x58`.~~ **Errado para estes pentes** (2026-11-01): o Beast Refresh usa a API v2, em `0x58` + slot. Ver "Protocolo do Beast Refresh". Os valores de cada modo ficam nos `*_mode.cs` do serviço (`ilspy-FuryControllerService/`).
+- ~~A assinatura da Fury em `0x58`, com duas escritas por slot, deixa de ser necessária.~~ Ela é o protocolo destes pentes.
 
 ### Transações da detecção da Kingston (OpenRGB `72262b8`)
 
@@ -1087,6 +1101,109 @@ O usuário rodou, no terminal dele e sem sudo, `target/debug/halo probe ram`, `h
 - **Código de saída:** 0.
 - **`strace`:** só aparecem `openat` em `/sys/bus/i2c/devices`: os diretórios, os arquivos `name` de todos os adaptadores e dos filhos de `i2c-0` e `i2c-2` (inclusive as instâncias `dummy` em `0x36`/`0x37`, descartadas pelo nome) e os três `eeprom`, todos com `O_RDONLY`. Nenhum `/dev/i2c-*` foi aberto. O `i2c-1` (porta 2) não tem filhos.
 - **SPD bruto:** os dois pentes só diferem nos bytes 324–328 (fim da data de fabricação e número de série), 352 e 364 (`C`/`B` nos dois) e 370–376, os dígitos ASCII que começam no 369 (e não no 368, como dizia a seção de 2026-10-31). O dump não fica no repositório por causa do número de série.
+
+### Receive byte em `0x27`: ninguém responde (2026-11-01)
+
+Primeira transação do halo no SMBus, no terminal do usuário, com `sudo` (change `ram-hyperx-default-modes`, tarefa 3.1): `sudo target/debug/halo probe ram-controller`. Resultado: `nada respondeu em 0x27 em /dev/i2c-0`, código 3. O `strace -f -e trace=openat,ioctl` mostra que o halo leu só o sysfs e os três `eeprom`, abriu só o `/dev/i2c-0` (`O_RDWR`), fez um único `I2C_SLAVE` (`0x703`) com `0x27` e um único `I2C_SMBUS` (`0x720`), que voltou `ENXIO`. Nenhuma escrita.
+
+### Protocolo do Beast Refresh: `0x58` + slot (2026-11-01)
+
+Relendo o serviço e o `FuryCTRL.dll` depois do `ENXIO`, só lendo os arquivos:
+
+- **`QueryDDRInformation`** (`FURYController_Service.cs`) monta o `DRAMInfoObj` pelo nome que o `CheckDRAMSupport` devolve. `HyperX_Predator`, `HyperX_Fury`, `KingstonFury_Renegade` e `KingstonFury_Beast` levam `type = 1` (DDR4) e **`api_ver = 1`**. `KingstonFury_Beast_SE`, **`KingstonFury_Beast_Refresh`** e `KingstonFury_Renegade_Refresh` levam `type = 1` e **`api_ver = 2`**, a mesma API do DDR5. Com `type = 1`, o `getBaseAddress` dá `iDDRBaseAddress = 88` (`0x58`); no DDR5, `96` (`0x60`).
+- **A API v2 escreve em `0x58` + slot.** No caminho comum (sem o LPC Intel do X99/X299), o `SetKingstonFuryDDR5CmdStart` (`0x100187b0`) chama o motor com `(param_1 * 2, 0x08, 0x53, 0x1E)`: write byte data no endereço de 8 bits `2 × (0x58 + slot)`, registrador `0x08` = `0x53`, até 30 tentativas, e depois `Sleep(5)`. O `SetKingstonFuryDDR5Style` (`0x10018f30`) escreve o registrador `0x09`. É o início da assinatura do `KingstonFuryDRAMController` do OpenRGB (reg `0x08` = `0x53`).
+- **O "model ID" vem do SPD.** O `GetKingstonFuryDDR5ModuleID(88 + slot)` (`0x1bf40`), no DDR4, só lê os bytes 327 e 328 do SPD do mesmo slot (página 1, com a troca em `0x36`/`0x37`). Ele não fala com o controlador.
+- **Slot:** fora do X299, o `CheckDramSupport` percorre o SPD de 8 bits `0xA0` a `0xAE` com `j_index` de 0 a 7 (o índice do SPD), e o `address_offset` do Beast Refresh é o próprio `j_index`. Nos pentes `0x52` e `0x53`, os controladores ficam em **`0x5A` e `0x5B`**. A moldura `E1`/`E2` em `0x27` não se aplica a estes pentes, o que bate com o `ENXIO`.
+- **Leituras (sem escrita antes):** `GetKingstonFuryDDR5MasterSlaveRole`, `Style`, `Speed`, `CmdValue` e `IRTransConfig` fazem read word data em `0x58` + slot, nos registradores `0x0B`, `0x09`, `0x0E`, `0x08` e `0x28`, guardam o byte alto (`valor >> 8`) e esperam 5 ms. O serviço lê o `0x0B` (papel mestre/escravo) já na detecção. A detecção do OpenRGB, ao contrário, escreve `0x08` = `0x53` antes de ler.
+- **Escritas:** cada `SetKingstonFuryDDR5*` faz write byte data com até 30 tentativas e `Sleep(5)`. Os registradores, que batem com o OpenRGB:
+
+  | Registrador | Função |
+  |---|---|
+  | `0x08` | `0x53` início, `0x44` fim, `0x42` bypass |
+  | `0x09` | estilo |
+  | `0x0B` | papel |
+  | `0x0C` | direção |
+  | `0x0D` | atraso |
+  | `0x0E` | velocidade |
+  | `0x10` | largura |
+  | `0x11` | matiz |
+  | `0x12`–`0x15` | tempos |
+  | `0x16`–`0x19` | respiração |
+  | `0x1E` | hyper speed |
+  | `0x20` | brilho |
+  | `0x21`/`0x22` | brilho máximo e mínimo |
+  | `0x23`/`0x24` | cor de fundo |
+  | `0x26` | LEDs |
+  | `0x27` | pentes |
+  | `0x28` | IR |
+  | `0x30` | cor |
+
+  Valores do estilo no `DDR5LEDmode`: 0 estático, 1 rainbow, 3 respiração, 4 dinâmico (o mesmo `FURY_MODE_*` do OpenRGB).
+- **Molduras do serviço:**
+  - o `CommandStart` envia `0x08` = `0x53` aos slots usados, do último para o primeiro, e espera 50 ms;
+  - o `CommandDoneAndRun` envia `0x08` = `0x44` do primeiro para o último e espera 50 ms;
+  - o `setDRAMDDR5_AllOff` é Start → por slot, `0x0B` = papel lido e `0x20` = 0 → Done. O serviço o chama ao suspender;
+  - o `setDRAMDDR5_DefaultRainbow` é Start → por slot, `0x09`=1, `0x0B`=papel, `0x0D`=0, `0x0C`=1, `0x0E`=25, `0x20`=80, `0x10`=0, `0x11`=0 e `0x1E`=0 → Done;
+  - o brilho padrão do serviço é 80.
+- **Ainda não analisado:** o significado dos valores do papel e da velocidade; as sequências dos outros efeitos; e se existe leitura do brilho (não há `Get` para ele).
+
+### Leitura dos controladores em `0x5A` e `0x5B` (2026-11-01)
+
+Primeira leitura dos controladores da API v2, no terminal do usuário, com `sudo` (change `ram-hyperx-default-modes`, tarefa 3.1): `sudo target/debug/halo probe ram-controller`. Os dois responderam às três leituras do FURY CTRL (read word data, byte alto), e o código de saída foi 0:
+
+| Pente (SPD) | Controlador | Índice (`0x0B`) | Estilo (`0x09`) | Velocidade (`0x0E`) |
+|---|---|---|---|---|
+| `0-0052` | `0x5A` | `0x01` | `0x01` (rainbow) | `0x19` (25) |
+| `0-0053` | `0x5B` | `0x00` | `0x01` (rainbow) | `0x19` (25) |
+
+- **O efeito de hoje é o padrão do FURY CTRL:** estilo 1 com velocidade 25, os mesmos valores que o `setDRAMDDR5_DefaultRainbow` escreve. Visualmente, a barra inteira fica de uma cor, que vai trocando.
+- **Índices diferentes nos dois pentes** (`0x01` e `0x00`). Ver "Estudo do `0x0B`": é o índice de posição, e esse valor só vale logo depois de ligar o PC.
+- **`strace -f -e trace=openat,ioctl`:** o único nó aberto foi o `/dev/i2c-0` (`O_RDWR`). Os `I2C_SLAVE` (`0x703`) só tiveram os argumentos `0x5a` e `0x5b`: dois na abertura, para conferir que nenhum driver ocupa os endereços, e um a cada troca de controlador. Houve exatamente seis `I2C_SMBUS` (`0x720`), todos de leitura. Nenhuma escrita.
+
+### Primeiras escritas: `off` e `on` (2026-11-01)
+
+No terminal do usuário, com `sudo` (change `ram-hyperx-default-modes`, primeira versão da tarefa 5.2), nesta ordem: `led ram off`, `probe ram-controller`, `led ram on`, `strace … led ram off`, `led ram on`, `probe ram-controller`.
+
+- **O efeito visível funcionou.** O `off` apagou os dois pentes e o `on` os acendeu de novo, nas duas vezes. Os quatro comandos de escrita terminaram com código 0, sem nenhuma escrita repetida.
+- **`strace` do `off`:** só o `/dev/i2c-0` foi aberto. Os `I2C_SLAVE` só tiveram `0x5a` e `0x5b`. Houve 10 `I2C_SMBUS`: as 2 leituras do `0x0B` e as 8 escritas do plano, na ordem dele.
+- **Defeito do plano daquela versão:** ela relia o `0x0B` antes de cada comando e escrevia o valor lido de volta. Depois do primeiro `off`, o `0x5A` passou a ler `0x0E`, e os comandos seguintes escreveram `0x0E` no `0x0B` dele. O FURY CTRL, ao contrário, lê o `0x0B` uma vez, na detecção, e reusa o valor guardado.
+
+### Leituras depois de ligar o PC: o `0x0B` muda sozinho (2026-11-01)
+
+Dez leituras seguidas (`probe ram-controller` a cada segundo), ainda sem desligar: o `0x5A` leu `0x0E` em todas. O `0x5B` leu `0x00` três vezes e depois `0x0E`, **sem nenhuma escrita entre elas**. Uma leitura deu `nada respondeu em 0x5b`.
+
+Depois, desligamento com corte de energia, boot, e 20 leituras a cada 3 s, sem nenhum `led ram`:
+
+- as primeiras leituras deram o estado de fábrica: `0x5A` índice `0x01`, `0x5B` índice `0x00`, estilo `0x01` e velocidade `0x19` nos dois. O corte de energia desfez o `0x0E` escrito antes;
+- **sem nenhuma escrita**, o `0x5B` passou a `0x0E` na 9ª leitura (uns 25 s) e o `0x5A` na 12ª (uns 35 s). Depois os dois ficaram em `0x0E`;
+- 4 das 120 leituras deram lixo ou falha: estilo `0xFF` (três vezes), estilo `0x5A` (o próprio endereço) e um `ENXIO`. Cada uma apareceu isolada; a leitura seguinte veio normal;
+- ao ligar, os pentes acenderam em rainbow, sincronizados. Algum tempo depois das leituras, o usuário viu os dois num **azul-claro estático**. Não se sabe ainda se isso veio das leituras do halo ou se o pente muda sozinho; o teste de controle (ligar e não rodar nada do halo) vai dizer.
+
+### Estudo do `0x0B` (2026-11-01)
+
+Só lendo o OpenRGB `72262b8`, o serviço do FURY CTRL e os DLLs, sem tocar no barramento:
+
+- **É o índice de posição do pente, não um papel de mestre/escravo.** No OpenRGB, o `0x0B` é o `FURY_REG_INDEX`, e o `SendPreamble` diz: "The index tells physical location of the RAM slot from the border to the CPU slot. […] The official software writes the indices in decreasing order. Hardware effects seem to support only up to 4 sticks." O OpenRGB calcula o índice e o escreve, nunca o lê (sem o `FURY_SYNC`, escreve 0 em todos; com ele, `idx % 4`). Os valores lidos logo depois do boot (slot 2 → `1`, slot 3 → `0`) estão em ordem decrescente.
+- **O FURY CTRL lê o índice uma vez e o reusa.** O `QueryDDRInformation` o lê na detecção, com o serviço recém-iniciado, e guarda em `bDRAMMasterSlave_v2`. O `AllOff` (que o serviço faz ao suspender), o `DefaultRainbow` e a reaplicação ao retomar escrevem esse valor guardado. Nada relê o `0x0B` depois.
+- **As leituras do `FuryCTRL.dll` não passam por um read word data direto.** O motor do DLL é uma tabela montada com `GetProcAddress` no `SMBus_Engine.dll` (sha256 `96aa413f…05ecc`): `+0x04` = `SMB_ByteRead`, `+0x08` = `SMB_ByteWrite`, `+0x14` = `SMB_BlockRead2` (usado pelos `GetKingstonFuryDDR5*`), `+0x28` = `SMBus_SetSPDPage`. No `SMBus_Engine.dll`, o `SMB_BlockRead2` é a operação `4`, que o `FUN_10006f10` repassa ao método `+0x0C` do backend do chipset (classes `ATISMBus` para AMD e `IntelSMBus`). A vtable da `ATISMBus` (achada pelo RTTI, em `0x1015e11c`) tem o `+0x0C` em `0x10001f80`. Decompilado com o REA (`analysis/decomp-SMBusEngine/`), ele escreve nas portas do FCH `0xB04` = endereço de 8 bits + 1 (leitura), `0xB03` = registrador e `0xB02` = `0x4C` (início + word data), e lê 16 bits de `0xB05` (`DAT0` e `DAT1`). **É um SMBus read word data**, o mesmo protocolo (`0x4C`) que o `i2c-piix4` usa no `I2C_SMBUS_WORD_DATA` do halo. O `+0x04` (`0x100015a0`, escrita) usa `0xB05` = dado e `0xB02` = `0x48`, o write byte data. Se a transação falha, o motor reinicia o host (`+0x38`) e tenta mais uma vez. Nas transações, o halo e o FURY CTRL são iguais; o que difere é a frequência: o FURY CTRL só lê na detecção. O OpenRGB, no Linux, também usa read word data com o byte alto (`SmbusRead`).
+- **O OpenRGB não aceita a primeira leitura.** O `SmbusRead` tenta até 5 vezes, com espera de `3 × tentativa × 10 ms`, e a detecção trata `0xFFFF` como erro e repete. A detecção do OpenRGB lê dentro da moldura (`0x08` = `0x53` … `0x44`); o FURY CTRL lê sem moldura.
+- **Mais uma observação:** com os pentes no azul-claro parado, um único `probe ram-controller` (6 leituras) leu estilo `0x01` (rainbow), velocidade `0x19` e índice `0x0E` nos dois, e logo depois do comando o rainbow voltou a animar, sincronizado. As duas mudanças visíveis (congelar depois do laço de leituras, voltar depois de uma leitura) vieram logo depois de leituras do halo. O teste de controle mostrou que sem o halo nada muda (ver abaixo).
+- **Hipótese não confirmada:** se o índice coordena o efeito sincronizado, os dois pentes passarem sozinhos a `0x0E` (fora de 0–3) pode estar ligado ao azul-claro estático.
+
+### Teste de controle: sem o halo, nada muda (2026-11-01)
+
+O PC foi desligado e ligado de novo, e nenhum comando do halo rodou por 5 minutos. O rainbow ficou animado e sincronizado o tempo todo. Depois disso, um único `sudo target/debug/halo probe ram-controller` (6 leituras) deu o estado de fábrica nos dois pentes: `0x5A` índice `0x01`, `0x5B` índice `0x00`, estilo `0x01` (rainbow) e velocidade `0x19`. O efeito continuou igual depois da leitura.
+
+Conclusão: **o índice não muda sozinho com o tempo, e o rainbow não congela sozinho.** O `0x0E` no `0x0B` e o azul-claro parado apareceram durante as séries de leituras do halo (dezenas de read word data seguidos, com a animação rodando, fora de moldura). Uma leitura isolada não perturbou. O FURY CTRL lê cada pente uma única vez, na detecção, e depois só escreve; o OpenRGB lê dentro da moldura (`0x08` = `0x53` … `0x44`). Qual dos dois fatores protege o pente (poucas leituras ou leituras dentro da moldura) não foi separado.
+
+### Escritas sem leitura: `off` e `on` (2026-11-01)
+
+Com o plano corrigido (nenhuma leitura; índice `0x0B` calculado pelos slots: `0x5A` = `0x01`, `0x5B` = `0x00`), no terminal do usuário, com `sudo` e logo depois do teste de controle: `led ram off`, `led ram on`, `strace … led ram off`, `led ram on`.
+
+- **Visual:** o `off` apagou os dois pentes nas duas vezes; o `on` trouxe o rainbow de volta animado, sincronizado e com o mesmo brilho de antes (80, o padrão do FURY CTRL). O efeito continuou estável depois, sem travar.
+- **Códigos de saída:** 0 nos quatro comandos, sem nenhuma escrita repetida.
+- **`strace` do `off`:** só o `/dev/i2c-0` aberto; `I2C_SLAVE` (`0x703`) só com `0x5a` e `0x5b`; exatamente 8 `I2C_SMBUS` (`0x720`), todos escritas, nenhuma leitura, na ordem do plano (`0x5B` início, `0x5A` início, índice e brilho, `0x5B` índice e brilho, `0x5A` fim, `0x5B` fim).
+- **Persistência:** com os pentes em `off`, depois de um desligamento com corte de energia, eles acenderam de novo em rainbow. O estado escrito pelo halo não fica guardado no pente: cada boot volta ao padrão de fábrica. É o mesmo comportamento que explica o FURY CTRL reaplicar o perfil no boot e ao retomar; um controle que dure além do boot precisa que alguém (por exemplo o `halod`) reaplique o estado.
 
 ## Referências
 

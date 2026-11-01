@@ -77,6 +77,27 @@ pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Intervalo entre as tentativas de `flock`.
 const LOCK_RETRY: Duration = Duration::from_millis(50);
 
+/// Toma o `flock` exclusivo de `file`, tentando até `timeout`. Devolve
+/// `Ok(false)` se outro processo continuar com ele. O lock é solto quando
+/// `file` fecha.
+pub(crate) fn lock_exclusive(file: &File, timeout: Duration) -> io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        // SAFETY: o descritor pertence a `file`, que vive durante a chamada.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(true);
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(err);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(LOCK_RETRY);
+    }
+}
+
 impl Hidraw {
     /// Abre o nó e toma o `flock` exclusivo, esperando até [`LOCK_TIMEOUT`].
     pub fn open(path: &Path) -> Result<Self, OpenError> {
@@ -91,21 +112,10 @@ impl Hidraw {
             .write(true)
             .open(path)
             .map_err(|e| OpenError::from_io(path, e))?;
-        let deadline = Instant::now() + timeout;
-        loop {
-            // SAFETY: o descritor pertence a `file`, aberto acima. O lock é
-            // solto quando `file` fecha.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(Self { file });
-            }
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
-                return Err(OpenError::Other(path.to_owned(), err));
-            }
-            if Instant::now() >= deadline {
-                return Err(OpenError::Busy(path.to_owned()));
-            }
-            std::thread::sleep(LOCK_RETRY);
+        match lock_exclusive(&file, timeout) {
+            Ok(true) => Ok(Self { file }),
+            Ok(false) => Err(OpenError::Busy(path.to_owned())),
+            Err(err) => Err(OpenError::Other(path.to_owned(), err)),
         }
     }
 

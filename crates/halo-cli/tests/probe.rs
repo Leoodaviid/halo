@@ -38,6 +38,7 @@ fn ajuda_dos_comandos() {
         &["probe", "waterforce", "--help"],
         &["telemetry", "waterforce", "--help"],
         &["probe", "ram", "--help"],
+        &["probe", "ram-controller", "--help"],
     ] {
         let out = halo().args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}");
@@ -292,4 +293,133 @@ fn ram_bytes_brutos() {
         );
     }
     assert!(text.contains("    140: 01 98"), "{text}");
+}
+
+/// sysfs falso com o adaptador PIIX4 em `i2c-0`, o `i2c-dev` dele e um `/dev`
+/// ao lado. O nó `/dev/i2c-0` é um arquivo comum com o modo dado.
+fn ram_with_node(
+    eeproms: &[(&str, &[u8])],
+    node_mode: Option<u32>,
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let sys = sys_with_ram(eeproms);
+    fs::create_dir_all(sys.path().join("bus/i2c/devices/i2c-0/i2c-dev/i2c-0")).unwrap();
+    let dev = sys.path().join("fake-dev");
+    fs::create_dir_all(&dev).unwrap();
+    if let Some(mode) = node_mode {
+        let node = dev.join("i2c-0");
+        fs::write(&node, "").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    (sys, dev)
+}
+
+fn run_dev(args: &[&str], sys: &Path, dev: &Path) -> std::process::Output {
+    halo()
+        .args(args)
+        .arg("--sys-root")
+        .arg(sys)
+        .arg("--dev-root")
+        .arg(dev)
+        .output()
+        .unwrap()
+}
+
+/// Verdadeiro quando o modo 000 bloqueia a abertura (não é root).
+fn mode_blocks(dev: &Path) -> bool {
+    let blocked = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dev.join("i2c-0"))
+        .is_err();
+    if !blocked {
+        eprintln!("aviso: o modo 000 não bloqueia a abertura (root?); teste pulado");
+    }
+    blocked
+}
+
+#[test]
+fn controlador_sem_adaptador_nao_abre_o_no() {
+    let sys = sys_with_other_device();
+    let dev = sys.path().join("fake-dev");
+    fs::create_dir_all(&dev).unwrap();
+    fs::write(dev.join("i2c-0"), "").unwrap();
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("acpi_enforce_resources=lax"), "{err}");
+}
+
+#[test]
+fn controlador_sem_pente_suportado_nao_abre_o_no() {
+    let mut spd = spd_kingston();
+    spd[360] = 0x00;
+    // Com o nó em modo 000, abrir daria código 4: o 3 prova que ele não foi aberto.
+    let (sys, dev) = ram_with_node(&[("0-0052", &spd)], Some(0o000));
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("nenhum pente Kingston DDR4 suportado"),
+        "{err}"
+    );
+}
+
+#[test]
+fn controlador_recusa_pente_da_api_v1() {
+    let mut spd = spd_kingston();
+    spd[359] = 0x01; // Fury Beast, API v1
+    let (sys, dev) = ram_with_node(&[("0-0052", &spd)], Some(0o000));
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("Fury Beast, API v1"), "{err}");
+}
+
+#[test]
+fn controlador_sem_i2c_dev() {
+    let spd = spd_kingston();
+    let sys = sys_with_ram(&[("0-0052", &spd)]);
+    let dev = sys.path().join("fake-dev");
+    fs::create_dir_all(&dev).unwrap();
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("i2c-dev"), "{err}");
+}
+
+#[test]
+fn controlador_sem_permissao_pede_sudo() {
+    let spd = spd_kingston();
+    let (sys, dev) = ram_with_node(&[("0-0052", &spd)], Some(0o000));
+    if !mode_blocks(&dev) {
+        return;
+    }
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(4));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("sudo"), "{err}");
+    assert!(!err.contains("grupo") && !err.contains("usermod"), "{err}");
+}
+
+#[test]
+fn controlador_em_arquivo_comum_nao_e_ausencia() {
+    let spd = spd_kingston();
+    let (sys, dev) = ram_with_node(&[("0-0052", &spd)], Some(0o600));
+    let out = run_dev(&["probe", "ram-controller"], sys.path(), &dev);
+    assert_eq!(out.status.code(), Some(5));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("erro ao abrir"), "{err}");
+    assert!(!err.contains("nada respondeu"), "{err}");
+}
+
+#[test]
+fn ajuda_do_controlador_avisa_contra_leituras_em_sequencia() {
+    let out = halo()
+        .args(["probe", "ram-controller", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Não rode em sequência"), "{text}");
+    assert!(text.contains("índice"), "{text}");
 }

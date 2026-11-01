@@ -70,6 +70,18 @@ Antes da change `halod-outside-session`, o `halod.service` subia e parava com o 
 
 A regra antiga, só com `uaccess`, volta com os comandos de "Instalar" a partir da versão anterior do arquivo. O grupo `plugdev` e o linger podem ficar como estão.
 
+## SMBus da RAM: `sudo`, não o grupo `i2c`
+
+O `halo probe ram-controller`, que só lê os controladores RGB dos pentes em `0x58` + slot, abre o `/dev/i2c-N` do SMBus da placa. Esse nó é `root:i2c 660`, e a regra `/etc/udev/rules.d/72-halo-smbus-no-uaccess.rules` tira dele o `uaccess` da sessão (ver "Primeiro boot com o lax" em [hardware.md](hardware.md)). Por isso o comando roda com `sudo`, no terminal, a cada uso:
+
+```sh
+sudo target/debug/halo probe ram-controller
+```
+
+O halo não instala regra udev para esse nó e não pede para pôr o usuário no grupo `i2c`. Os dois caminhos dariam a qualquer processo do usuário, inclusive a um navegador ou a um AppImage, acesso ao barramento inteiro, onde também estão o VRM do processador (`0x60`) e os DACs de tensão (`0x10` e `0x15`, este com a tensão da DRAM). Com o `sudo`, o acesso vale só para aquele comando, e o halo só endereça os controladores dos pentes confirmados pelo SPD. Um acesso sem root para uso diário, com um helper que só aceite os comandos do controlador, fica para uma change própria.
+
+O `halo probe ram`, que só lê o SPD pelo sysfs, não precisa de `sudo`.
+
 ## Regras do OpenRGB
 
 O `/etc/udev/rules.d/60-openrgb.rules`, instalado com o OpenRGB, também libera o IT5702 e o mouse, além de todos os `/dev/i2c-*`. O halo não depende dele. Removê-lo é uma decisão à parte: o mouse (`046d:c08b`) perde o acesso até o halo ter uma regra para ele.

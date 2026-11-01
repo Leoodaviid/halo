@@ -9,7 +9,7 @@ use clap::builder::{PossibleValuesParser, TypedValueParser as _};
 use clap::{ArgGroup, Parser, Subcommand};
 use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
-use halo_core::ram;
+use halo_core::ram::{self, controller};
 use halo_core::waterforce::curve::Curve;
 use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
 use halo_core::waterforce::probe::{
@@ -30,6 +30,9 @@ struct Cli {
     /// Raiz do sysfs. Só para testes.
     #[arg(long, global = true, hide = true, default_value = "/sys")]
     sys_root: PathBuf,
+    /// Raiz do /dev. Só para testes.
+    #[arg(long, global = true, hide = true, default_value = "/dev")]
+    dev_root: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
@@ -143,6 +146,19 @@ enum LedDevice {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Pentes Kingston Fury DDR4 da API v2 (0x58 + slot do SPD), pela moldura do
+    /// FURY CTRL. off apaga (brilho 0), on reacende com o brilho padrão (80) sem
+    /// mudar o efeito, default volta ao efeito padrão (rainbow). Não lê os
+    /// pentes, só escreve. Abre /dev/i2c-N e precisa de sudo.
+    Ram {
+        /// off, on ou default.
+        #[arg(value_parser = PossibleValuesParser::new(controller::RamCommand::NAMES)
+            .map(|s: String| controller::RamCommand::from_name(&s).unwrap()))]
+        command: controller::RamCommand,
+        /// Mostra as transações sem ler o sysfs nem abrir o nó.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -168,6 +184,11 @@ enum ProbeDevice {
         #[arg(long)]
         raw: bool,
     },
+    /// Controlador RGB de cada pente Kingston Fury DDR4 da API v2 (0x58 + slot do
+    /// SPD). Só lê os registradores 0x0B (índice), 0x09 e 0x0E. Abre /dev/i2c-N e
+    /// precisa de sudo. Não rode em sequência: séries de leituras com o efeito
+    /// animando travaram o rainbow (docs/hardware.md).
+    RamController,
 }
 
 #[derive(Subcommand)]
@@ -215,6 +236,9 @@ fn main() -> ExitCode {
         Command::Probe {
             device: ProbeDevice::Ram { raw },
         } => probe_ram(sys, raw),
+        Command::Probe {
+            device: ProbeDevice::RamController,
+        } => probe_ram_controller(sys, &cli.dev_root),
         Command::Telemetry {
             device: TelemetryDevice::Waterforce { watch },
         } => {
@@ -269,6 +293,9 @@ fn main() -> ExitCode {
         Command::Speed {
             device: SpeedDevice::Waterforce { action },
         } => speed_waterforce(sys, action),
+        Command::Led {
+            device: LedDevice::Ram { command, dry_run },
+        } => led_ram(sys, &cli.dev_root, command, dry_run),
     }
 }
 
@@ -591,6 +618,156 @@ fn ram_find_message(err: &ram::FindError) -> String {
         ),
         ram::FindError::Io(_) => err.to_string(),
     }
+}
+
+/// Falha antes de qualquer transação nos controladores da RAM.
+#[derive(Debug)]
+enum ControllerError {
+    Locate(controller::LocateError),
+    Open(controller::OpenError),
+}
+
+fn controller_exit_code(err: &ControllerError) -> u8 {
+    use controller::{LocateError, OpenError};
+    match err {
+        ControllerError::Locate(LocateError::Find(ram::FindError::Io(_))) => EXIT_FAILURE,
+        ControllerError::Locate(LocateError::SpdUnreadable {
+            permission_denied, ..
+        }) => {
+            if *permission_denied {
+                EXIT_PERMISSION
+            } else {
+                EXIT_FAILURE
+            }
+        }
+        ControllerError::Locate(_) => EXIT_NOT_FOUND,
+        ControllerError::Open(OpenError::PermissionDenied(_)) => EXIT_PERMISSION,
+        ControllerError::Open(_) => EXIT_FAILURE,
+    }
+}
+
+fn controller_message(err: &ControllerError) -> String {
+    use controller::{LocateError, OpenError};
+    match err {
+        ControllerError::Locate(LocateError::Find(e @ ram::FindError::Io(_))) => e.to_string(),
+        ControllerError::Locate(LocateError::Find(e)) => ram_find_message(e),
+        ControllerError::Locate(e) => e.to_string(),
+        ControllerError::Open(e @ OpenError::PermissionDenied(_)) => format!(
+            "{e}: o comando precisa de root; rode com sudo. O nó do SMBus fica restrito ao \
+             root de propósito, porque o VRM e os DACs de tensão estão no mesmo barramento \
+             (ver docs/permissions.md). Nada foi enviado."
+        ),
+        ControllerError::Open(e) => e.to_string(),
+    }
+}
+
+/// Acha os pentes da API v2 e abre o nó do adaptador deles.
+fn open_controllers(
+    sys: &Path,
+    dev: &Path,
+) -> Result<(controller::Target, controller::I2cDev), ControllerError> {
+    let target = controller::locate(sys, dev).map_err(ControllerError::Locate)?;
+    let addrs: Vec<controller::Controller> = target.modules.iter().map(|m| m.controller).collect();
+    let bus = controller::I2cDev::open(&target.node, &addrs).map_err(ControllerError::Open)?;
+    Ok((target, bus))
+}
+
+/// `0` se todos responderam; senão `3` se todas as falhas foram `ENXIO`, ou `5`.
+fn read_exit_code(results: &[Result<controller::Registers, controller::ReadError>]) -> u8 {
+    match controller::read_outcome(results) {
+        controller::ReadOutcome::AllOk => 0,
+        controller::ReadOutcome::NoResponse => EXIT_NOT_FOUND,
+        controller::ReadOutcome::Failed => EXIT_FAILURE,
+    }
+}
+
+fn format_controllers(
+    target: &controller::Target,
+    results: &[Result<controller::Registers, controller::ReadError>],
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Adaptador:  {}", target.adapter);
+    let _ = writeln!(out, "Nó:         {}", target.node.display());
+    for (m, r) in target.modules.iter().zip(results) {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "{} -> controlador 0x{:02x}",
+            m.instance,
+            m.controller.address()
+        );
+        match r {
+            Ok(regs) => {
+                let style = match controller::style_name(regs.style) {
+                    Some(name) => format!("0x{:02X} ({name})", regs.style),
+                    None => format!("0x{:02X}", regs.style),
+                };
+                let _ = writeln!(out, "  Índice:      0x{:02X} (0x0B)", regs.index);
+                let _ = writeln!(out, "  Estilo:      {style}");
+                let _ = writeln!(out, "  Velocidade:  0x{:02X}", regs.speed);
+            }
+            Err(e) => {
+                let _ = writeln!(out, "  Leitura:     {e}");
+            }
+        }
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{RAM_READ_WARNING}");
+    out
+}
+
+const RAM_READ_WARNING: &str = "Aviso: não rode este comando em sequência. Séries de leituras \
+com o efeito animando já travaram o rainbow e mudaram o índice dos pentes \
+(ver \"Teste de controle\" em docs/hardware.md).";
+
+fn apply_exit_code(err: &controller::ApplyError) -> u8 {
+    match err {
+        controller::ApplyError::NoResponse { .. } => EXIT_NOT_FOUND,
+        _ => EXIT_FAILURE,
+    }
+}
+
+fn led_ram(sys: &Path, dev: &Path, command: controller::RamCommand, dry_run: bool) -> ExitCode {
+    if dry_run {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "Simulação de \"{}\" nos pentes 0x5a e 0x5b (nada é aberto):",
+            command.name()
+        );
+        for step in controller::dry_run_lines(command) {
+            let _ = writeln!(out, "  {step}");
+        }
+        print!("{out}");
+        return ExitCode::SUCCESS;
+    }
+    let (target, mut bus) = match open_controllers(sys, dev) {
+        Ok(v) => v,
+        Err(e) => return fail(&controller_message(&e), controller_exit_code(&e)),
+    };
+    let addrs: Vec<controller::Controller> = target.modules.iter().map(|m| m.controller).collect();
+    match controller::apply(&mut bus, &controller::plan(command, &addrs)) {
+        Ok(()) => {
+            let list: Vec<String> = target
+                .modules
+                .iter()
+                .map(|m| format!("{} (0x{:02x})", m.instance, m.controller.address()))
+                .collect();
+            println!("{} aplicado em {}", command.name(), list.join(", "));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e, apply_exit_code(&e)),
+    }
+}
+
+fn probe_ram_controller(sys: &Path, dev: &Path) -> ExitCode {
+    let (target, mut bus) = match open_controllers(sys, dev) {
+        Ok(v) => v,
+        Err(e) => return fail(&controller_message(&e), controller_exit_code(&e)),
+    };
+    let results = controller::read_controllers(&mut bus, &target.modules);
+    print!("{}", format_controllers(&target, &results));
+    ExitCode::from(read_exit_code(&results))
 }
 
 fn probe_ram(sys: &Path, raw: bool) -> ExitCode {
@@ -1138,6 +1315,74 @@ mod tests {
         );
         assert_eq!(ram_exit_code(&[NoResponse, Short]), EXIT_FAILURE);
         assert_eq!(ram_exit_code(&[Failed]), EXIT_FAILURE);
+    }
+
+    #[test]
+    fn probe_do_controlador_termina_com_o_aviso() {
+        let target = controller::Target {
+            adapter: "SMBus PIIX4 adapter port 0 at 0b00".into(),
+            bus: 0,
+            node: PathBuf::from("/dev/i2c-0"),
+            modules: vec![],
+        };
+        let out = format_controllers(&target, &[]);
+        assert!(out.trim_end().ends_with(RAM_READ_WARNING), "{out}");
+        assert!(RAM_READ_WARNING.contains("em sequência"));
+    }
+
+    #[test]
+    fn codigos_e_mensagens_do_controlador() {
+        use controller::{LocateError, OpenError};
+        let node = || PathBuf::from("/dev/i2c-0");
+        let unreadable = |permission_denied| {
+            ControllerError::Locate(LocateError::SpdUnreadable {
+                failures: vec![("0-0052".into(), "sem permissão (EACCES)".into())],
+                permission_denied,
+            })
+        };
+        let cases = [
+            (
+                ControllerError::Locate(LocateError::Find(ram::FindError::NoAdapter)),
+                EXIT_NOT_FOUND,
+            ),
+            (
+                ControllerError::Locate(LocateError::NoSupported),
+                EXIT_NOT_FOUND,
+            ),
+            (
+                ControllerError::Locate(LocateError::NotApiV2(vec![(
+                    "0-0052".into(),
+                    "Fury Beast, API v1 do FURY CTRL (0x27)".into(),
+                )])),
+                EXIT_NOT_FOUND,
+            ),
+            (
+                ControllerError::Locate(LocateError::NoNode {
+                    adapter: "SMBus PIIX4 adapter port 0 at 0b00".into(),
+                    node: node(),
+                }),
+                EXIT_NOT_FOUND,
+            ),
+            (unreadable(true), EXIT_PERMISSION),
+            (unreadable(false), EXIT_FAILURE),
+            (
+                ControllerError::Open(OpenError::PermissionDenied(node())),
+                EXIT_PERMISSION,
+            ),
+            (ControllerError::Open(OpenError::Busy(node())), EXIT_FAILURE),
+            (
+                ControllerError::Open(OpenError::AddressBusy(node(), 0x5A)),
+                EXIT_FAILURE,
+            ),
+        ];
+        for (err, code) in &cases {
+            assert_eq!(controller_exit_code(err), *code, "{err:?}");
+            let msg = controller_message(err);
+            assert!(!msg.contains("usermod") && !msg.contains("grupo"), "{msg}");
+            assert!(!msg.contains("i2cdetect"), "{msg}");
+        }
+        assert!(controller_message(&cases[6].0).contains("sudo"));
+        assert!(!controller_message(&cases[4].0).contains("nenhum pente Kingston"));
     }
 
     #[test]
