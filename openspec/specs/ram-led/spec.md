@@ -235,7 +235,7 @@ O brilho do `halo led ram static` SHALL vir de `--brightness`, um inteiro de 0 a
 - **THEN** cada pente recebe `0x20` = `0x00`
 
 ### Requirement: Entrada recusada antes de qualquer acesso
-O sistema SHALL terminar com código 2, sem ler o sysfs e sem abrir nenhum `/dev/i2c-*`, quando: `static` vier sem `--color`; a cor não for `RRGGBB` (com ou sem `#`); o brilho não for um inteiro de 0 a 100; ou `--color` ou `--brightness` vierem com `off`, `on` ou `default`. O sistema MUST NOT trocar um valor fora da faixa por um padrão.
+O sistema SHALL terminar com código 2, sem ler o sysfs e sem abrir nenhum `/dev/i2c-*`, quando: `static` vier sem `--color`; a cor não for `RRGGBB` (com ou sem `#`); o brilho não for um inteiro de 0 a 100; ou `--color` ou `--brightness` vierem com `off`, `on`, `default`, `restore` ou `suspend`. O sistema MUST NOT trocar um valor fora da faixa por um padrão.
 
 #### Scenario: Brilho acima de 100
 - **WHEN** o usuário executa `halo led ram static --color 0000ff --brightness 101`
@@ -252,3 +252,14 @@ O sistema SHALL terminar com código 2, sem ler o sysfs e sem abrir nenhum `/dev
 #### Scenario: Cor em outro comando
 - **WHEN** o usuário executa `halo led ram off --color 0000ff`
 - **THEN** o código de saída é 2 e nenhum `/dev/i2c-*` é aberto
+
+#### Scenario: Cor no restore
+- **WHEN** o usuário executa `halo led ram restore --color 0000ff`
+- **THEN** o código de saída é 2, o arquivo de estado não é lido e nenhum `/dev/i2c-*` é aberto
+
+### Requirement: Simulação do restore e do suspend
+Com `--dry-run`, o `halo led ram restore` SHALL mostrar as transações do estado salvo (requisito "Reaplicar o estado" da `ram-persistence`), lendo e validando só o arquivo de estado, e o `halo led ram suspend` SHALL mostrar as transações do `off`. Os dois SHALL terminar sem ler o sysfs e sem abrir nenhum `/dev/i2c-*`.
+
+#### Scenario: Simulação do restore
+- **WHEN** o estado salvo é `static` `ffffff` com brilho 80 e o usuário executa `halo led ram restore --dry-run`
+- **THEN** a saída diz que reaplicaria `static ffffff, brilho 80` e lista as duas molduras com `0x31`=`0xFF`, `0x32`=`0xFF` e `0x33`=`0xFF`, e nenhum nó é aberto
