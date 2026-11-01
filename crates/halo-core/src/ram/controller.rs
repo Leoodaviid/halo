@@ -746,6 +746,29 @@ impl RamCommand {
         }
     }
 
+    /// Monta o comando pelo nome, a cor e o brilho, com a mesma regra para a
+    /// CLI e o estado salvo: `static` exige a cor e aceita brilho de 0 a 100
+    /// (padrão 80); os outros recusam cor e brilho.
+    pub fn build(
+        name: &str,
+        color: Option<Rgb>,
+        brightness: Option<u8>,
+    ) -> Result<Self, CommandError> {
+        if name == "static" {
+            let color = color.ok_or(CommandError::MissingColor)?;
+            let brightness = match brightness {
+                Some(b) => RamBrightness::new(b).ok_or(CommandError::BrightnessOutOfRange(b))?,
+                None => RamBrightness::default(),
+            };
+            return Ok(Self::Static { color, brightness });
+        }
+        let command = Self::from_name(name).ok_or_else(|| CommandError::Unknown(name.into()))?;
+        if color.is_some() || brightness.is_some() {
+            return Err(CommandError::UnexpectedParameter(command.name()));
+        }
+        Ok(command)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -811,6 +834,36 @@ impl RamCommand {
         }
     }
 }
+
+/// Combinação inválida de nome, cor e brilho.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandError {
+    Unknown(String),
+    MissingColor,
+    BrightnessOutOfRange(u8),
+    /// Cor ou brilho num comando que não é `static`.
+    UnexpectedParameter(&'static str),
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown(name) => write!(f, "comando desconhecido: {name}"),
+            Self::MissingColor => write!(f, "o static precisa de --color RRGGBB"),
+            Self::BrightnessOutOfRange(b) => {
+                write!(f, "brilho {b} fora da faixa de 0 a {}", RamBrightness::MAX)
+            }
+            Self::UnexpectedParameter(name) => {
+                write!(
+                    f,
+                    "--color e --brightness só valem com static, não com {name}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
 
 /// Item da tabela de cada pente numa moldura.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1575,6 +1628,44 @@ pub(crate) mod tests {
             color: Rgb(r, g, b),
             brightness: RamBrightness::new(brightness).unwrap(),
         }
+    }
+
+    #[test]
+    fn ram_construtor_do_comando() {
+        let white = Some(Rgb(0xFF, 0xFF, 0xFF));
+        assert_eq!(RamCommand::build("off", None, None), Ok(RamCommand::Off));
+        assert_eq!(
+            RamCommand::build("default", None, None),
+            Ok(RamCommand::Default)
+        );
+        assert_eq!(
+            RamCommand::build("static", white, None),
+            Ok(static_cmd(0xFF, 0xFF, 0xFF, 80))
+        );
+        assert_eq!(
+            RamCommand::build("static", white, Some(0)),
+            Ok(static_cmd(0xFF, 0xFF, 0xFF, 0))
+        );
+        assert_eq!(
+            RamCommand::build("static", None, Some(50)),
+            Err(CommandError::MissingColor)
+        );
+        assert_eq!(
+            RamCommand::build("static", white, Some(101)),
+            Err(CommandError::BrightnessOutOfRange(101))
+        );
+        assert_eq!(
+            RamCommand::build("on", white, None),
+            Err(CommandError::UnexpectedParameter("on"))
+        );
+        assert_eq!(
+            RamCommand::build("off", None, Some(50)),
+            Err(CommandError::UnexpectedParameter("off"))
+        );
+        assert_eq!(
+            RamCommand::build("purple", None, None),
+            Err(CommandError::Unknown("purple".into()))
+        );
     }
 
     #[test]

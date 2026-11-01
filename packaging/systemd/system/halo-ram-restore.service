@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Unidade do systemd de sistema que reaplica o estado salvo da RAM no boot. O
+# pente não guarda o que recebe depois de um corte de energia; o FURY CTRL
+# 2.0.66.0 faz o mesmo na partida do serviço (OnStart -> KeepDramLEDEffectFeature).
+#
+# Executa só a cópia do halo que pertence ao root, nunca o ~/.local/bin/halo:
+# um processo do usuário que trocasse aquele arquivo ganharia root no boot
+# seguinte (docs/permissions.md). O packaging/install.sh mostra os comandos
+# para instalar; ele nunca usa sudo.
+#
+# O restore espera até 30 s pelos SPDs salvos (o ee1004 liga os pentes perto
+# dos 10 s do boot) e não escreve nada se o conjunto de pentes não bater.
+
+[Unit]
+Description=halo: reaplica o estado salvo da RAM no boot
+Documentation=https://github.com/Leoodaviid/halo
+# Sem estado salvo, nada a fazer (o restore também sairia com 0).
+ConditionPathExists=/var/lib/halo/ram-led
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/halo/halo led ram restore
+# Só lê o estado e o sysfs e escreve no /dev/i2c-N.
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
