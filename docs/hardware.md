@@ -1285,6 +1285,43 @@ sudo target/debug/halo led ram default
 
   O `strace` não decodifica a direção do `I2C_SMBUS`, que fica dentro da struct. Que são todas escritas vem do código (o `apply` não tem caminho de leitura) e do teste golden `ram_estatico_sequencia_exata`.
 
+### Suspensão S3: o pente mantém a cor e fica aceso (2026-11-01)
+
+Com os pentes em `static ffffff` e sem nenhum comando do halo durante o teste, o usuário rodou `systemctl suspend`. A suspensão foi S3 (`/sys/power/mem_sleep` = `s2idle [deep]`; journal: `PM: suspend entry (deep)` às 16:27:55 e `PM: suspend exit` às 16:28:22). **Durante a suspensão, os pentes ficaram acesos em branco, e continuaram brancos ao acordar.** Em S3 a RAM continua alimentada (self-refresh), e o controlador RGB do pente também. O estado só se perde num corte de energia ("Escritas sem leitura: `off` e `on`").
+
+Isso explica o que o FURY CTRL 2.0.66.0 faz no `OnPowerEvent` (`FURYController_Service.cs`):
+
+- ao suspender (`PowerBroadcastStatus` 0 ou 4, L1657–1672), ele chama o `setDRAMDDR5_AllOff`, para os pentes não ficarem acesos com o PC dormindo;
+- ao retomar (7 ou 18, L1678–1696), ele reinicia o driver do SMBus, refaz a detecção e chama o `KeepDramLEDEffectFeature`, que reaplica o perfil com o `applyDRAMLEDmode(bResume: true)` (L1594);
+- na partida do serviço (`OnStart`, L81–125), ele roda a mesma detecção e o `KeepDramLEDEffectFeature`.
+
+A change `ram-apply-on-boot` faz o mesmo com o `halo led ram suspend` (as escritas do `off`) e o `halo led ram restore`.
+
+### Reaplicar no boot e ao acordar: ensaio (2026-11-01)
+
+No terminal do usuário, com `sudo`, na branch `feat/ram-apply-on-boot` (change `ram-apply-on-boot`, tarefas 4.1 a 4.4):
+
+- **Instalação (4.1):** os cinco comandos que o `sh packaging/install.sh` mostrou, sem nenhum outro:
+  - o `sudo install -D -m 755 …/target/release/halo /usr/local/libexec/halo/halo`;
+  - os dois `sudo install -m 644 …/halo-ram-*.service /etc/systemd/system/`;
+  - o `sudo systemctl daemon-reload`;
+  - o `sudo systemctl enable halo-ram-restore.service halo-ram-sleep.service`.
+
+  As duas unidades ficaram `enabled`, em `multi-user.target.wants` e `sleep.target.wants`. A cópia ficou `root root 755`, e um `cmp` mostrou que ela é idêntica ao build release e que as unidades são iguais às do repositório.
+- **Estado (4.2):** `sudo target/debug/halo led ram static --color ffffff` terminou com `estado salvo em /var/lib/halo/ram-led (static ffffff, brilho 80, ligado)`. O arquivo tem `version=1`, `effect=static`, `color=ffffff`, `brightness=80`, `power=on` e `spd=0-0052,0-0053`, com `/var/lib/halo` em `drwxr-xr-x root root` e o arquivo em `-rw-r--r-- root root`.
+- **Suspensão (4.3):** `systemctl suspend`. O usuário viu os pentes apagarem ao dormir e voltarem brancos ao acordar. O journal da `halo-ram-sleep.service` mostra:
+  - às 18:56:51, `suspend (static ffffff, brilho 80, ligado) aplicado em 0-0052 (0x5a), 0-0053 (0x5b)`, no mesmo segundo do `PM: suspend entry (deep)`;
+  - às 18:57:11, o retorno da suspensão;
+  - às 18:57:12, `restore (…) aplicado em …` e `Deactivated successfully`.
+
+  A hibernação não foi testada.
+- **Boot depois de corte de energia (4.4):** o PC foi desligado às 18:59:07 e ligado às 19:18:53, sem nenhum comando do halo. O usuário viu os pentes acenderem brancos. Na contagem do kernel:
+  - aos 9,84 s, o `ee1004` publicou o `0-0052` e o `0-0053`;
+  - aos 12,81 s, a `halo-ram-restore.service` subiu;
+  - aos 13,78 s, `restore (static ffffff, brilho 80, ligado) aplicado em 0-0052 (0x5a), 0-0053 (0x5b)`, com `Result=success`.
+
+  Os SPDs já estavam publicados quando a unidade subiu, então a espera do `restore` não foi usada. O controlador aceitou as 30 escritas cerca de 14 s depois do boot, sem nenhuma falha.
+
 ## Referências
 
 
