@@ -1039,6 +1039,26 @@ A ferramenta do halo começaria lendo só esse sysfs, sem `/dev/i2c-*`. Escrever
 
 **Alternativa sem o lax:** chamar `\GSA1.WMBB` com os comandos `0x67`/`0x6A` deixa o firmware como único dono do barramento, sob o `SME0`. Isso exige um módulo fora da árvore (`acpi-call-dkms`; o Secure Boot está desligado) ou um driver WMI próprio, e o `acpi_call` dá ao root acesso a qualquer método ACPI. Não foi testado.
 
+### Primeiro boot com o lax: leitura do SPD (2026-10-31)
+
+O lax foi ligado a pedido do usuário. Antes do boot, ele instalou `/etc/udev/rules.d/72-halo-smbus-no-uaccess.rules` (`SUBSYSTEM=="i2c-dev", ATTR{name}=="SMBus PIIX4 adapter*", TAG-="uaccess"`), que roda antes do `73-seat-late.rules`, e pôs `acpi_enforce_resources=lax` no `GRUB_CMDLINE_LINUX_DEFAULT` com `update-grub`. Para desfazer, basta tirar o parâmetro e rodar `update-grub` de novo. Nenhum programa do usuário falou com o barramento: só o kernel (`i2c_piix4` e `ee1004`). A leitura foi feita pelo sysfs.
+
+- **Kernel:** os conflitos com `\GSA1.SMBI` (`0xB00`) e `\GSA1.SMG0` (`0xB20`) viraram avisos ("System may be unstable"), e o `piix4_smbus` registrou três barramentos: `i2c-0` = porta 0 em `0xB00`, `i2c-1` = porta 2 em `0xB00` e `i2c-2` = porta 1 do auxiliar em `0xB20`. A porta é escolhida pelo registrador `0x02` (KERNCZ). Os barramentos da GPU passaram a ser `i2c-3` em diante: **a numeração muda com o lax**, então o halo precisa achar o barramento pelo nome, nunca pelo número.
+- **SPD:** o kernel instanciou o `ee1004` em `0-0052` e `0-0053` (512 bytes, só leitura) e também em `2-0051`, no ASF. Lá, o seletor de página não respondeu (`Failed to select page 0 (-6)`) e a leitura dá `ENXIO`: é uma instância fantasma, mas mostra que o kernel mandou um send byte em `0x36` no barramento ASF ao subir.
+- **Permissões:** `/dev/i2c-0..2` são `root:i2c 660`, sem ACL do usuário (a regra 72 funcionou), e o usuário não está no grupo `i2c`. O `/dev/i2c-3` da GPU continua com `user:bumblebee:rw-`. Nem o `it87` nem o `nct6775` carregaram.
+
+| Byte do SPD | `0-0052` | `0-0053` |
+|---|---|---|
+| 2 (tipo) | `0x0C` (DDR4) | `0x0C` |
+| 320–321 (fabricante) | `01 98` (Kingston) | `01 98` |
+| 329–348 (part number) | `KF3200C16D4/16GX` | `KF3200C16D4/16GX` |
+| 330 | `0x46` (`F`) | `0x46` (`F`) |
+| 359 | `0x04` | `0x04` |
+| 360 | `0x23` | `0x23` |
+| 364 | `0x43` | `0x42` |
+
+Pelo critério do FURY CTRL, os dois pentes são **KingstonFury_Beast_Refresh** e são suportados: marca `F`, modelo 4 e byte 360 = `0x23`. O `0x23` também é o `FURY_MODEL_BEAST_DDR4` que o OpenRGB lê no reg `0x06` do controlador. Os pentes estão nos slots de SPD `0x52` e `0x53` (índices 2 e 3). O byte 364 é o único que difere entre os dois (`C`/`B`), e o significado dele não foi confirmado. Os bytes 368–375 trazem 8 dígitos ASCII diferentes em cada pente.
+
 ## Referências
 
 - Código do OpenRGB clonado em `/mnt/workspace/tools/repos/openrgb` (commit `72262b8`). Arquivos relevantes em `Controllers/`:
