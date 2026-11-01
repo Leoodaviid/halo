@@ -909,17 +909,135 @@ Em `/etc/udev/rules.d/60-openrgb.rules` (instalado em 2026-10-17, junto com o Op
 
 O halo tem uma regra própria, [`packaging/udev/70-halo.rules`](../packaging/udev/70-halo.rules), só para o IT5702 e o Castor3. Ela foi instalada em 2026-10-20 e, desde então, o `/dev/hidraw` do Castor3 tem `rw` para o usuário. Ver [permissions.md](permissions.md).
 
-## RAM Kingston Fury DDR4 (adiada)
+## RAM Kingston DDR4 (adiada)
 
 | Item | Valor |
 |---|---|
 | Modelo | Kingston `KF3200C16D4/16GX` (fabricante JEDEC Bank 2, `0x98`) |
-| Protocolo | `KingstonFuryDRAMController` do OpenRGB: DDR4, endereço base `0x58`, 10 LEDs por pente |
-| Barramento | SMBus do AMD FCH (`1022:790b`, PCI `00:14.0`) |
+| Protocolo | Pelo software oficial (FURY CTRL 2.0.66.0), todo DDR4 RGB da Kingston, HyperX ou Fury, é controlado pelo controlador em `0x27` (os registradores do `HyperXDRAMController` do OpenRGB). O OpenRGB também tem o `KingstonFuryDRAMController` (`0x58` + slot), que o software oficial não usa no DDR4. Se este pente tem RGB, só os bytes 330, 359 e 360 do SPD dizem (ver "Software oficial") |
+| Barramento | SMBus do AMD FCH (`1022:790b` rev `51`, PCI `00:14.0`), base `0xB00` |
 
-O SMBus não está disponível: o módulo `i2c_piix4` carrega, mas o kernel registra `ACPI: OSL: Resource conflict; ACPI support missing from driver?` e não cria o barramento. Os únicos barramentos I2C existentes (`/dev/i2c-0` a `i2c-8`) são da GPU. O OpenRGB também não achou nenhuma memória.
+O SMBus não está disponível: o módulo `i2c_piix4` carrega, mas o kernel registra `ACPI Warning: SystemIO range 0x0B00-0x0B08 conflicts with OpRegion 0x0B00-0x0B0F (\GSA1.SMBI)` e `ACPI: OSL: Resource conflict; ACPI support missing from driver?`, e não cria o barramento. Os únicos barramentos I2C existentes (`/dev/i2c-0` a `i2c-8`) são da GPU. O OpenRGB também não achou nenhuma memória.
 
-Liberar exige o parâmetro de boot `acpi_enforce_resources=lax`, com o risco de o firmware usar o mesmo barramento ao mesmo tempo. Escrever no SMBus da RAM é a parte mais arriscada do projeto. Decisão adiada.
+Liberar exige o parâmetro de boot `acpi_enforce_resources=lax`. O estudo abaixo mede quando o firmware usa o mesmo barramento.
+
+### Quem usa o SMBus no firmware (estudo de 2026-10-31)
+
+Só leitura: nenhum byte foi enviado ao SMBus e o boot não mudou. Firmware: B550M AORUS ELITE, BIOS `F20i` (09/03/2025). As tabelas vieram do `acpidump` (root) e foram descompiladas com o `iasl` 20251212. Hashes (sha256): DSDT `3872f710…5d1417a9`, SSDT8 `42ae591e…8b6f8f62`, SSDT9 `e00d598d…d5114ed0`.
+
+A `\GSA1.SMBI` fica na SSDT9 (`GBT`/`GSWApp`), um aparelho WMI da Gigabyte (`PNP0C14`, `_UID` `GSADEV0`). O `GSA1` registra no `_WDG` os GUIDs `DEADBEEF-1000` (dados `AA`), `DEADBEEF-2001` (método `WMBB`, o mesmo GUID do `gigabyte_wmi`) e `DEADBEEF-4002` (evento `0xE2`). A região tem `HSTS`, `HCNT`, `HCMD`, `TXSA`, `DAT0`, `DAT1` e `HBDR`, e as primitivas `SMB0`–`SMBN` usam o protocolo do PIIX4: `HCNT = 0x44` byte, `0x48` byte data, `0x4C` word, `0x50` process call e `0x54` bloco. O endereço vai em 8 bits (`TXSA = addr`, ou `addr | 1` na leitura). Uma segunda região, `SMG0` em `0xB20` (ASF), tem o próprio mutex `SME3`.
+
+Para reproduzir, a partir de uma pasta vazia:
+
+```sh
+sudo acpidump -o acpi.dat                 # root; o arquivo fica legível
+acpixtract -a acpi.dat
+iasl -e ssdt*.dat -d dsdt.dat && for f in ssdt*.dat; do iasl -d "$f"; done
+F=HSTS,HCNT,HCMD,TXSA,DAT0,DAT1,HBDR
+python3 -I scripts/re/aml_field_callers.py . $F        # 116 métodos: campos, chamadores
+python3 -I scripts/re/aml_field_callers.py . $F roots  # raízes e um caminho de cada
+```
+
+O script é estático e casa nomes de 4 caracteres. Ele não vê chamadas dinâmicas nem o que roda em SMM. A tabela agrupa as raízes que ele devolve; os casos marcados como lidos à mão foram conferidos no `.dsl`.
+
+| Raiz e caminho no AML | Toca `0xB00`? | Quem chama | Roda em uso normal? |
+|---|---|---|---|
+| `_PTS` → `_SB.MPTS` → `GSA1.MPTS` → `EZV8` → `EZVH`/`EZV3` → `ISMF`, `ISM5`, `XDP9`… → `SMM5`/`SMM2` → `SMB5`/`SMB2` | Sim. Lê o VRM em `0xC0` (7 bits: `0x60`) | O kernel, ao suspender. O `EZV8` não faz nada em S5 | Não. O Linux chama o `_PTS` no `prepare_late`, depois do `dpm_suspend_late`, com os processos congelados (`kernel/power/suspend.c`, `drivers/acpi/sleep.c`) |
+| `_WAK` → `_SB.MWAK` → `GSA1.MWAK` → `EZV7` → `EZVI`/`EZV4` → `ISM6`, `ISMG`, `ISM3`, `XDPA`… → `SMB2`/`SMB4` | Sim. **Escreve** no VRM em `0xC0` (restaura o LLC e o modo do Vcore e do SOC, com o desbloqueio `0xA55A` no `XDPA`) | O kernel, ao retomar | Não. O Linux chama o `_WAK` no `.wake`, antes do `dpm_resume_noirq` |
+| `GSA1.WMBB`, comandos `0x5E`–`0x6D` → `SMMx` → `SMBx` | Sim. SMBus genérico com qualquer endereço: `0x67` = write byte data, `0x68` = read byte data, `0x69`/`0x6A` = word, `0x65`/`0x66` = send/receive byte. O primeiro byte escolhe o barramento (`2` = `0xB00`, `3` = `0xB20`) | Só um cliente WMI | Não. No Linux, o único driver ligado ao `DEADBEEF-2001` é o `gigabyte_wmi` |
+| `WMBB` `0x0E`/`0x0F` → `MPTS`/`MWAK` | Sim, como acima | Cliente WMI | Não |
+| `WMBB` `0x130`/`0x136` → `DIMD`/`DIM1` (sensor de temperatura e SPD dos pentes) | Não neste BIOS. A tabela `PFMH` lista os SPD em `0xA0`/`0xA2`/`0xA4`/`0xA6` com as flags em `0`, e o `PFM0` que as preencheria está vazio. Volta `0xFFFFFFFF` antes de tocar o barramento (lido à mão) | Cliente WMI | Não |
+| `WMBB` `0x125` → `ZRCD` → `SIO0` (temperatura do `gigabyte_wmi`) | Não. Lê a Super I/O pela região `SIOH` em `0x2E` | `gigabyte_wmi`, a cada leitura do hwmon | Sim, mas fora do SMBus |
+| `ISK1`–`ISKA`, `ISME`, `ISMR`, `NCT0`, `SMB9`, `XDP8`, `XDPD`, `XDPJ`, `XDPU`–`XDPX` | Sim | Ninguém no AML | Não |
+| `TPM._DSM` → `STRT` | Falso positivo: `HSTS`/`HCMD` de 32 bits da região `TPMR` (memória), outro objeto | — | — |
+| Eventos GPE (`_L02`…`_L19`), `_Qxx` e o `_INI` do `GSA1` | Nenhum chega à `SMBI` | — | — |
+
+A tabela `GSAT` do `GSA1` diz o que mora no barramento além da RAM: o VRM do Vcore e do SOC (`RAA229004`/`ISL69147`, `0xC0`) e dois DACs de tensão `NCT3933` em `0x20` (VDD18, VDDP) e `0x2A` (**tensão da DRAM**, VPP e terminação). Em 7 bits, isso dá `0x60`, `0x10` e `0x15`. O AML não troca a porta do SMBus: o `PMRG` não tem o campo de porta do KERNCZ, e o `SBSL` da SSDT8 (`PM+0x2E`) ninguém chama. Por isso, esses aparelhos provavelmente ficam na porta padrão, a mesma da RAM. Qualquer varredura do barramento passa por eles.
+
+**Não existe lock comum.** O AML serializa com o mutex `SME0`, que só existe no AML. Ele não usa o semáforo do controlador (`SMBSLVCNT`, offset `0x08`, fora do campo `SMBI`). O `i2c-piix4` usa esse semáforo e não conhece o `SME0`. O `SRDY` do AML espera ~200 ms por um host ocupado e depois aborta a transação com `KILL` (`HCNT |= 0x02`). Hoje, a segurança depende só do momento: `_PTS` e `_WAK` rodam com os aparelhos do Linux parados.
+
+No Windows, o `GLedApi.dll` do GCC (`nsis-gbt-cooler-named/`, sha256 `a9059a92…`) acessa o SMBus direto, com o mutex nomeado `SMBusCommandMutex` e o `gdrv3.sys`, e também não usa o mutex do AML. Pelas mensagens de erro, o caminho que aparece é o de um controlador Intel. Não foi analisado a fundo. O pacote do RGB Fusion em `samples/` ainda é um `setup.exe` fechado; não foi aberto.
+
+### SMM do BIOS (estudo de 2026-10-31)
+
+O SMM não aparece no AML, então foi analisado na imagem do BIOS, só lendo os arquivos. Nada foi gravado na placa. O F20i não está mais no site da Gigabyte, então a análise usou os vizinhos dele, o F20g e o F21 (`tools/samples/gigabyte-b550m-aorus-elite-bios/`, zips oficiais com os sha256 `bde5b73b…5d223` e `4276f4e8…2b1a`). A extração foi feita com o UEFIExtract NE A75 (`~/.local/opt/uefiextract-ne-a75/`), e os módulos foram decompilados com o Ghidra pelo REA (`analysis/smm-f21/decomp-*`).
+
+- **O F21 serve de substituto.** A SSDT `GSWApp` do F21 só difere do F20i no endereço da `GGGT`, que o BIOS corrige no boot, e na string da versão. A do F20g também difere no número de build.
+- **A triagem é igual no F20g e no F21** (`python3 -I scripts/re/smm_triage.py <imagem>.dump`): mesmos módulos, mesmos despachos e mesmos consumidores do SMBus, embora todos os binários mudem de hash entre as versões.
+- **O `SmBusSmm` é o serviço de SMBus do SMM.** Ele instala o protocolo `72e40094-2ee1-497a-8f33-4c934a9e9c0c`, com o GUID montado com imediatos, e não registra nenhum tratador próprio. Só três módulos SMM citam esse protocolo:
+
+| Módulo | Quando roda | O que faz no SMBus |
+|---|---|---|
+| `IT8297LedSmm` | Tratador de Sx para S3, S4 e S5, e do botão de energia | Escreve em `0x68`: write block com o comando passado pelo chamador e write byte no reg `0x28` (operações `9` e `5` do `EFI_SMBUS_OPERATION`). É o endereço do controlador RGB Fusion 2 por SMBus segundo o OpenRGB. Nesta placa, o RGB é o IT5702 por USB, então provavelmente não há nada em `0x68` |
+| `ResetSmi` | SW SMI `0xBE`, que é o valor de reset da FADT (`0xBE` na porta `0xB2`): só quando o sistema reinicia | Read block em `0x68` reg `0x10` (operação `8`), além de acesso direto ao ASF em `0xB20` |
+| `GbtCrbSmm` | Tratadores de Sx, do botão de energia e de um SW SMI | Localiza o protocolo e guarda o ponteiro, mas nenhuma função o chama |
+
+- **Nenhum tratador periódico usa o SMBus.** Só o `FchSmmDispatcher`, que produz os despachos, e o `UsbRtSmm` (USB legado) citam o timer periódico, e nenhum dos dois consome o protocolo de SMBus. O tratador de GPI do `GbtCrbSmm` não chama o SMBus.
+- O `PiSmmCpuDxeSmm` também tem um `mov edx, 0xB00`, mas não foi conferido; provavelmente é uma constante sem relação com o SMBus.
+
+Conclusão: o SMM só mexe no SMBus ao suspender, desligar, reiniciar ou no botão de energia, e só no endereço `0x68`. Com o PC em uso, nada no SMM usa o SMBus. **Limites:** é uma análise estática do F21 e do F20g, não do F20i. Um módulo que calcule a base do SMBus na hora, sem o protocolo, não aparece na triagem. E o Ghidra não confirmou cada caminho até o tratador (o `IT8297LedSmm` chama o SMBus a partir do rótulo `LAB_00001648`, registrado para S3/S4/S5 e para o botão).
+
+### Software oficial: FURY CTRL 2.0.66.0 (estudo de 2026-10-31)
+
+Fonte: `tools/samples/kingston-fury-ctrl/`, com o zip oficial (sha256 `d366c5b3…f4508`), que nunca foi executado. Ele tem um Inno Setup 6.1, que leva a um msixbundle e a um msix. Dentro do msix, a interface .NET (`FURYCTRL.exe`) e o SDK `FuryCTRL_SDK.exe`, outro Inno Setup, versão 6.6.1. Esse SDK foi aberto com o `innoextract` 1.13.0 do fork crazy-max, compilado do código-fonte em `tools/repos/innoextract-crazy-max/build/`. O SDK tem:
+- `FuryControllerService.exe`, o serviço .NET que a interface chama por `ws://127.0.0.1:<porta>` com JSON (`api`, `ctrl_settings`, `dram`);
+- `FuryCTRL.dll`, a "MBAPI" nativa feita pela MSI (PDB `D:\MSI\MBAPI - FuryCTRL_1.0.0.34`);
+- `SMBus_Engine*.dll` e o driver `NTIOLib*.sys`, que faz a E/S de porta.
+
+O .NET foi decompilado com o ilspycmd, e o `FuryCTRL.dll` com o Ghidra pelo REA (`analysis/decomp-FuryCTRL/`).
+
+**Identificação do pente: só pelo SPD.** O `CheckDRAMSupport(slot, …)` lê o SPD e exige `KINGSTON` no fabricante. Depois, o `FUN_1000af50` troca para a página 1 do SPD (write em `0x6E` em 8 bits, que é `0x37` em 7 bits) e lê três bytes:
+
+| Byte do SPD | Leitura | Significado |
+|---|---|---|
+| 330 (`0x14A`) | read byte data `0x4A` na página 1 | `0x46` (`F`) ou `0x48` (`H`). É o 2º caractere do part number, que começa no byte 329: `KF…` ou `HX…` |
+| 359 (`0x167`) | `0x67` na página 1 | Modelo. Com `H`: 0 = HyperX Predator, 1 = HyperX Fury. Com `F`: 0 = Renegade, 1 = Beast, 2 = Beast SE, 3 = Renegade Refresh, 4 = Beast Refresh |
+| 360 (`0x168`) | `0x68` na página 1 | Precisa ser `0x10`, `0x20`, `0x22` ou `0x23`; senão, "NotSupport" |
+
+Nenhum byte vai para o controlador RGB nessa etapa. Fora a troca de página, que o `ee1004` do kernel também faz, é só leitura do SPD.
+
+**Controle do DDR4 (API v1): tudo no endereço `0x4E` em 8 bits, ou `0x27` em 7 bits.** Com o pente aceito (marca `H` ou `F`), o `DAT_1020b7e4 = 1` habilita as funções `Parameter*`, e cada uma faz um write byte data em `0x27`, com até 30 tentativas:
+- `ParameterStart`: reg `0xE1` = `1`;
+- `ParameterSet(reg, valor)`: escreve o registrador. O serviço usa `0xDD`–`0xE5`; por exemplo, `226` = `0xE2` e `229` = `0xE5` são os modos;
+- `ParameterDone`: reg `0xE1` = `2`;
+- `ParameterRun`: reg `0xE1` = `3`.
+
+Isso bate com o `HYPERX_REG_APPLY = 0xE1` (1, 2, 3) e os registradores `0xD1`–`0xEE` do `HyperXDRAMController` do OpenRGB. O serviço (`KSDRAMSMBusCtrlObj.applyDRAMLEDmode`) espera o mutex do DRAM antes do `ParameterStart`. O `SMBus_Engine` serializa com os mutexes globais `Global\Access_SMBUS.HTP.Method` e `Global\Access_SMBUS.HTP.Renesas.Method`, a convenção dos fabricantes de placa no Windows. O firmware também não os respeita.
+
+Consequências para o halo:
+- **Dá para decidir sem escrever no controlador.** Com o lax, basta ler os bytes 330, 359 e 360 do SPD pelo sysfs do `ee1004`. Se o byte 360 não for `0x10`, `0x20`, `0x22` ou `0x23`, o pente não tem RGB controlável e a Fase 5 acaba aí.
+- **O protocolo a seguir é o do `0x27`**, com o conjunto de registradores do HyperX, e não a assinatura `FURY` em `0x58`. Os valores de cada modo ficam nos `*_mode.cs` do serviço (`ilspy-FuryControllerService/`).
+- A assinatura da Fury em `0x58`, com duas escritas por slot, deixa de ser necessária.
+
+### Transações da detecção da Kingston (OpenRGB `72262b8`)
+
+| Passo | Endereço (7 bits) | Operação | Tipo |
+|---|---|---|---|
+| Kernel, sozinho, quando o barramento sobe: `i2c_register_spd_write_enable()` na porta 0 instancia o `ee1004` em cada pente que o DMI lista | `0x36`/`0x37`, `0x50`–`0x53` | Troca de página (send byte `0x00` em `0x36`/`0x37`) e read byte data; o nvmem é `read_only` | Escrita só no seletor de página |
+| SPD pelo OpenRGB: usa o sysfs do `ee1004` se ele existir; senão, `DDR4DirectAccessor` | `0x36`, `0x50`+n | Send byte `0x00` em `0x36`, read byte data reg `0x00` (espera `0x23`) e write byte data `0x36`/`0x37` cmd `0x00` dado `0xFF` para trocar a página | Escrita no seletor |
+| SPD pelo OpenRGB, quando o `DDR4DirectAccessor` falha (byte 0 diferente de `0x23` ou erro de leitura): `DDR5DirectAccessor::isAvailable` | `0x50`+n | Read byte data regs `0x00` e `0x01`; se não for um hub DDR5, read byte data reg `0x0B` e, se o valor estiver entre 1 e 15, **write byte data reg `0x0B` = `0x00`** | **Escrita no SPD**: num DDR4, o byte 11 é a tensão nominal (normalmente `0x03`) e só fica protegido se o pente tiver o write protect ligado |
+| `HyperXDRAMController` (`JEDEC_KINGSTON`) | `0x27` | Receive byte | Leitura |
+| `KingstonFuryDRAMController` DDR4, por slot | `0x58` + slot | Write byte data reg `0x08` = `0x53` (início); read word data regs `0x01`–`0x04`, com o byte alto igual a `F`,`U`,`R`,`Y` (até 3 tentativas cada); read word reg `0x06` (modelo: `0x23` Beast, `0x21` Beast White); write byte data reg `0x08` = `0x44` (fim). 10 ms entre cada uma, até 3 tentativas por slot | **Duas escritas por slot** |
+
+A detecção da Fury, portanto, não é só leitura: identificar o controlador já exige escrever no pente. E rodar a detecção do OpenRGB sem o `ee1004` carregado pode gravar no próprio SPD, pelo caminho do DDR5. É mais um motivo para nunca rodar o OpenRGB com o barramento liberado.
+
+### Recomendação
+
+**Go condicional, só para leitura**, se valerem três condições antes do primeiro boot com o lax:
+
+1. **Tirar o `uaccess` genérico de `i2c-*`** do `/etc/udev/rules.d/60-openrgb.rules` (linha 10, `KERNEL=="i2c-[0-99]*", TAG+="uaccess"`). Com o barramento criado, essa regra deixa qualquer processo da sessão, inclusive o AppImage do OpenRGB, escrever no VRM e no DAC da tensão da DRAM.
+2. **Não carregar `it87` nem `nct6775`.** O lax desliga a checagem de conflito de todos os drivers, não só do `i2c-piix4`, e o AML lê a Super I/O em `0x2E` a cada leitura do `gigabyte_wmi`. Hoje nenhum dos dois está carregado.
+3. **Aceitar o que sobra:** não há lock comum entre o firmware e o Linux. O momento protege `_PTS`/`_WAK` e os tratadores SMM de Sx, reset e botão de energia, mas um cliente WMI futuro não ficaria protegido. A análise do SMM é estática e feita no F21/F20g (ver "SMM do BIOS"). E o VRM fica no mesmo barramento.
+
+Primeiro contato, sem nenhum código do halo no barramento:
+
+- conferir `journalctl -k -b | grep -iE 'piix4|ee1004|spd'` e `ls /sys/bus/i2c/drivers/ee1004/`;
+- ler `/sys/bus/i2c/drivers/ee1004/<N>-005{0..3}/eeprom` (512 bytes, nvmem só leitura). O kernel faz a troca de página em `0x36`/`0x37`;
+- decodificar o byte 2 (`0x0C` = DDR4), os bytes 320–321 (fabricante) e 329–348 (part number), para confirmar o `KF3200C16D4/16GX`, e os bytes 330, 359 e 360, para aplicar o mesmo critério do FURY CTRL (ver "Software oficial").
+
+A ferramenta do halo começaria lendo só esse sysfs, sem `/dev/i2c-*`. Escrever em `0x27` (protocolo do HyperX) fica para uma decisão à parte, e só se o SPD disser que o pente é suportado. A assinatura da Fury em `0x58` não é necessária. Varredura com `i2cdetect` nunca.
+
+**Alternativa sem o lax:** chamar `\GSA1.WMBB` com os comandos `0x67`/`0x6A` deixa o firmware como único dono do barramento, sob o `SME0`. Isso exige um módulo fora da árvore (`acpi-call-dkms`; o Secure Boot está desligado) ou um driver WMI próprio, e o `acpi_call` dá ao root acesso a qualquer método ACPI. Não foi testado.
 
 ## Referências
 

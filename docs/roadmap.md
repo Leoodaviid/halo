@@ -44,7 +44,7 @@ Inventário de hardware, protocolos e permissões. Ver [hardware.md](hardware.md
 
 ## Fase 5: RAM (decisão pendente)
 
-Só se decidirmos liberar o SMBus com `acpi_enforce_resources=lax`. Kingston Fury DDR4, endereço `0x58`.
+Só se decidirmos liberar o SMBus com `acpi_enforce_resources=lax`. Kingston DDR4 (`KF3200C16D4/16GX`), controlada, segundo o software oficial (FURY CTRL), pelo controlador em `0x27` com os registradores do HyperX. Falta saber se este pente tem RGB, o que se lê nos bytes 330, 359 e 360 do SPD. O estudo do SMM do BIOS (F21/F20g) mostrou que o firmware só usa o SMBus em Sx, reset e botão de energia. Em 2026-10-31, o estudo do firmware (só leitura) mapeou quem usa o SMBus no AML e as transações da detecção do OpenRGB, e recomendou um go condicional, só para leitura do SPD pelo `ee1004`. Ver "RAM Kingston DDR4" em [hardware.md](hardware.md).
 
 ## Perguntas em aberto
 

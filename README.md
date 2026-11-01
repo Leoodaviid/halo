@@ -266,4 +266,4 @@ Veja:
 | AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo analisado no GCC, implementação pendente |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |
-| RAM Kingston Fury DDR4 (`KF3200C16D4/16GX`) | SMBus, endereço `0x58` | Adiado: SMBus bloqueado pelo ACPI |
+| RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; controlador em `0x27` (protocolo do HyperX, segundo o FURY CTRL); falta saber pelo SPD se o pente tem RGB | Adiado: SMBus bloqueado pelo ACPI; estudo do firmware em `docs/hardware.md` |
