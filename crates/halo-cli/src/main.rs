@@ -148,13 +148,19 @@ enum LedDevice {
     },
     /// Pentes Kingston Fury DDR4 da API v2 (0x58 + slot do SPD), pela moldura do
     /// FURY CTRL. off apaga (brilho 0), on reacende com o brilho padrão (80) sem
-    /// mudar o efeito, default volta ao efeito padrão (rainbow). Não lê os
+    /// mudar o efeito, default volta ao efeito padrão (rainbow), static põe uma
+    /// cor fixa (--color, em duas molduras, como o applyDRAMLEDmode). Não lê os
     /// pentes, só escreve. Abre /dev/i2c-N e precisa de sudo.
     Ram {
-        /// off, on ou default.
-        #[arg(value_parser = PossibleValuesParser::new(controller::RamCommand::NAMES)
-            .map(|s: String| controller::RamCommand::from_name(&s).unwrap()))]
-        command: controller::RamCommand,
+        /// off, on, default ou static.
+        #[arg(value_parser = PossibleValuesParser::new(controller::RamCommand::NAMES))]
+        command: String,
+        /// Cor RRGGBB do static (obrigatória nele, recusada nos outros).
+        #[arg(long, value_name = "RRGGBB", value_parser = parse_color)]
+        color: Option<Rgb>,
+        /// Brilho do static, de 0 a 100 (padrão 80).
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        brightness: Option<u8>,
         /// Mostra as transações sem ler o sysfs nem abrir o nó.
         #[arg(long)]
         dry_run: bool,
@@ -294,8 +300,17 @@ fn main() -> ExitCode {
             device: SpeedDevice::Waterforce { action },
         } => speed_waterforce(sys, action),
         Command::Led {
-            device: LedDevice::Ram { command, dry_run },
-        } => led_ram(sys, &cli.dev_root, command, dry_run),
+            device:
+                LedDevice::Ram {
+                    command,
+                    color,
+                    brightness,
+                    dry_run,
+                },
+        } => match ram_command(&command, color, brightness) {
+            Ok(command) => led_ram(sys, &cli.dev_root, command, dry_run),
+            Err(e) => fail(&e, EXIT_USAGE),
+        },
     }
 }
 
@@ -727,13 +742,38 @@ fn apply_exit_code(err: &controller::ApplyError) -> u8 {
     }
 }
 
+/// Monta o comando antes de qualquer acesso: `static` exige `--color`, e os
+/// outros recusam `--color` e `--brightness`. O clap já recusou cor fora de
+/// `RRGGBB` e brilho fora de 0 a 100.
+fn ram_command(
+    name: &str,
+    color: Option<Rgb>,
+    brightness: Option<u8>,
+) -> Result<controller::RamCommand, String> {
+    if name == "static" {
+        let color = color.ok_or("o static precisa de --color RRGGBB")?;
+        let brightness = match brightness {
+            Some(b) => controller::RamBrightness::new(b)
+                .ok_or_else(|| format!("brilho {b} fora da faixa de 0 a 100"))?,
+            None => controller::RamBrightness::default(),
+        };
+        return Ok(controller::RamCommand::Static { color, brightness });
+    }
+    if color.is_some() || brightness.is_some() {
+        return Err(format!(
+            "--color e --brightness só valem com static, não com {name}"
+        ));
+    }
+    controller::RamCommand::from_name(name).ok_or_else(|| format!("comando desconhecido: {name}"))
+}
+
 fn led_ram(sys: &Path, dev: &Path, command: controller::RamCommand, dry_run: bool) -> ExitCode {
     if dry_run {
         let mut out = String::new();
         let _ = writeln!(
             out,
             "Simulação de \"{}\" nos pentes 0x5a e 0x5b (nada é aberto):",
-            command.name()
+            command.label()
         );
         for step in controller::dry_run_lines(command) {
             let _ = writeln!(out, "  {step}");
@@ -753,7 +793,7 @@ fn led_ram(sys: &Path, dev: &Path, command: controller::RamCommand, dry_run: boo
                 .iter()
                 .map(|m| format!("{} (0x{:02x})", m.instance, m.controller.address()))
                 .collect();
-            println!("{} aplicado em {}", command.name(), list.join(", "));
+            println!("{} aplicado em {}", command.label(), list.join(", "));
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e, apply_exit_code(&e)),

@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use super::{Brand, FindError, SpdRead, SpdSlot, Verdict, decode, find};
 use crate::hid::hidraw::{LOCK_TIMEOUT, lock_exclusive};
+use crate::waterforce::led::Rgb;
 
 /// Endereço de 7 bits do controlador do slot 0 (`iDDRBaseAddress = 88`).
 pub const BASE_ADDRESS: u16 = 0x58;
@@ -101,6 +102,19 @@ pub enum WriteReg {
     HyperSpeed,
     /// `0x20`.
     Brightness,
+    /// `0x27`, número de pentes (`SetKingstonFuryDDR5NumDimm@0x1001a800`;
+    /// `FURY_REG_NUM_SLOTS` do OpenRGB).
+    DimmCount,
+    /// `0x30`, número de cores da tabela
+    /// (`SetKingstonFuryDDR5SelectColor@0x1001ad60`; `FURY_REG_NUM_COLORS`).
+    ColorCount,
+    /// `0x31`, vermelho da cor 0 (`SetKingstonFuryDDR5ColorIndex@0x1001ae80`
+    /// escreve `'1' + 3 * índice`; `FURY_REG_MODE_BASE_RED`).
+    Color0Red,
+    /// `0x32`, verde da cor 0 (`'2' + 3 * índice`; `FURY_REG_MODE_BASE_GREEN`).
+    Color0Green,
+    /// `0x33`, azul da cor 0 (`'3' + 3 * índice`; `FURY_REG_MODE_BASE_BLUE`).
+    Color0Blue,
 }
 
 impl WriteReg {
@@ -116,6 +130,11 @@ impl WriteReg {
             Self::Hue => 0x11,
             Self::HyperSpeed => 0x1E,
             Self::Brightness => 0x20,
+            Self::DimmCount => 0x27,
+            Self::ColorCount => 0x30,
+            Self::Color0Red => 0x31,
+            Self::Color0Green => 0x32,
+            Self::Color0Blue => 0x33,
         }
     }
 }
@@ -667,8 +686,37 @@ pub const CMD_START: u8 = 0x53;
 pub const CMD_DONE: u8 = 0x44;
 /// Brilho padrão do serviço (`_brightness = 80`).
 pub const DEFAULT_BRIGHTNESS: u8 = 80;
+/// Pausa antes de cada cor da tabela (`Thread.Sleep(10)` do
+/// `setDDR5ColorsTable`, `Miscellaneous.cs:862`).
+pub const COLOR_PAUSE: Duration = Duration::from_millis(10);
+/// Limite do `0x27` (`CheckValueRange(iNumDimm, 4, 1, 4)`).
+const MAX_DIMMS: usize = 4;
 
-/// As três escritas mínimas.
+/// Brilho do `0x20`, de 0 a 100 (`CheckValueRange(_obj.brightness, 80)` do
+/// serviço; `Static.brightness_max = 100` no OpenRGB). Fora da faixa não se
+/// constrói: o halo recusa em vez de trocar por 80, como faz o serviço.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RamBrightness(u8);
+
+impl RamBrightness {
+    pub const MAX: u8 = 100;
+
+    pub fn new(value: u8) -> Option<Self> {
+        (value <= Self::MAX).then_some(Self(value))
+    }
+
+    pub fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for RamBrightness {
+    fn default() -> Self {
+        Self(DEFAULT_BRIGHTNESS)
+    }
+}
+
+/// Os comandos de escrita.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RamCommand {
     /// `setDRAMDDR5_AllOff`: papel e brilho 0.
@@ -677,11 +725,18 @@ pub enum RamCommand {
     On,
     /// `setDRAMDDR5_DefaultRainbow`.
     Default,
+    /// `applyDRAMLEDmode` com `ddr5_static_color_mode.set` no modo
+    /// `ctrl_color`: uma cor fixa (cor 0 da tabela) em todos os pentes.
+    Static {
+        color: Rgb,
+        brightness: RamBrightness,
+    },
 }
 
 impl RamCommand {
-    pub const NAMES: [&'static str; 3] = ["off", "on", "default"];
+    pub const NAMES: [&'static str; 4] = ["off", "on", "default", "static"];
 
+    /// Os comandos sem parâmetros. `static` precisa da cor e não sai daqui.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "off" => Some(Self::Off),
@@ -696,31 +751,72 @@ impl RamCommand {
             Self::Off => "off",
             Self::On => "on",
             Self::Default => "default",
+            Self::Static { .. } => "static",
         }
     }
 
-    /// Escritas de cada pente, na ordem do serviço.
-    fn writes(self) -> &'static [(WriteReg, Value)] {
-        use Value::{Fixed, Index};
+    /// Nome com os parâmetros, para as mensagens.
+    pub fn label(self) -> String {
         match self {
-            Self::Off => &[(WriteReg::Index, Index), (WriteReg::Brightness, Fixed(0))],
-            Self::On => &[
-                (WriteReg::Index, Index),
-                (WriteReg::Brightness, Fixed(DEFAULT_BRIGHTNESS)),
-            ],
-            Self::Default => &[
-                (WriteReg::Style, Fixed(1)),
-                (WriteReg::Index, Index),
-                (WriteReg::Delay, Fixed(0)),
-                (WriteReg::Direction, Fixed(1)),
-                (WriteReg::Speed, Fixed(25)),
-                (WriteReg::Brightness, Fixed(DEFAULT_BRIGHTNESS)),
-                (WriteReg::Width, Fixed(0)),
-                (WriteReg::Hue, Fixed(0)),
-                (WriteReg::HyperSpeed, Fixed(0)),
+            Self::Static { color, brightness } => {
+                format!("static {color}, brilho {}", brightness.value())
+            }
+            _ => self.name().to_owned(),
+        }
+    }
+
+    /// Molduras do comando; em cada uma, as escritas de cada pente, na ordem
+    /// do serviço.
+    fn frames(self) -> Vec<Vec<Item>> {
+        use Item::{Pause, Write};
+        use Value::{DimmCount, Fixed, Index};
+        match self {
+            Self::Off => vec![vec![
+                Write(WriteReg::Index, Index),
+                Write(WriteReg::Brightness, Fixed(0)),
+            ]],
+            Self::On => vec![vec![
+                Write(WriteReg::Index, Index),
+                Write(WriteReg::Brightness, Fixed(DEFAULT_BRIGHTNESS)),
+            ]],
+            Self::Default => vec![vec![
+                Write(WriteReg::Style, Fixed(1)),
+                Write(WriteReg::Index, Index),
+                Write(WriteReg::Delay, Fixed(0)),
+                Write(WriteReg::Direction, Fixed(1)),
+                Write(WriteReg::Speed, Fixed(25)),
+                Write(WriteReg::Brightness, Fixed(DEFAULT_BRIGHTNESS)),
+                Write(WriteReg::Width, Fixed(0)),
+                Write(WriteReg::Hue, Fixed(0)),
+                Write(WriteReg::HyperSpeed, Fixed(0)),
+            ]],
+            // KSDRAMSMBusCtrlObj.cs:221-290 (MasterSlaveRole) e 291-415
+            // (ddr5_static_color_mode.cs:33-67, Miscellaneous.cs:855-862).
+            Self::Static { color, brightness } => vec![
+                vec![Write(WriteReg::Index, Index)],
+                vec![
+                    Write(WriteReg::Style, Fixed(0)),
+                    Write(WriteReg::Direction, Fixed(1)),
+                    Write(WriteReg::Delay, Fixed(0)),
+                    Write(WriteReg::Speed, Fixed(0)),
+                    Write(WriteReg::ColorCount, Fixed(1)),
+                    Write(WriteReg::DimmCount, DimmCount),
+                    Write(WriteReg::Brightness, Fixed(brightness.value())),
+                    Pause(COLOR_PAUSE),
+                    Write(WriteReg::Color0Red, Fixed(color.0)),
+                    Write(WriteReg::Color0Green, Fixed(color.1)),
+                    Write(WriteReg::Color0Blue, Fixed(color.2)),
+                ],
             ],
         }
     }
+}
+
+/// Item da tabela de cada pente numa moldura.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Item {
+    Write(WriteReg, Value),
+    Pause(Duration),
 }
 
 /// Valor de uma escrita da tabela de cada comando.
@@ -729,6 +825,8 @@ enum Value {
     Fixed(u8),
     /// O índice de posição do pente ([`index_of`]).
     Index,
+    /// O número de pentes do plano, de 1 a 4.
+    DimmCount,
 }
 
 /// Índice de posição de `c` entre `controllers`: os slots em ordem decrescente
@@ -788,30 +886,39 @@ impl Plan {
     }
 }
 
-/// Plano completo de `command` sobre `controllers`: `CommandStart`, as escritas
-/// de cada pente e `CommandDoneAndRun`.
+/// Plano completo de `command` sobre `controllers`: para cada moldura do
+/// comando, `CommandStart`, as escritas de cada pente e `CommandDoneAndRun`.
 pub fn plan(command: RamCommand, controllers: &[Controller]) -> Plan {
     let mut sorted = controllers.to_vec();
     sorted.sort();
     sorted.dedup();
+    let dimms = sorted.len().clamp(1, MAX_DIMMS) as u8;
     let mut steps = Vec::new();
-    for &c in sorted.iter().rev() {
-        steps.push(Step::Write(c, WriteReg::Command, CMD_START));
-    }
-    steps.push(Step::Pause(FRAME_PAUSE));
-    for &c in &sorted {
-        for &(reg, value) in command.writes() {
-            let value = match value {
-                Value::Fixed(v) => v,
-                Value::Index => index_of(c, &sorted),
-            };
-            steps.push(Step::Write(c, reg, value));
+    for frame in command.frames() {
+        for &c in sorted.iter().rev() {
+            steps.push(Step::Write(c, WriteReg::Command, CMD_START));
         }
+        steps.push(Step::Pause(FRAME_PAUSE));
+        for &c in &sorted {
+            for &item in &frame {
+                steps.push(match item {
+                    Item::Pause(d) => Step::Pause(d),
+                    Item::Write(reg, value) => {
+                        let value = match value {
+                            Value::Fixed(v) => v,
+                            Value::Index => index_of(c, &sorted),
+                            Value::DimmCount => dimms,
+                        };
+                        Step::Write(c, reg, value)
+                    }
+                });
+            }
+        }
+        for &c in &sorted {
+            steps.push(Step::Write(c, WriteReg::Command, CMD_DONE));
+        }
+        steps.push(Step::Pause(FRAME_PAUSE));
     }
-    for &c in &sorted {
-        steps.push(Step::Write(c, WriteReg::Command, CMD_DONE));
-    }
-    steps.push(Step::Pause(FRAME_PAUSE));
     Plan { steps }
 }
 
@@ -1459,6 +1566,145 @@ pub(crate) mod tests {
         assert!(lines.iter().all(|l| !l.contains("lê")), "{lines:?}");
         assert_eq!(RamCommand::from_name("purple"), None);
         assert_eq!(RamCommand::from_name("default"), Some(RamCommand::Default));
+        assert_eq!(RamCommand::from_name("static"), None);
+        assert!(RamCommand::NAMES.contains(&"static"));
+    }
+
+    fn static_cmd(r: u8, g: u8, b: u8, brightness: u8) -> RamCommand {
+        RamCommand::Static {
+            color: Rgb(r, g, b),
+            brightness: RamBrightness::new(brightness).unwrap(),
+        }
+    }
+
+    #[test]
+    fn ram_brilho_e_registradores_do_estatico() {
+        assert_eq!(RamBrightness::new(0).map(RamBrightness::value), Some(0));
+        assert_eq!(RamBrightness::new(80).map(RamBrightness::value), Some(80));
+        assert_eq!(RamBrightness::new(100).map(RamBrightness::value), Some(100));
+        assert_eq!(RamBrightness::new(101), None);
+        assert_eq!(RamBrightness::default().value(), 80);
+        let codes: Vec<u8> = [
+            WriteReg::ColorCount,
+            WriteReg::DimmCount,
+            WriteReg::Color0Red,
+            WriteReg::Color0Green,
+            WriteReg::Color0Blue,
+        ]
+        .iter()
+        .map(|r| r.code())
+        .collect();
+        assert_eq!(codes, [0x30, 0x27, 0x31, 0x32, 0x33]);
+        assert_eq!(static_cmd(0, 0, 0xFF, 80).name(), "static");
+        assert_eq!(
+            static_cmd(0, 0, 0xFF, 80).label(),
+            "static 0000ff, brilho 80"
+        );
+    }
+
+    /// Sequência de `docs/hardware.md`, "Modo estático: sequência e
+    /// proveniência", para `0x5A` (índice 1) e `0x5B` (índice 0).
+    #[test]
+    fn ram_estatico_sequencia_exata() {
+        let mut bus = bus_with_index_0e();
+        apply(&mut bus, &plan(static_cmd(0x00, 0x00, 0xFF, 80), &pair())).unwrap();
+        assert!(
+            bus.ops.iter().all(|op| matches!(op, Op::Write(..))),
+            "{:?}",
+            bus.ops
+        );
+        let pente = |a: u16| {
+            [
+                (a, 0x09, 0x00),
+                (a, 0x0C, 0x01),
+                (a, 0x0D, 0x00),
+                (a, 0x0E, 0x00),
+                (a, 0x30, 0x01),
+                (a, 0x27, 0x02),
+                (a, 0x20, 0x50),
+                (a, 0x31, 0x00),
+                (a, 0x32, 0x00),
+                (a, 0x33, 0xFF),
+            ]
+        };
+        let mut expected = vec![
+            (0x5B, 0x08, 0x53),
+            (0x5A, 0x08, 0x53),
+            (0x5A, 0x0B, 0x01),
+            (0x5B, 0x0B, 0x00),
+            (0x5A, 0x08, 0x44),
+            (0x5B, 0x08, 0x44),
+            (0x5B, 0x08, 0x53),
+            (0x5A, 0x08, 0x53),
+        ];
+        expected.extend(pente(0x5A));
+        expected.extend(pente(0x5B));
+        expected.extend([(0x5A, 0x08, 0x44), (0x5B, 0x08, 0x44)]);
+        assert_eq!(expected.len(), 30);
+        assert_eq!(writes(&bus), expected);
+    }
+
+    #[test]
+    fn ram_estatico_cor_e_brilho_sem_escala() {
+        let mut bus = FakeBus::default();
+        apply(&mut bus, &plan(static_cmd(0xFF, 0x1A, 0x1B, 0), &pair())).unwrap();
+        let w = writes(&bus);
+        // Segunda moldura, primeiro pente: 2 inícios + 6 da primeira moldura.
+        assert_eq!(w[8 + 6], (0x5A, 0x20, 0x00));
+        assert_eq!(
+            w[8 + 7..8 + 10],
+            [(0x5A, 0x31, 0xFF), (0x5A, 0x32, 0x1A), (0x5A, 0x33, 0x1B)]
+        );
+    }
+
+    #[test]
+    fn ram_estatico_com_um_pente() {
+        let mut bus = FakeBus::default();
+        apply(
+            &mut bus,
+            &plan(static_cmd(0, 0xFF, 0, 80), &[controller(3)]),
+        )
+        .unwrap();
+        let w = writes(&bus);
+        assert!(w.contains(&(0x5B, 0x0B, 0x00)), "{w:?}");
+        assert!(w.contains(&(0x5B, 0x27, 0x01)), "{w:?}");
+        assert!(w.iter().all(|&(a, ..)| a == 0x5B), "{w:?}");
+        assert_eq!(w.len(), 3 + 12);
+    }
+
+    #[test]
+    fn ram_estatico_falha_na_primeira_moldura_para_tudo() {
+        let mut bus = FakeBus::default();
+        // 2 inícios e o índice do 0x5A dão certo; o índice do 0x5B falha sempre.
+        bus.errors.extend([None; 3]);
+        bus.errors.extend([Some(libc::EIO); 30]);
+        let err = apply(&mut bus, &plan(static_cmd(0, 0, 0xFF, 80), &pair())).unwrap_err();
+        let ApplyError::Write {
+            controller, reg, ..
+        } = &err
+        else {
+            panic!("{err:?}");
+        };
+        assert_eq!((controller.address(), reg.code()), (0x5B, 0x0B));
+        let w = writes(&bus);
+        assert_eq!(w.len(), 3 + 30);
+        assert!(!w.contains(&(0x5A, 0x08, 0x44)), "{w:?}");
+        assert!(!w.iter().any(|&(_, r, _)| r == 0x09), "{w:?}");
+    }
+
+    #[test]
+    fn ram_estatico_pausas() {
+        let mut bus = FakeBus::default();
+        apply(&mut bus, &plan(static_cmd(0, 0, 0xFF, 80), &pair())).unwrap();
+        let gaps: Vec<Duration> = bus.at.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|g| *g >= TRANSACTION_PAUSE), "{gaps:?}");
+        // ops 0-1 inícios, [50 ms], 2-3 índices, 4-5 fins, [50 ms], 6-7 inícios,
+        // [50 ms], 8-14 do 0x5A, [10 ms], 15 = 0x31.
+        assert!(gaps[1] >= FRAME_PAUSE, "{gaps:?}");
+        assert!(gaps[5] >= FRAME_PAUSE, "{gaps:?}");
+        assert!(gaps[7] >= FRAME_PAUSE, "{gaps:?}");
+        assert_eq!(bus.ops[15], Op::Write(0x5A, 0x31, 0x00));
+        assert!(gaps[14] >= COLOR_PAUSE + TRANSACTION_PAUSE, "{gaps:?}");
     }
 
     #[test]
