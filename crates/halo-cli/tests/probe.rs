@@ -39,6 +39,7 @@ fn ajuda_dos_comandos() {
         &["telemetry", "waterforce", "--help"],
         &["probe", "ram", "--help"],
         &["probe", "ram-controller", "--help"],
+        &["probe", "waterforce-lcd", "--help"],
     ] {
         let out = halo().args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}");
@@ -422,4 +423,31 @@ fn ajuda_do_controlador_avisa_contra_leituras_em_sequencia() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Não rode em sequência"), "{text}");
     assert!(text.contains("índice"), "{text}");
+}
+
+#[test]
+fn waterforce_lcd_nao_encontrado() {
+    let sys = sys_with_other_device();
+    let out = run(&["probe", "waterforce-lcd"], sys.path());
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("1044:7a4d"));
+}
+
+#[test]
+fn waterforce_lcd_ajuda_diz_que_so_le() {
+    let out = halo()
+        .args(["probe", "waterforce-lcd", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Só lê"), "{text}");
+    assert!(text.contains("99 E8"), "{text}");
+    assert!(text.contains("Nunca envia comandos de escrita"), "{text}");
+    // O probe antigo continua com os sete pedidos.
+    let out = halo()
+        .args(["probe", "waterforce", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("D9 01, D9 02, C7 e E8"), "{text}");
 }

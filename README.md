@@ -12,6 +12,7 @@ Fase de análise concluída em 2026-10-20. Já existem ferramentas que só leem,
 cargo run -q -p halo-cli -- probe it5702 --raw          # placa-mãe
 cargo run -q -p halo-cli -- telemetry waterforce         # fan, bomba e líquido
 cargo run -q -p halo-cli -- probe waterforce --raw      # leituras do Waterforce
+cargo run -q -p halo-cli -- probe waterforce-lcd --raw  # estado do LCD do Waterforce (só lê)
 cargo run -q -p halo-cli -- probe ram --raw             # SPD dos pentes (exige o lax)
 sudo target/debug/halo probe ram-controller            # controladores RGB da RAM (root)
 sudo target/debug/halo led ram off                     # apaga a RAM; on reacende, default volta ao padrão
@@ -276,7 +277,7 @@ Veja:
 | AORUS Waterforce X 240, telemetria | Driver `gigabyte_waterforce` do kernel (hwmon) | Funciona, só leitura |
 | AORUS Waterforce X 240, anel e fans RGB | Castor3 (`1044:7a4d`), USB HID | Funciona: `halo led waterforce`, protocolo do GCC confirmado no aparelho |
 | AORUS Waterforce X 240, velocidade da fan e da bomba | Castor3 (`1044:7a4d`), USB HID | Funciona: `halo speed waterforce`, presets do firmware confirmados no aparelho; curva Customized pendente |
-| AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Protocolo analisado no GCC, implementação pendente |
+| AORUS Waterforce X 240, tela LCD | Castor3 (`1044:7a4d`), USB HID | Leitura pelo `halo probe waterforce-lcd` (modo, itens, cores, mídia e carrossel, como o GCC); configuração e envio de mídia pendentes |
 | Mouse Logitech G502 SE HERO | `046d:c08b`, USB HID | Protocolo conhecido |
 | Teclado Redragon edição Horda (só LED vermelho) | Sino Wealth (`258a:013b`), USB HID | Protocolo desconhecido e de alto risco, investigar com REA |
 | RAM Kingston DDR4 (`KF3200C16D4/16GX`) | SMBus do FCH; um controlador por pente em `0x58` + slot (API v2 do FURY CTRL, registradores do `KingstonFuryDRAMController`) | Só com o `acpi_enforce_resources=lax`. SPD pelo `halo probe ram` (Fury Beast Refresh); controladores pelo `halo probe ram-controller` e `halo led ram off`/`on`/`default`/`static`, com `sudo`. Modo independente e outros efeitos pendentes |

@@ -11,6 +11,7 @@
 
 pub mod cpu_feed;
 pub mod curve;
+pub mod lcd;
 pub mod led;
 pub mod probe;
 pub mod speed;

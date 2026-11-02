@@ -11,6 +11,7 @@ use halo_core::hid::{Hidraw, OpenError};
 use halo_core::it5702::{self, It5702Report, ProbeError};
 use halo_core::ram::{self, controller};
 use halo_core::waterforce::curve::Curve;
+use halo_core::waterforce::lcd::{self, LcdQuery, LcdReading};
 use halo_core::waterforce::led::{self, ApplyError, Effect, LedSetting, Rgb};
 use halo_core::waterforce::probe::{
     self as wf_probe, CurvePoint, ProbeReport, ReadQuery, Reading, SpeedMode, model_name,
@@ -208,6 +209,16 @@ enum ProbeDevice {
     /// precisa de sudo. Não rode em sequência: séries de leituras com o efeito
     /// animando travaram o rainbow (docs/hardware.md).
     RamController,
+    /// LCD do AORUS Waterforce (1044:7a4d). Só lê: envia o 99 E8 (modo) e
+    /// depois só as leituras que o GIGABYTE Control Center faz para aquele modo
+    /// (DF e EA nos modos 0 a 3 e 5; E9 e EA no 4; EA no 6; F3/F4/F5, FD e FA
+    /// na mídia, 7 a 9; FC no carrossel, 11). Nunca envia comandos de escrita
+    /// do LCD nem B6.
+    WaterforceLcd {
+        /// Mostra também os primeiros 64 bytes de cada resposta.
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -244,6 +255,19 @@ fn main() -> ExitCode {
         } => match wf_probe::probe(sys) {
             Ok(report) => {
                 print!("{}", format_waterforce_probe(&report, raw));
+                if report.complete() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(EXIT_FAILURE)
+                }
+            }
+            Err(e) => fail(&e, waterforce_probe_exit_code(&e)),
+        },
+        Command::Probe {
+            device: ProbeDevice::WaterforceLcd { raw },
+        } => match lcd::probe_lcd(sys) {
+            Ok(report) => {
+                print!("{}", format_lcd_probe(&report, raw));
                 if report.complete() {
                     ExitCode::SUCCESS
                 } else {
@@ -1173,6 +1197,105 @@ fn format_telemetry(t: &Telemetry) -> String {
         t.pump_duty,
         Telemetry::duty_percent(t.pump_duty)
     );
+    out
+}
+
+fn format_lcd_reading(query: LcdQuery, reading: &LcdReading) -> String {
+    match reading {
+        LcdReading::Mode(m) => {
+            format!("modo {m}, {}", lcd::mode_name(*m).unwrap_or("desconhecido"))
+        }
+        LcdReading::Display { items, byte11 } => {
+            let on: Vec<&str> = lcd::DISPLAY_ITEMS
+                .iter()
+                .zip(items)
+                .filter(|(_, on)| **on)
+                .map(|(name, _)| *name)
+                .collect();
+            let list = if on.is_empty() {
+                "nenhum item ligado".to_owned()
+            } else {
+                on.join(", ")
+            };
+            format!("{list} (r[11] = 0x{byte11:02x})")
+        }
+        LcdReading::ZoneColor(a, b) => format!("zona 1 {a}, zona 2 {b}"),
+        LcdReading::Logo(v) => format!("{v}"),
+        LcdReading::MediaCount(n) => format!("{n} arquivo(s)"),
+        LcdReading::MediaItem { looped, name } => {
+            let index = match query {
+                LcdQuery::MediaItem { index, .. } => index,
+                _ => 0,
+            };
+            format!("{index}: {name}{}", if *looped { " (no loop)" } else { "" })
+        }
+        LcdReading::MediaLoop { interval, indices } => {
+            format!("intervalo {interval}, itens {indices:?}")
+        }
+        LcdReading::DiskFree(kib) => format!("{kib} KiB"),
+        LcdReading::Carousel { interval, modes } => {
+            format!("intervalo {interval}, modos {modes:?}")
+        }
+    }
+}
+
+fn format_lcd_probe(r: &lcd::LcdReport, raw: bool) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Dispositivo:        {}", r.devnode.display());
+    let _ = writeln!(
+        out,
+        "Nome HID:           {}",
+        r.hid_name.as_deref().unwrap_or("(sem nome)")
+    );
+    for result in &r.results {
+        let label = match result.query {
+            LcdQuery::Mode => "Modo (E8):          ",
+            LcdQuery::Display => "Itens (DF):         ",
+            LcdQuery::ZoneColor { .. } => "Cores (EA):         ",
+            LcdQuery::Logo => "Logo (E9):          ",
+            LcdQuery::MediaPrepare { .. } => "Lista (F3):         ",
+            LcdQuery::MediaCount { .. } => "Mídia (F4):         ",
+            LcdQuery::MediaItem { .. } => "Arquivo (F5):       ",
+            LcdQuery::MediaLoop { .. } => "Loop (FD):          ",
+            LcdQuery::DiskFree { .. } => "Espaço livre (FA):  ",
+            LcdQuery::Carousel => "Carrossel (FC):     ",
+        };
+        let value = match (&result.response, result.reading()) {
+            (None, _) if !result.query.expects_response() => "enviado (sem resposta)".to_owned(),
+            (None, _) => "sem resposta em 2 s".to_owned(),
+            (Some(_), Some(reading)) => format_lcd_reading(result.query, &reading),
+            (Some(_), None) => "resposta curta".to_owned(),
+        };
+        let _ = writeln!(out, "{label} {value}");
+    }
+    if r.timed_out {
+        let _ = writeln!(
+            out,
+            "O prazo de {} s com o aparelho acabou; as leituras seguintes não foram enviadas.",
+            lcd::PROBE_BUDGET.as_secs()
+        );
+    }
+    match r.mode() {
+        None => {
+            let _ = writeln!(
+                out,
+                "O modo não respondeu; nenhuma outra leitura foi enviada."
+            );
+        }
+        Some(m) if r.results.len() == 1 => {
+            let _ = writeln!(out, "O GCC não lê mais nada do LCD no modo {m}.");
+        }
+        Some(_) => {}
+    }
+    if raw {
+        for result in &r.results {
+            let Some(response) = &result.response else {
+                continue;
+            };
+            let _ = writeln!(out, "Resposta {}:", result.query);
+            write_hex(&mut out, &response[..response.len().min(64)]);
+        }
+    }
     out
 }
 
