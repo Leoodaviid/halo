@@ -878,6 +878,35 @@ e não envia nada, e escolheu um efeito no painel. Os horários vêm de um
   ele caiu num segundo `flock` rodado logo em seguida. Ele foi conferido no
   Shell aninhado, com um único `Led.Apply` por clique.
 
+### LCD aceso e todo preto (2026-11-01)
+
+O usuário notou, por volta das 19:30, a tela do LCD acesa mas sem desenhar nada, nem fundo nem números. A essa altura:
+
+- **19:18:53:** boot depois do corte de energia do ensaio da `ram-apply-on-boot`;
+- **19:19:04:** o `halod` subiu e mandou o `E1` e o `E0` logo de início;
+- **19:30:38–47:** o `packaging/install.sh` parou e reiniciou o `halod`, com o `E0` de 80 °C do daemon e do `ExecStopPost`, a janela de 8 s e um `E1` novo.
+
+Não se sabe se a tela apagou no boot ou no reinício. O journal do `halod` não tem nenhum pedido de LED ou de velocidade nesse intervalo, e o halo não tem nenhum comando que escreva no LCD.
+
+- **19:44:51, `halo probe waterforce --raw`:** código 0, o LCD no modo 3 (`99 e8 04`, igual a 2026-10-20) e o resto como já se conhecia (firmware 1.6, fan em Performance, bomba em Turbo, slots Customized 2200/2200/2350/2500 e 2600 ×4, 2 fans RGB). **H1, o modo ter mudado, descartada.**
+- **20:28:56, `halo probe waterforce-lcd --raw`** (change `waterforce-lcd-read`): no modo 3, o comando enviou só `99 E8`, `99 DF` e `99 EA 04`, recebeu as três respostas em 63 ms e saiu com código 0. O `halod` continuou ativo, sem erro no journal, e a telemetria seguiu normal (líquido 30 °C, fan 2170 RPM, bomba 3225 RPM).
+
+| Pedido | Resposta | Leitura |
+|---|---|---|
+| `99 E8` | `99 e8 04` | modo 3, `Faith4` |
+| `99 DF` | `99 df 00 00 00 00 01 00 01 00 00 01` | `CPUTemperature` e `LiquidTemperature` ligados (`r[6]`, `r[8]`); `r[11]` = `0x01` |
+| `99 EA 04` | `99 ea 04 73 7e 8b ff 00 00` | zona 1 `737e8b` (cinza-azulado), zona 2 `ff0000` |
+
+- **H2, nenhum item ligado: descartada.** Os dois itens ligados são os que o GCC testa nos temas (bits `0x10` e `0x40`, `GLed_0x4016_240.cs:91`).
+- **H3, cores pretas: descartada.**
+- **Sobra a H4:** a configuração da tela está intacta e o firmware não desenha.
+
+Testes seguintes, no mesmo dia:
+
+- **Corte de energia:** o usuário relatou que, depois de cortar a energia, a tela acende ao ligar e apaga logo em seguida, ficando como antes. O probe das 20:28 foi feito nesse boot (o corte foi às 18:59–19:18), e mostrou a configuração acima. O corte de energia não resolve.
+- **`halod` parado (20:34:58–20:35:42):** `systemctl --user stop halod.service`, com a proteção normal (`E0` de 80 °C do daemon e do `ExecStopPost`, janela de 8 s), e `start` depois. Com o `halod` parado, **a tela continuou preta**, sem mostrar nem os 80 °C. O feed contínuo do `halod` não é o que mantém a tela apagada. O Tctl lido pelo feed estava normal (`k10temp` `Tctl`, 39 °C).
+- **Hipótese mais forte, não confirmada:** o que aparece ao ligar é a animação de partida do firmware, e o tema `Faith4` (modo 3) não desenha nada quando o firmware passa para ele. Testar isso exige uma escrita, trocar o modo com o `E7` (`LcdApi.SetMode`), que fica para a change `waterforce-lcd-config`. A suspeita antiga, o `E1` enviado logo ao iniciar (o GCC espera 20 s, `CoolerDataApi.GetCoolerData`), fica mais fraca: a tela já funcionou com o `halod` de 27 a 31/10, e pará-lo não a trouxe de volta. Mas não foi descartada para o momento do boot, porque não se sabe se a tela apaga antes ou depois do primeiro `E1`.
+
 ## Mouse Logitech G502 SE HERO
 
 `046d:c08b`, `/dev/hidraw0` e `/dev/hidraw1`, permissão liberada ao usuário. Suportado pelo driver Logitech do OpenRGB (`LOGITECH_G502_HERO_PID`). Detectado pelo OpenRGB em 2026-10-17.
