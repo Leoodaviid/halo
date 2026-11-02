@@ -121,7 +121,24 @@ O LCD não recebe pixels crus. O GCC grava **arquivos** (JPEG, PNG ou MP4) na me
 | Ler carrossel | `99 FC` → `r[2]` intervalo, `r[3…]` modos+1 até 0 | `LcdApi.GetLoop` | confirmado |
 | Salvar | `99 B6` | `LcdApi.Save` | confirmado |
 
-Números dos modos (índice de `GDisplayMode` na interface): de 0 a 2, informações de CPU; 3, temperatura; 4, logo; 5, funções; 6, texto; 7, imagem; 8, animação; 9, vídeo; 10, mascote; 11, carrossel. A correspondência vem das imagens de pré-visualização do `LcdControl.ShowMode` e é **inferida**.
+Números dos modos: os nomes vêm do `enum DisplayMode` do GCC (`ucCooler.Models.Lcd/DisplayMode.cs`), que também é o índice do `GDisplayMode` na interface:
+
+| Modo | Nome no GCC | O que é |
+|---|---|---|
+| 0 a 4 | `Faith1` a `Faith5` | cinco temas de informações do sistema; o 4 tem a variante com o logo (`E9`) |
+| 5 | `Function` | funções |
+| 6 | `Text` | texto (o GCC grava como um PNG de 320×320) |
+| 7 | `Image` | imagem |
+| 8 | `Gif` | animação (gravada como MP4) |
+| 9 | `Video` | vídeo |
+| 10 | `Pet` | mascote |
+| 11 | `Carousel` | carrossel de modos |
+
+A versão anterior desta tabela inferia "0 a 2 CPU, 3 temperatura, 4 logo" pelas imagens de pré-visualização do `LcdControl.ShowMode`. Os nomes do enum substituem essa inferência. O que cada tema `Faith` desenha continua **não confirmado** no aparelho.
+
+Itens do `DF`/`E2` (`enum Display`, `ucCooler.Models.Lcd/Display.cs`), um byte 0/1 por item em `r[2..10]`, nesta ordem: `FanRPM`, `CPUClock`, `PumpRPM`, `CPUName`, `CPUTemperature`, `CPUThread`, `LiquidTemperature`, `RAMTemperature` e `Fahrenheit` (a unidade). O `SetDisplay` escreve o intervalo em `[11]`, mas o `GetDisplay` o lê de `array[2]`, que é o byte do `FanRPM`. É um desvio do GCC: o `halo probe waterforce-lcd` mostra o `r[11]` cru, sem chamá-lo de intervalo.
+
+**Leituras por modo** (`LcdControl.cs`, linhas 195–330): ao abrir a página do LCD, o GCC lê o `E8` e só as leituras do modo atual. Nos modos 0 a 3 e 5, `DF` e `EA <modo+1>`; no 4, `E9` e `EA`; no 6, `EA`; nos modos 7 a 9, `F3`, `F4`, `F5` (lista), `FD <modo+1>` e `FA <disco>`; no 11, `FC`; nos outros, nada. O `F3` vai por `CoolerApi.Send`, sem resposta, e só existe nos modos de mídia. O `halo probe waterforce-lcd` segue exatamente essa sequência.
 
 ### Dados de sistema (`AorusLcdService`)
 
