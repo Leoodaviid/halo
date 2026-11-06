@@ -13,6 +13,14 @@ Controle de RGB nativo para Linux (GNOME/Wayland) para o hardware deste PC. Leia
 
 ## Ferramentas disponíveis
 
+Os caminhos abaixo (`/mnt/workspace/...`, `/home/bumblebee/...`) existem só na máquina Linux do mantenedor. Os mesmos caminhos aparecem em `docs/` como registro de onde cada análise foi feita. Em outra máquina:
+
+- OpenRGB: clonar `https://gitlab.com/CalcProgrammer1/OpenRGB` e usar o commit `72262b8`, que é a referência citada nos docs.
+- Software oficial: baixar no site do fabricante e conferir o início e o fim do sha256 citados abaixo; se a versão for outra, anotar o sha256 completo no PR. Os instaladores para análise estática nunca são executados. No Windows, o software oficial instalado normalmente (GCC, RGB Fusion) pode ser usado para capturar o tráfego USB com o USBPcap e o Wireshark, a melhor fonte para confirmar um protocolo.
+- REA, Ghidra, ilspycmd e as saídas já extraídas: só na máquina do mantenedor. Se a análise depender deles, peça no PR em vez de supor o conteúdo.
+
+Na máquina do mantenedor:
+
 - Código do OpenRGB: `/mnt/workspace/tools/repos/openrgb` (clone raso, commit `72262b8`), drivers em `Controllers/`.
 - Instaladores oficiais para análise com o REA, em `/mnt/workspace/tools/samples/` (nunca executar). Cada produto tem `installer/` com o arquivo original e `extracted/` para o conteúdo extraído:
   - `gigabyte-control-center/`: `GCC_26.09.10.01.zip` (sha256 `b046a63a…2f1b`), com `GIGABYTE Control Center_2026_AUG_release_All_Setup_26.09.10.01.exe` (NSIS) em `extracted/zip/`.
