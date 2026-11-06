@@ -3,7 +3,8 @@ schema: spec-driven
 context: |
   Escrever todos os artefatos em português do Brasil.
   Só enviar ao hardware comandos documentados em docs/hardware.md, no código do OpenRGB
-  (/mnt/workspace/tools/repos/openrgb, commit 72262b8) ou em análise feita com o REA.
+  (https://gitlab.com/CalcProgrammer1/OpenRGB, commit 72262b8; na máquina do mantenedor, clone em
+  /mnt/workspace/tools/repos/openrgb), em análise feita com o REA ou em captura USB do software oficial.
   Nada de testar bytes desconhecidos no hardware.
   Todo dispositivo novo começa com uma ferramenta que só lê.
   Encontrar dispositivos por VID:PID e usage page, nunca por /dev/hidrawN fixo.
